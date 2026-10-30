@@ -14,7 +14,7 @@
 // projected phase plus its dry run), from packages/engine/stryker-measured.json, the figures of GitHub run 37371368951 (sha
 // 78c7ef3e6, ubuntu-latest, 4 vCPU) and of the runs of the parts cut after it, whole minutes, at least 10 and at most 300; the probe's is from its own sample, run 37330725739
 // (T20 step 2; test/stryker-sizing.test.ts derives every one from the data). A different runner is a different wall: every
-// timeout is re-derived whenever a hosted run disagrees with it, and whenever MATRIX_RUNNER changes.
+// timeout is re-derived whenever a hosted run disagrees with it, and whenever STRYKER_RUNNER changes.
 // A group's `cut` is a fingerprint of WHAT THE LEG MUTATES, and the incremental cache is keyed on it (mutation.yml): the files its
 // `mutate` list resolves to (sorted, relative to packages/engine: a file added, removed or renamed inside a glob changes what the
 // leg holds while every entry stays the same; scripts/stryker-files.mjs reads the globs with node: built-ins alone) and the leg's

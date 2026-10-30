@@ -6,6 +6,13 @@
 // engine directory `packages/engine` is `.`, and the pnpm path filter `./packages/engine...` is `....`. Three of the tests compare
 // mutation.yml with matrix-truth.yml, which stays in onryde/seazn.club. The ledger is onryde/seazn.club
 // docs/superpowers/specs/engine-split/ledgers/2b.json. Comments below are the source's, unedited.
+// Task E3 (owner ruling 2026-10-30, option A): matrix-truth.yml never exists in this repository, so the file reads mutation.yml
+// alone. The two tests that asserted over both workflows keep their mutation.yml half, titled "<source title> (engine half)" (the
+// matrix-truth.yml half stays in onryde/seazn.club under the source id); the guard test keeps its mutation.yml-only part under its
+// own title, and its comparison with matrix-truth.yml's script is retired in the ledger (cross-repo). The runner and weekly variables
+// are this repository's own (D32g, D29): vars.MATRIX_RUNNER is vars.STRYKER_RUNNER and vars.MATRIX_WEEKLY_ENABLED is
+// vars.STRYKER_WEEKLY_ENABLED. Paths the import left in the monorepo's shape are re-rooted the same way as the rest: the upload's
+// "under packages/engine/" is "under the repository root", and the floors job's `../../floors-in` is `floors-in`.
 /* eslint-disable @typescript-eslint/no-implied-eval, @typescript-eslint/no-unnecessary-type-assertion -- the body is moved
    verbatim: onryde/seazn.club lints tools/matrix with its scripts/ config, which runs neither rule; evalExpr's Function is
    restricted to the workflow's own committed text by its token whitelist. */
@@ -24,13 +31,10 @@ import { STRYKER_FAMILIES, STRYKER_GROUPS } from "../stryker.groups.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WORKFLOWS = join(REPO, ".github/workflows");
-const WF = readFileSync(join(WORKFLOWS, "matrix-truth.yml"), "utf8");
-const JOBS = jobsOf(WF);                               // job name → that job's text
 const GUARD = "Visibility guard (design §6.4; R14a)";
-// Task 20 pre-step, carry (b): the refusal said "Matrix truth run refused ... Sharded matrix runs", which is matrix-truth.yml's
-// name for itself, on a Stryker run. mutation.yml's guard is matrix-truth's script in every line but that message.
-const MATRIX_TRUTH_REFUSAL = "Matrix truth run refused::repository visibility is '${vis:-unreadable}'. Sharded matrix runs are free only while the repo is public (design §6.4); refusing before any minute is spent. Set vars.MATRIX_RUNNER to a self-hosted runner label to run them privately (ruling 68).";
-const STRYKER_REFUSAL = "Stryker mutation run refused::repository visibility is '${vis:-unreadable}'. The Stryker mutation workflow (mutation.yml) runs one hosted job per group, and those minutes are free only while the repo is public (design §6.4); refusing before any minute is spent. Set vars.MATRIX_RUNNER to a self-hosted runner label to run it privately (ruling 68).";
+// Task 20 pre-step, carry (b): the refusal once said "Matrix truth run refused ... Sharded matrix runs", which is matrix-truth.yml's
+// name for itself, on a Stryker run. mutation.yml's refusal names the Stryker workflow, and the runner variable it is switched with.
+const STRYKER_REFUSAL = "Stryker mutation run refused::repository visibility is '${vis:-unreadable}'. The Stryker mutation workflow (mutation.yml) runs one hosted job per group, and those minutes are free only while the repo is public (design §6.4); refusing before any minute is spent. Set vars.STRYKER_RUNNER to a self-hosted runner label to run it privately (ruling 68).";
 
 const scratch = mkdtempSync(join(tmpdir(), "w1d-wf-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -90,7 +94,7 @@ function evalExpr(raw: string, ctx: Record<string, unknown>, cancelled = false):
 }
 const ctxOf = (o: { event: string; head?: string | null; weekly?: string; planResult?: string; scope?: string; headRef?: string; runId?: string; prNumber?: number; matrix?: string }) => ({
   github: { event_name: o.event, repository: SAME_REPO, head_ref: o.headRef ?? "", run_id: o.runId ?? "1", event: o.event === "pull_request" ? { pull_request: { number: o.prNumber ?? 1, head: { repo: o.head === null ? null : { full_name: o.head ?? SAME_REPO } } } } : {} },
-  vars: { MATRIX_WEEKLY_ENABLED: o.weekly ?? "true" },
+  vars: { STRYKER_WEEKLY_ENABLED: o.weekly ?? "true" },
   inputs: { scope: o.scope ?? "" },
   needs: { plan: { result: o.planResult ?? "success", outputs: { matrix: o.matrix ?? "" } }, "matrix-rows": { outputs: { run: "true" } } },
 });
@@ -139,12 +143,12 @@ const ENGINE_DIR = join(REPO, ".");
 const enginePkg = JSON.parse(readFileSync(join(ENGINE_DIR, "package.json"), "utf8")) as { scripts: Record<string, string> };
 
 describe("both workflows run on the switchable runner (ruling 68, D24)", () => {
-  it("every job of matrix-truth.yml AND mutation.yml runs on the switchable runner (ruling 68, D24), and has a timeout-minutes", () => {
-    for (const [file, text] of [["matrix-truth.yml", WF], ["mutation.yml", MUT]] as const) {
+  it("every job of matrix-truth.yml AND mutation.yml runs on the switchable runner (ruling 68, D24), and has a timeout-minutes (engine half)", () => {
+    for (const [file, text] of [["mutation.yml", MUT]] as const) {
       const jobs = Object.entries(jobsOf(text));
       expect(jobs.length, file).toBeGreaterThan(1);   // anti-vacuity
       for (const [name, t] of jobs) {
-        expect(t, `${file}:${name} runs-on`).toContain("runs-on: ${{ vars.MATRIX_RUNNER || 'ubuntu-latest' }}");
+        expect(t, `${file}:${name} runs-on`).toContain("runs-on: ${{ vars.STRYKER_RUNNER || 'ubuntu-latest' }}");
         expect(t, `${file}:${name} timeout-minutes`).toMatch(/timeout-minutes:/);
       }
     }
@@ -152,9 +156,11 @@ describe("both workflows run on the switchable runner (ruling 68, D24)", () => {
 });
 
 describe("mutation.yml and the runner wiring (review 5: R5-I1, m2, m3; moved here by review 6, R6-I1)", () => {
-  it("every guard step of BOTH workflows takes RUNNER_ENV from runner.environment, never a literal (the one line that decides whether private hosted minutes can be billed)", () => {
-    const all = [...Object.values(JOBS), ...Object.values(MJOBS)];
-    expect(all.length).toBeGreaterThan(4);   // anti-vacuity: matrix-truth's four plus mutation's
+  it("every guard step of BOTH workflows takes RUNNER_ENV from runner.environment, never a literal (the one line that decides whether private hosted minutes can be billed) (engine half)", () => {
+    const all = [...Object.values(MJOBS)];
+    // anti-vacuity, mutation.yml's share: the source's floor (> 4) was "matrix-truth's four plus mutation's" (at least one of
+    // mutation's); this half holds every one of mutation.yml's three jobs, which is stronger than that share
+    expect(all.length).toBeGreaterThanOrEqual(3);
     for (const t of all) expect(stepOf(t, GUARD).body).toContain("RUNNER_ENV: ${{ runner.environment }}");
   });
   it("the mutate job does not cancel its siblings, takes its timeout from the matrix, and saves its evidence even when Stryker exits non-zero (R5-I1)", () => {
@@ -243,12 +249,10 @@ describe("mutation.yml and the runner wiring (review 5: R5-I1, m2, m3; moved her
     expect(opts).toEqual(["all", ...Object.keys(STRYKER_GROUPS)]);
     expect(opts.length).toBeGreaterThan(2);
   });
-  it("mutation.yml's guard is the first step of every job, with matrix-truth's script in every line but the refusal's wording (the identical-script claim for the second workflow)", () => {
-    const base = stepOf(JOBS.plan!, GUARD).script;
-    expect(base).not.toBeNull();
-    expect(base, "matrix-truth's script still carries its own wording, so the substitution below is a real one").toContain(MATRIX_TRUTH_REFUSAL);
-    const want = base!.replace(MATRIX_TRUTH_REFUSAL, STRYKER_REFUSAL);
-    expect(want).not.toBe(base);
+  it("mutation.yml's guard is the first step of every job, the same script in each, with the Stryker workflow's own refusal wording (engine half)", () => {
+    const want = stepOf(MJOBS.plan!, GUARD).script;
+    expect(want).not.toBeNull();
+    expect(want, "the refusal names the Stryker workflow and the runner variable it is switched with").toContain(STRYKER_REFUSAL);
     expect(Object.keys(MJOBS).length).toBeGreaterThan(1);
     for (const [name, t] of Object.entries(MJOBS)) {
       expect(stepHeads(t)[0], name).toBe(`      - name: ${GUARD}`);
@@ -436,7 +440,7 @@ describe("mutation.yml: triggers, the weekly gate and the fork gate (T9 conventi
     const plan = ifOf(MJOBS.plan!);
     const mutate = ifOf(MJOBS.mutate!);
     const floors = ifOf(MJOBS.floors!);
-    expect(plan).toContain("(github.event_name != 'schedule' || vars.MATRIX_WEEKLY_ENABLED == 'true')");
+    expect(plan).toContain("(github.event_name != 'schedule' || vars.STRYKER_WEEKLY_ENABLED == 'true')");
     expect(mutate).toContain("(github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)");
     // floors: after every leg even a red one (always()), only when plan ran, and never when the plan holds only the probe (a
     // probe-only plan, a pull request or `workflow_dispatch group=probe`, has no floor: --check-all refuses the probe). The fromJSON
@@ -524,7 +528,7 @@ describe("mutation.yml: triggers, the weekly gate and the fork gate (T9 conventi
     expect(up).toContain("name: mutation-${{ matrix.group }}");
     const paths = /path: \|\n((?: {12}\S.*\n?)+)/.exec(up)![1]!.split("\n").map((l) => l.trim()).filter(Boolean);
     expect(paths.length).toBeGreaterThan(1);
-    for (const x of paths) expect(x, x).toMatch(/^packages\/engine\//);
+    for (const x of paths) expect(x, x).toMatch(/^(?!\/|\.\.\/)\S/);   // re-rooted (E3): under the engine's directory, the repository root
     expect(paths).toContain("reports/mutation/${{ matrix.group }}.json");
     expect(paths).toContain("SURVIVORS.md");
   });
@@ -860,7 +864,7 @@ describe("mutation.yml: the floors job judges each family on all its legs, run t
     expect(floorStep.body).toContain("working-directory: .");
     expect(floorStep.body).not.toContain("continue-on-error");
     expect(floorStep.body, "no step-level `if:` that could skip it").not.toMatch(/^ {8}if:/m);
-    expect(floorLine).toBe('pnpm mutation:floor --check-all ../../floors-in --legs "$LEGS" --skip-if-no-floors');
+    expect(floorLine).toBe('pnpm mutation:floor --check-all floors-in --legs "$LEGS" --skip-if-no-floors');
     // the install the jobs share is the engine's own (Stryker, vitest and the TypeScript parser are its devDependencies)
     for (const job of ["mutate", "floors"] as const) expect(MJOBS[job], job).toContain("run: pnpm install --frozen-lockfile --filter .... --fail-if-no-match");
     expect(MUT).not.toMatch(/run: pnpm install --frozen-lockfile\s*$/m);
@@ -918,7 +922,7 @@ describe("mutation.yml: the floors job judges each family on all its legs, run t
     expect(r.stdout.match(/no floor yet: PR-B sets it/g)).toHaveLength(2);
     expect(r.stdout).toContain("core: score 75.0% (9 of 12 detected");
     expect(r.stdout).toContain("draws: score 85.7% (6 of 7 detected");   // the SUM of the four legs
-    expect(r.record).toEqual([`mutation:floor --check-all ../../floors-in --legs ${LEGS} --skip-if-no-floors`]);
+    expect(r.record).toEqual([`mutation:floor --check-all floors-in --legs ${LEGS} --skip-if-no-floors`]);
   }, spawnBudget(1));
 
   it("once PR-B commits floors: a family with no entry is a failure, met floors pass and a missed one fails", () => {

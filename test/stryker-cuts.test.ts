@@ -549,7 +549,7 @@ describe("an ordinal anchor is pinned to the statement it starts: an `if` added 
     // no record: the cut is not pinned
     const none = checkAnchorRecords(splits, {}, () => CHAIN);
     expect(none.problems).toHaveLength(1);
-    expect(none.problems[0]).toMatch(/has no record in packages\/engine\/stryker-anchors\.json/);
+    expect(none.problems[0]).toMatch(/has no record in stryker-anchors\.json/);
     expect(none.problems[0], "the hint is the file to write").toContain('"starts": "if (r > 2) {"');
     // a record for a cut no leg makes any more
     const orphan = checkAnchorRecords({ "chain.ts": [] }, records, () => CHAIN);

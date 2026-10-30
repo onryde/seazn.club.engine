@@ -24,7 +24,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { cutUnits, planSplit, resolveSplit, topLevelStatements, unitMutants } from "./stryker-cuts.mjs";
 
-const USAGE = "usage: pnpm --filter ./packages/engine mutation:recut <file> <parts> [--extra <mutants>] [--open <Host,...>] [--table]   (run from the repo root; the file is relative to packages/engine)";
+const USAGE = "usage: pnpm mutation:recut <file> <parts> [--extra <mutants>] [--open <Host,...>] [--table]   (run from the repo root; the file is relative to it)";
 
 function refuse(message) {
   process.stderr.write(`stryker-recut: ${message}\n${USAGE}\n`);
@@ -51,7 +51,7 @@ let text;
 try {
   text = readFileSync(file, "utf8");
 } catch {
-  refuse(`${file} is unreadable or missing (give a path relative to packages/engine)`);
+  refuse(`${file} is unreadable or missing (give a path relative to the repo root)`);
 }
 
 /** Stryker's own instrumenter, from @stryker-mutator/core's dependency tree (the engine does not depend on it directly): where
