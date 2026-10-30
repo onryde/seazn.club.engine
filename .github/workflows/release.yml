@@ -1,0 +1,228 @@
+name: Release
+
+# The engine's releases (engine-split 2b Task E4; D16, spec §8), through Changesets. The two jobs below hold the only write permissions in this
+# repository's workflows, each on its own job block; everything else reads (the top-level block).
+#
+# - `release`, on a push to main. While main holds changesets, changesets/action opens or updates the Version PR (branch
+#   changeset-release/main: the version bump and the CHANGELOG, nothing else) and the step after it adds the epoch report to that PR's body.
+#   The OWNER merges the Version PR (D16). The push that merge makes holds no changesets, so the same job then publishes the version main
+#   holds, tags it v<version> and writes its GitHub Release (the CHANGELOG entry, then the epoch report).
+# - `snapshot`, on a pull request from a branch of THIS repository: publishes 0.0.0-pr<N>.<sha> under the dist-tag `pr`, where <sha> is the
+#   full sha of the merge commit the job checked out (`{tag}.{commit}`, .changeset/config.json). ci.yml's `downstream` job waits for that
+#   version and installs it into onryde/seazn.club@main. A fork's PR gets no snapshot: its token cannot write packages, and its code must not
+#   run with one that can.
+#
+# Both publish with `pnpm publish` (reverse inventory C-j): pnpm packs with publishConfig applied, so the tarball's `exports` name dist/;
+# `npm publish` would ship the workspace exports, which name src/*.ts files the tarball does not carry. A custom publish script means
+# changesets/action creates no tag and no GitHub Release of its own (it learns what was published only from `changeset publish`'s output,
+# and warns that it found none: that warning is expected here), so `release` makes both itself, from what the registry then holds.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A PR's superseded snapshot runs are cancelled; every push to main runs to the end (one group per commit, as in ci.yml), so a publish is
+# never cancelled or replaced by the push behind it.
+concurrency:
+  group: release-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Least privilege for GITHUB_TOKEN: each job below declares the writes it needs, and only those.
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------------
+  # The Version PR, or the release of the version main holds.
+  # GitHub-hosted runner: this job holds a token that writes the repository and the package.
+  # -------------------------------------------------------------------------
+  release:
+    name: Version PR, or publish and tag the version main holds
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: write
+    env:
+      # setup-node's registry-url writes an .npmrc (NPM_CONFIG_USERCONFIG) sending @onryde/* to GitHub Packages with this token.
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        # Full history and every tag: the epoch report's baseline is the last v*.*.* tag, and the CHANGELOG names each change's commit.
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@onryde'
+      - run: pnpm install --frozen-lockfile
+      # Release-time WARNING (owner-approved 2026-10-15, moved here from onryde/seazn.club's prod.yml: false premise 6, Deviation d): which
+      # sports does this release lock out for older capture apps? The server refuses a score write from an app whose FOLD_EPOCH for the sport
+      # is lower than the engine's (426 ENGINE_OUTDATED). scripts/release-epoch-report.ts names each sport whose epoch rose since the
+      # baseline: the last v*.*.* tag, or, before the first release, the import commit (the first commit holding src/sport/fold-epoch.ts: the
+      # engine as it left onryde/seazn.club). Run BEFORE changesets/action, so HEAD is main's commit in both modes. The report goes in the
+      # Version PR's body and the GitHub Release (the steps below) and this run's summary. It informs and never gates: continue-on-error, a
+      # timeout, and a script that exits 0 for every table and ref it reads.
+      - name: Report FOLD_EPOCH bumps since the last release (non-blocking)
+        id: epoch
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/epoch-report.md"
+          : > "$report"
+          from="$(git describe --tags --abbrev=0 --match 'v*.*.*' HEAD 2>/dev/null || true)"
+          if [ -z "$from" ]; then
+            from="$(git log --diff-filter=A --format=%H -- src/sport/fold-epoch.ts | tail -n 1)"
+            if [ -z "$from" ]; then
+              msg="no v*.*.* tag, and no commit in this history adds src/sport/fold-epoch.ts; nothing to compare"
+              echo "::warning::$msg"
+              printf '### Engine fold epoch\n\n- %s\n' "$msg" > "$report"
+              cat "$report" >> "$GITHUB_STEP_SUMMARY"
+              echo "file=$report" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            printf 'No earlier v*.*.* release: the baseline is the import commit %s, the engine as it left onryde/seazn.club.\n\n' "$from" > "$report"
+          fi
+          node --experimental-strip-types scripts/release-epoch-report.ts --from "$from" --to HEAD --annotate --summary "$report"
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          echo "file=$report" >> "$GITHUB_OUTPUT"
+      # The tarball ships dist/ (`files`), which is never committed: built before the action, which publishes when main holds no changesets.
+      - run: pnpm build:dist
+      - name: Version PR (main holds changesets), or publish (it holds none)
+        id: changesets
+        uses: changesets/action@v2
+        with:
+          version-script: pnpm changeset version
+          publish-script: pnpm publish -r --no-git-checks
+          # Made by the last step below, from the registry's answer: see the header.
+          create-github-releases: false
+          push-git-tags: false
+      # changesets/action rewrites the Version PR's body on every push to main, so the report is appended afresh each time, never twice.
+      - name: Add the epoch report to the Version PR body (non-blocking)
+        if: steps.changesets.outputs.pr-number != ''
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.changesets.outputs.pr-number }}
+          REPORT: ${{ steps.epoch.outputs.file }}
+        run: |
+          set -euo pipefail
+          if [ -z "$REPORT" ] || [ ! -s "$REPORT" ]; then
+            echo "::warning::the epoch report step wrote no report (see its log): Version PR #$PR_NUMBER goes without one"
+            exit 0
+          fi
+          body="$RUNNER_TEMP/version-pr-body.md"
+          gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$body"
+          printf '\n' >> "$body"
+          cat "$REPORT" >> "$body"
+          gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+          echo "Version PR #$PR_NUMBER: epoch report added"
+      # `pnpm publish -r` skips a version the registry already holds and exits 0 either way, so the tag and the registry, not the exit code,
+      # say whether there is a release to write. A version already tagged is done. One that is untagged must be on GitHub Packages (just
+      # published, or by a run that died before this step: re-running it finishes the job), or nothing was published and nothing is tagged.
+      - name: Tag v<version> and write its GitHub Release (CHANGELOG entry + epoch report)
+        if: steps.changesets.outputs.has-changesets == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT: ${{ steps.epoch.outputs.file }}
+        run: |
+          set -euo pipefail
+          name="$(node -p 'require("./package.json").name')"
+          v="$(node -p 'require("./package.json").version')"
+          tag="v$v"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "$tag is already tagged: no new release"
+            exit 0
+          fi
+          got="$(npm view "$name@$v" version 2> "$RUNNER_TEMP/npm-view.err" || true)"
+          if [ "$got" != "$v" ]; then
+            cat "$RUNNER_TEMP/npm-view.err"
+            echo "::error::$tag is untagged and GitHub Packages holds no $name@$v (it answered '${got:-nothing}'): the publish step published nothing, so nothing is tagged"
+            exit 1
+          fi
+          notes="$RUNNER_TEMP/release-notes.md"
+          awk -v head="## $v" '$0 == head { on = 1; next } on && /^## / { exit } on' CHANGELOG.md > "$notes"
+          if ! grep -q '[^[:space:]]' "$notes"; then
+            echo "::error::CHANGELOG.md has no '## $v' entry: changeset version writes one for every version it cuts"
+            exit 1
+          fi
+          if [ -n "$REPORT" ] && [ -s "$REPORT" ]; then
+            printf '\n' >> "$notes"
+            cat "$REPORT" >> "$notes"
+          else
+            echo "::warning::the epoch report step wrote no report (see its log): $tag's release notes go without one"
+          fi
+          prerelease=""
+          case "$v" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$tag" --notes-file "$notes" ${prerelease:+"$prerelease"}
+          echo "released $name@$v as $tag ($GITHUB_SHA)"
+
+  # -------------------------------------------------------------------------
+  # PR snapshot (D16): 0.0.0-pr<N>.<sha>, dist-tag `pr`, for ci.yml's `downstream` job. Same-repository heads only (see the header), and
+  # never the Version PR: its branch holds the release version and no changesets, and a snapshot of it would publish that version from an
+  # unmerged branch.
+  # -------------------------------------------------------------------------
+  snapshot:
+    name: PR snapshot (0.0.0-pr<N>.<sha>, dist-tag pr)
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.head_ref != 'changeset-release/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ github.event.number }}
+    steps:
+      # The merge commit (the default): its sha is the one the snapshot version carries, and the one `downstream` looks for.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@onryde'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm changeset version --snapshot pr${{ github.event.number }}
+      # Only a snapshot version is ever published from a PR, and only one `downstream` will find: 0.0.0-pr<N>.<7 to 40 hex>, the hex a prefix
+      # of the checked-out commit's sha (the rule downstream matches by). A PR whose changesets release nothing (`--empty` only) leaves the
+      # version as committed: skipped with a notice, never published under `pr`. Any other version is a red.
+      - name: The version is this PR's snapshot
+        id: version
+        run: |
+          set -euo pipefail
+          v="$(node -p 'require("./package.json").version')"
+          committed="$(git show HEAD:package.json | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).version)')"
+          sha="$(git rev-parse HEAD)"
+          pre="0.0.0-pr${PR}."
+          rest="${v#"$pre"}"
+          if [ "$rest" != "$v" ] && [[ "$rest" =~ ^[0-9a-f]{7,40}$ ]] && [[ "$sha" == "$rest"* ]]; then
+            echo "snapshot: $(node -p 'require("./package.json").name')@$v"
+            echo "version=$v" >> "$GITHUB_OUTPUT"
+          elif [ "$v" = "$committed" ]; then
+            echo "::notice::no snapshot: this PR's changesets release nothing, so the version stays $v and nothing is published"
+            echo "version=" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::changeset version --snapshot wrote $v, which is not ${pre}<a prefix of $sha>: refusing to publish it"
+            exit 1
+          fi
+      - if: steps.version.outputs.version != ''
+        run: pnpm build:dist
+      - if: steps.version.outputs.version != ''
+        run: pnpm publish -r --no-git-checks --tag pr
