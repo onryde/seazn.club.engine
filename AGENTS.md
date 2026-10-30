@@ -26,10 +26,29 @@ a command's argv. CI uses `GITHUB_TOKEN`. Only release.yml's two publishing jobs
    `link:` or `file:` engine spec, so the override stays in your working tree.
 2. **Paired PRs are the unit of review.** The engine PR publishes `0.0.0-pr<N>.<sha>`; the app PR pins that exact
    version and carries the matrix rows, contract tests and any web change. Each PR links the other. Merge order: engine
-   PR, then the owner merges the Version PR, then the release, then the app PR repins to the release and merges.
+   PR, then the owner merges a release PR (Releasing, below), then the app PR repins to the release and merges.
 3. **Every engine PR body has a `Matrix rows:` line** naming the format × sport rows the change touches
    (onryde/seazn.club `docs/superpowers/TEST-STRATEGY.md` rule 9). The engine PR declares them; the paired app PR runs
    them.
+
+## Releasing (D16, §8)
+
+Every PR adds a changeset (`pnpm changeset`, or `pnpm changeset --empty` for a change that releases nothing), and they
+collect on main. While main holds any, each push's `release` job (release.yml) names them in a notice and publishes
+nothing. GitHub Actions may not open pull requests in this organisation, so a person cuts each release by hand:
+
+1. Branch `release/<version>` from an up-to-date main (`git checkout -b release/<version> origin/main`), where
+   `<version>` is the one `pnpm changeset status --verbose` says the pending changesets add up to.
+2. Run `pnpm changeset version`. It writes that version into package.json and its entry into CHANGELOG.md, and deletes
+   the changesets it consumed.
+3. Commit package.json, CHANGELOG.md and the deleted changesets, and nothing else.
+4. Open the PR against main, then merge it with a merge commit. CI's changeset job lets a `release/*` PR whose version
+   differs from main's pass without a changeset, and judges the fold tables against that version bump: a moved
+   FOLD_EPOCH needs a major, a moved FOLD_MINOR at least a minor. If another PR adds a changeset to main before this one
+   merges, cut the branch again from the new main: a merge that leaves a changeset on main publishes nothing.
+5. On that merge's push, the `release` job finds no changeset pending, publishes the version to GitHub Packages, tags
+   `v<version>`, and creates the GitHub Release: the CHANGELOG entry, then the epoch report (the sports this release
+   locks out for older capture apps).
 
 ## Porting a branch that was in flight at the cutover (D37)
 
