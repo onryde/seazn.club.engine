@@ -1,0 +1,9 @@
+# Settings for pnpm only (npm never reads this file). The engine is a single package at the repository root: no `packages:` list.
+#
+# The @babel/core 7 pin moved here from onryde/seazn.club's pnpm-workspace.yaml at the import (engine-split 2b, reverse inventory C-d).
+# There it kept apps/web on @babel/core 7.29.7 when Stryker brought a second major (8) into the lock. Here it is the version the rn
+# pack-proof fixture installs: test/pack-proof.test.ts ("the fixtures' own package.json files pin exactly ...") reads this line and
+# holds pack-proof/rn/package.json's @babel/core to it. The selector names a RANGE of the helper (`@<8`: every 7.x), never an exact
+# version and never no version, so Stryker's own @babel/helper-module-transforms 8 keeps @babel/core 8.
+overrides:
+  "@babel/helper-module-transforms@<8>@babel/core": "7.29.7"

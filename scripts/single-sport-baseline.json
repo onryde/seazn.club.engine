@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "generatedBy": "scripts/single-sport.ts",
+  "pins": {
+    "src/competition/division.test.ts:generic": 1,
+    "src/competition/qualification.test.ts:generic": 1,
+    "src/competition/qualification.test.ts:icehockey": 1,
+    "src/competition/tie-what-if.test.ts:badminton": 1,
+    "src/competition/tie-what-if.test.ts:carrom": 1,
+    "src/competition/tie-what-if.test.ts:volleyball": 1,
+    "src/competition/tiebreak-rule-award-alias.test.ts:cricket": 1
+  },
+  "moves": {}
+}
