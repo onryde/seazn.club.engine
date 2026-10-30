@@ -4,13 +4,14 @@
 // scan is the engine half: it is below, titled as the source with " (engine half)", over this repository's `src`, its expectations the source's
 // (the one caller is the engine's catalog, holding one call). The rest of the test, and the app's half of the scan, keep the original id in
 // onryde/seazn.club. The ledger is onryde/seazn.club docs/superpowers/specs/engine-split/ledgers/2b.json.
+// Under Stryker the scan reads the checkout's `src`, never the sandbox's instrumented copy (./checkout-source.ts).
 import { readdirSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { CHECKOUT, refuseInstrumented } from "./checkout-source.ts";
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const read = (rel: string) => readFileSync(resolve(REPO, rel), "utf8");
+const REPO = CHECKOUT;
+const read = (rel: string) => refuseInstrumented(rel, readFileSync(resolve(REPO, rel), "utf8"));
 
 describe("team rosters and per-fixture lineups (W1-driving Task 4, fold-in beneath ruling 49)", () => {
   it("Step 0: the product's lineup PUT, pinned from its source — the refusal codes, replace-not-append, a warning-only check, no event-time assertLineup (engine half)", () => {
