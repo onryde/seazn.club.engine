@@ -311,7 +311,8 @@ jobs:
   # -------------------------------------------------------------------------
   downstream:
     name: Downstream (onryde/seazn.club@main on this PR's snapshot)
-    if: github.event_name == 'pull_request'
+    # a release/<version> PR consumes its changesets, so no snapshot is ever published for it to install
+    if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release/')
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     # packages: read installs @onryde/seazn-engine from GitHub Packages with this job's GITHUB_TOKEN.
