@@ -3,14 +3,14 @@
 // belongs with it. K5 and K6 police apps/web and stay there. The title and assertions are verbatim; only paths are re-rooted (the
 // engine is this repository's root: `packages/engine/src/sports` is `src/sports`). The ledger is onryde/seazn.club
 // docs/superpowers/specs/engine-split/ledgers/2b.json.
+// Under Stryker the scan reads the checkout's `src`, never the sandbox's instrumented copy (./checkout-source.ts).
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { CHECKOUT, refuseInstrumented } from "./checkout-source.ts";
 
 // Static, DB-independent checks — always run, regardless of DATABASE_URL.
-const TEST_DIR = fileURLToPath(new URL(".", import.meta.url));
-const REPO_ROOT = resolve(TEST_DIR, "..");
+const REPO_ROOT = CHECKOUT;
 const ENGINE_SPORTS_DIR = resolve(REPO_ROOT, "src/sports");
 
 function sourceFilesUnder(dir: string, exts: string[]): string[] {
@@ -32,7 +32,7 @@ describe("no logger outside the sanctioned funnel (R3.5 Task K, K6/K7)", () => {
     const files = sourceFilesUnder(ENGINE_SPORTS_DIR, [".ts"]);
     expect(files.length).toBeGreaterThan(0);
     const offenders = files.filter((f) =>
-      /from\s+["']pino["']|require\(\s*["']pino["']\s*\)/.test(readFileSync(f, "utf8")),
+      /from\s+["']pino["']|require\(\s*["']pino["']\s*\)/.test(refuseInstrumented(f, readFileSync(f, "utf8"))),
     );
     expect(offenders).toEqual([]);
   });

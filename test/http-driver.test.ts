@@ -4,13 +4,14 @@
 // PATCH /fixtures/:id takes scheduled_at as an offset datetime or null (read from apps/web). The first is the engine half: it is below, titled
 // as the source with " (engine half)", reading this repository's src/core/events.ts with the source's expectation. The PatchFixture half keeps
 // the original id in onryde/seazn.club. The ledger is onryde/seazn.club docs/superpowers/specs/engine-split/ledgers/2b.json.
+// Under Stryker the read is of the checkout's `src`, never the sandbox's instrumented copy (./checkout-source.ts).
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { CHECKOUT, refuseInstrumented } from "./checkout-source.ts";
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const product = (rel: string) => readFileSync(resolve(REPO, rel), "utf8");
+const REPO = CHECKOUT;
+const product = (rel: string) => refuseInstrumented(rel, readFileSync(resolve(REPO, rel), "utf8"));
 // The event type the matrix's driver POSTs to void the newest event: onryde/seazn.club tools/matrix/lib/driver/types.ts `VOID_EVENT` at the tag,
 // the CONSUMER's name for it (that harness is not in this repository). The pin is that the engine's registry carries exactly that name.
 const VOID_EVENT = "core.void";

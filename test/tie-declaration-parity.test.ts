@@ -4,15 +4,18 @@
 // `reachableResultKinds` declaration. That read trusts the declaration it guards, so a sport whose fold writes a tie but forgets
 // to declare it would hide from both the LEVEL_PROBES guard and the streams tie sweep. This test keeps the source scan, here
 // where reading src/ is legitimate, and holds it equal to the declaration: two independent readings of one fact.
+// Under Stryker the scan reads the checkout's sources, never the sandbox's instrumented copy (./checkout-source.ts), where a mutated
+// `kind: "tie"` reads `kind: stryMutAct_<hash>("n") ? "" : "tie"`. The declaration is still the sandbox's module, so a mutant that drops
+// "tie" from `reachableResultKinds` still fails the equality below.
 import { readFileSync, readdirSync } from "node:fs";
 import { join, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { StageKind } from "../src/core/index.ts";
 import { builtinModules } from "../src/sports/index.ts";
 import { declaredCfgs } from "../src/testkit/declared-cfgs.ts";
+import { CHECKOUT, refuseInstrumented } from "./checkout-source.ts";
 
-const SPORTS_SRC = fileURLToPath(new URL("../src/sports", import.meta.url));
+const SPORTS_SRC = join(CHECKOUT, "src/sports");
 const WRITES_TIE = /kind:\s*"tie"/;
 
 /** The directories under src/sports (first path segment) holding a non-test source that writes a `kind: "tie"` outcome, the
@@ -20,7 +23,7 @@ const WRITES_TIE = /kind:\s*"tie"/;
 function tieSourceDirs(): { dirs: Set<string>; scanned: number } {
   const sources = (readdirSync(SPORTS_SRC, { recursive: true }) as string[])
     .filter((p) => p.endsWith(".ts") && !p.endsWith(".test.ts") && !p.split(sep).includes("__tests__"));
-  const dirs = new Set(sources.filter((p) => WRITES_TIE.test(readFileSync(join(SPORTS_SRC, p), "utf8"))).map((p) => p.split(sep)[0]!));
+  const dirs = new Set(sources.filter((p) => WRITES_TIE.test(refuseInstrumented(p, readFileSync(join(SPORTS_SRC, p), "utf8")))).map((p) => p.split(sep)[0]!));
   return { dirs, scanned: sources.length };
 }
 

@@ -3,11 +3,14 @@
 // which pin the engine's own CI steps. Titles and assertions are verbatim; only paths are re-rooted (the engine is this repository's
 // root: `packages/engine/<x>` reads `<x>`, the pnpm path filter `./packages/engine` is `.`). The ledger is
 // onryde/seazn.club docs/superpowers/specs/engine-split/ledgers/2b.json. Comments below are the source's, unedited.
+// The two reads of `src/` (the corpora count and STATS_FOLD_VERSION's declaration line) are of the checkout's files, never a Stryker
+// sandbox's instrumented copy (./checkout-source.ts); everything else, the spawned guards included, still runs from REPO.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { CHECKOUT, refuseInstrumented } from "./checkout-source.ts";
 import { SPAWN_MS, spawnBudget } from "./spawn-budget.ts";
 import { jobsOf } from "./workflow-text.ts";
 
@@ -123,7 +126,7 @@ describe("fold-epoch guard CI wiring (engine-split Task 1e-2, D15, D26)", () => 
     const r = spawnSync("bash", ["-c", cmd.replace(" --against HEAD^1", " --against HEAD")], { cwd: REPO, encoding: "utf8", timeout: SPAWN_MS });
     expect(r.status, r.stderr + r.stdout).toBe(0);
     // only a guard that read the flag, through `pnpm --filter`, in the engine's directory, prints this; the sport count is the corpora on disk
-    const corpora = (readdirSync(resolve(REPO, "src/sports"), { recursive: true }) as string[]).filter((f) => f.endsWith(".golden.json")).length;
+    const corpora = (readdirSync(resolve(CHECKOUT, "src/sports"), { recursive: true }) as string[]).filter((f) => f.endsWith(".golden.json")).length;
     expect(corpora).toBeGreaterThan(0);
     const m = /^fold-epoch: (\d+) sports checked, (\d+) streams compared against HEAD: 0 violation\(s\), STATS_FOLD_VERSION (\d+) -> (\d+)$/m.exec(r.stdout);
     expect(m, r.stdout).not.toBeNull();
@@ -131,7 +134,7 @@ describe("fold-epoch guard CI wiring (engine-split Task 1e-2, D15, D26)", () => 
     expect(Number(m?.[2])).toBeGreaterThanOrEqual(corpora);
     // GF-3 T1: the summary also carries the stats version, base -> tree; HEAD and this tree are the same commit, and the number is what
     // src/stats/stats.ts declares (read here by its declaration line: the engine's own, not the guard's output)
-    const declared = /^export const STATS_FOLD_VERSION = (\d+);$/m.exec(readFileSync(resolve(REPO, "src/stats/stats.ts"), "utf8"))?.[1];
+    const declared = /^export const STATS_FOLD_VERSION = (\d+);$/m.exec(refuseInstrumented("src/stats/stats.ts", readFileSync(resolve(CHECKOUT, "src/stats/stats.ts"), "utf8")))?.[1];
     expect(declared, "src/stats/stats.ts declares STATS_FOLD_VERSION on a line of its own").toBeDefined();
     expect([Number(m?.[3]), Number(m?.[4])]).toEqual([Number(declared), Number(declared)]);
   }, spawnBudget(1));

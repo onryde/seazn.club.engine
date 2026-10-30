@@ -11,12 +11,16 @@
 // id in onryde/seazn.club and scans the app's two roots. What is split is the DATA, never the logic: `ALLOWED`, the reader list and
 // `NOT_A_LEDGER_REPLAY` hold exactly the source's `packages/engine/src/...` rows, re-rooted, reasons unedited, and no other row; every
 // threshold and anti-vacuity count is the source's.
+//
+// Under Stryker these scans read the checkout's `src`, never the sandbox's instrumented copy (./checkout-source.ts: mutation.yml run
+// 41097384340 failed core-1, core-2 and core-3's dry runs on the copy). Only where they read moves; every assertion is unchanged.
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SETTLE_METHODS, settledMethod } from "../src/core/index.ts";
+import { CHECKOUT, refuseInstrumented } from "./checkout-source.ts";
 
-const REPO = resolve(__dirname, "..");
+const REPO = CHECKOUT;
 // (engine half) The source's ROOTS were ["apps/web/src", "packages/engine/src", "tools/matrix/lib"]; the engine's own is this repository's src.
 const ROOTS = ["src"];
 // Any argument name (review Minor 2): `module.outcome(finalState)` drops a settle
@@ -57,7 +61,7 @@ describe("finding 1: every fold-outcome reader goes through outcomeOf", () => {
     let scanned = 0;
     for (const f of files) {
       const rel = relative(REPO, f);
-      const text = stripComments(readFileSync(f, "utf8"));
+      const text = stripComments(refuseInstrumented(f, readFileSync(f, "utf8")));
       if (/\boutcomeOf\(/.test(text) && rel !== "src/core/events.ts") readers.push(rel);
       const calls = [...text.matchAll(BARE)].map((m) => text.slice(m.index, text.indexOf(")", m.index) + 1));
       scanned += calls.length;
@@ -107,7 +111,7 @@ describe("finding 1: every fold-outcome reader goes through outcomeOf", () => {
     for (const f of files) {
       const rel = relative(REPO, f);
       if (rel === "src/core/events.ts") continue; // the kernel defines the fold
-      const text = readFileSync(f, "utf8").replace(/^\s*(\/\/|\*|\/\*).*$/gm, ""); // comments name the shape
+      const text = refuseInstrumented(f, readFileSync(f, "utf8")).replace(/^\s*(\/\/|\*|\/\*).*$/gm, ""); // comments name the shape
       foldSites += [...text.matchAll(FOLD_CALL)].length;
       for (const m of text.matchAll(DIRECT)) property.push(`${rel}: ${m[0].slice(-40)}`);
       for (const bind of text.matchAll(FOLD_BIND)) {
@@ -128,7 +132,7 @@ describe("finding 1: every fold-outcome reader goes through outcomeOf", () => {
     expect(property, `${foldSites} fold call sites, ${boundNames} fold bindings scanned`).toEqual([]);
   });
   it("every allowed file still exists and still holds a bare call (a stale entry is a failure) (engine half)", () => {
-    for (const rel of Object.keys(ALLOWED)) expect(stripComments(readFileSync(join(REPO, rel), "utf8")), rel).toMatch(BARE);
+    for (const rel of Object.keys(ALLOWED)) expect(stripComments(refuseInstrumented(rel, readFileSync(join(REPO, rel), "utf8"))), rel).toMatch(BARE);
   });
   type ScanCorpus = { format?: number; streams: { config: string; seed: number; outcome: string; events: { type: string; voids?: string }[] }[] };
   /** One corpus read the way the allowance in golden.ts needs it: what it holds, what was actually checked, and what is wrong. */
@@ -240,7 +244,7 @@ describe("review I-1: every module.apply replay loop skips what the kernel owns"
     const listedSeen = new Set<string>();
     for (const f of files) {
       const rel = relative(REPO, f);
-      const text = stripComments(readFileSync(f, "utf8"));
+      const text = stripComments(refuseInstrumented(f, readFileSync(f, "utf8")));
       for (const m of text.matchAll(APPLY)) {
         sites++;
         const line = text.slice(text.lastIndexOf("\n", m.index) + 1, text.indexOf("\n", m.index));
