@@ -172,20 +172,64 @@ jobs:
 
   # -------------------------------------------------------------------------
   # Changesets (D16, spec §8): every PR declares its release bump, and the bump covers what the fold tables say moved. A moved FOLD_EPOCH
-  # entry (an outdated phone must update) needs a major; a moved FOLD_MINOR entry with FOLD_EPOCH unmoved needs at least a minor. The
-  # Version PR (changeset-release/main) consumes the changesets and adds none, so it is exempt. HEAD^1 is the base tip, as in gates.
+  # entry (an outdated phone must update) needs a major; a moved FOLD_MINOR entry with FOLD_EPOCH unmoved needs at least a minor. A release
+  # PR (AGENTS.md, "Releasing": a release/* branch holding `pnpm changeset version`'s output) consumes the changesets and adds none, so it owes
+  # none; the bump the fold rules judge is then its own version bump (base -> head) instead, so the release branch is no way around them.
+  # Every other PR is judged as before. HEAD^1 is the base tip, as in gates.
   # -------------------------------------------------------------------------
   changeset:
     name: Changeset present, and its bump covers the fold tables
-    if: github.event_name == 'pull_request' && github.head_ref != 'changeset-release/main'
+    if: github.event_name == 'pull_request'
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: The PR adds a changeset
+      # A release PR is BOTH a head branch named release/* AND a package.json version that differs from the base's; either alone is an
+      # ordinary PR. The branch name is the PR author's text, so it reaches the script through env and is never spliced into it. The bump is
+      # read off the two versions: a higher major is a major, the same major with a higher minor is a minor, and anything else (a patch, a
+      # prerelease step, a lowered version) counts as a patch, which is never enough for a moved table.
+      - name: A release PR (release/* with a version bump), or not
+        id: release
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           set -euo pipefail
+          ordinary() { echo "$1: an ordinary PR, which owes a changeset"; echo "release=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          case "$HEAD_REF" in
+            release/*) ;;
+            *) ordinary "head branch '$HEAD_REF' is not release/*" ;;
+          esac
+          version() {
+            local v
+            v="$(git show "$1:package.json" | grep -m 1 -oE '^  "version": *"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/' || true)"
+            if [ -z "$v" ]; then echo "::error::package.json at $1 declares no top-level \"version\"" >&2; exit 1; fi
+            echo "$v"
+          }
+          from="$(version HEAD^1)"
+          to="$(version HEAD)"
+          if [ "$from" = "$to" ]; then ordinary "head branch '$HEAD_REF' is release/*, but package.json's version is $to at the base and the head"; fi
+          semver='^([0-9]+)\.([0-9]+)\.([0-9]+)([-+].*)?$'
+          if ! [[ "$from" =~ $semver ]]; then echo "::error::the base's package.json version '$from' is not semver"; exit 1; fi
+          fmaj="${BASH_REMATCH[1]}"; fmin="${BASH_REMATCH[2]}"
+          if ! [[ "$to" =~ $semver ]]; then echo "::error::the head's package.json version '$to' is not semver"; exit 1; fi
+          tmaj="${BASH_REMATCH[1]}"; tmin="${BASH_REMATCH[2]}"
+          if [ "$tmaj" -gt "$fmaj" ]; then bump=major
+          elif [ "$tmaj" -eq "$fmaj" ] && [ "$tmin" -gt "$fmin" ]; then bump=minor
+          else bump=patch; fi
+          echo "a release PR: head branch '$HEAD_REF', package.json $from -> $to (a $bump)"
+          { echo "release=true"; echo "from=$from"; echo "to=$to"; echo "bump=$bump"; } >> "$GITHUB_OUTPUT"
+      - name: The PR adds a changeset
+        env:
+          RELEASE: ${{ steps.release.outputs.release }}
+          FROM: ${{ steps.release.outputs.from }}
+          TO: ${{ steps.release.outputs.to }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE" = "true" ]; then
+            echo "a release PR ($FROM -> $TO): pnpm changeset version consumed the changesets it releases, so it adds none and owes none"
+            exit 0
+          fi
           files="$(git diff --name-only --diff-filter=AM HEAD^1 HEAD -- '.changeset/*.md' | grep -vxF '.changeset/README.md' || true)"
           if [ -z "$files" ]; then
             echo "::error::this PR adds no .changeset/*.md: run 'pnpm changeset' and commit the file it writes (a change that releases nothing says so with 'pnpm changeset --empty')"
@@ -194,9 +238,15 @@ jobs:
           echo "changesets in this PR:"
           echo "$files"
       # The tables are found by their declaration under src/ (never by a path written here), read at the base and at the head as their
-      # `sport: n` entries with comments stripped, and compared; the bumps are the `@onryde/seazn-engine` lines of the PR's changesets.
+      # `sport: n` entries with comments stripped, and compared; the bumps are the `@onryde/seazn-engine` lines of the PR's changesets, or, on
+      # a release PR, its version bump.
       - name: Read the fold tables at the base and the head, and the bumps the PR declares
         id: fold
+        env:
+          RELEASE: ${{ steps.release.outputs.release }}
+          RELEASE_BUMP: ${{ steps.release.outputs.bump }}
+          FROM: ${{ steps.release.outputs.from }}
+          TO: ${{ steps.release.outputs.to }}
         run: |
           set -euo pipefail
           entries() {
@@ -217,32 +267,40 @@ jobs:
           }
           epoch="$(moved FOLD_EPOCH)"
           minor="$(moved FOLD_MINOR)"
-          bumps="$(git diff --name-only --diff-filter=AM HEAD^1 HEAD -- '.changeset/*.md' | grep -vxF '.changeset/README.md' \
-            | while read -r f; do grep -hoE "^[\"']?@onryde/seazn-engine[\"']?: *(major|minor|patch)" "$f" | sed -E 's/.*: *//' || true; done \
-            | sort -u | tr '\n' ' ' || true)"
-          echo "FOLD_EPOCH moved: $epoch; FOLD_MINOR moved: $minor; bumps declared: ${bumps:-(none)}"
-          { echo "epoch=$epoch"; echo "minor=$minor"; echo "bumps=$bumps"; } >> "$GITHUB_OUTPUT"
+          if [ "$RELEASE" = "true" ]; then
+            bumps="$RELEASE_BUMP"
+            by="this release PR's version bump ($FROM -> $TO) is"
+          else
+            bumps="$(git diff --name-only --diff-filter=AM HEAD^1 HEAD -- '.changeset/*.md' | grep -vxF '.changeset/README.md' \
+              | while read -r f; do grep -hoE "^[\"']?@onryde/seazn-engine[\"']?: *(major|minor|patch)" "$f" | sed -E 's/.*: *//' || true; done \
+              | sort -u | tr '\n' ' ' || true)"
+            by="this PR's changesets declare"
+          fi
+          echo "FOLD_EPOCH moved: $epoch; FOLD_MINOR moved: $minor; bumps declared: ${bumps:-(none)} ($by)"
+          { echo "epoch=$epoch"; echo "minor=$minor"; echo "bumps=$bumps"; echo "by=$by"; } >> "$GITHUB_OUTPUT"
       - name: A moved FOLD_EPOCH entry is released as a major
         env:
           EPOCH_MOVED: ${{ steps.fold.outputs.epoch }}
           BUMPS: ${{ steps.fold.outputs.bumps }}
+          BY: ${{ steps.fold.outputs.by }}
         run: |
           if [ "$EPOCH_MOVED" != "true" ]; then echo "no FOLD_EPOCH entry moved: no major owed"; exit 0; fi
           case " $BUMPS " in
-            *" major "*) echo "FOLD_EPOCH moved, and a changeset declares a major: in order" ;;
-            *) echo "::error::FOLD_EPOCH moved (an outdated phone must update), but this PR's changesets declare '${BUMPS:-nothing}' for @onryde/seazn-engine: a FOLD_EPOCH change is a major"; exit 1 ;;
+            *" major "*) echo "FOLD_EPOCH moved, and $BY a major: in order" ;;
+            *) echo "::error::FOLD_EPOCH moved (an outdated phone must update), but $BY '${BUMPS:-nothing}' for @onryde/seazn-engine: a FOLD_EPOCH change is a major"; exit 1 ;;
           esac
       - name: A moved FOLD_MINOR entry is released as at least a minor
         env:
           EPOCH_MOVED: ${{ steps.fold.outputs.epoch }}
           MINOR_MOVED: ${{ steps.fold.outputs.minor }}
           BUMPS: ${{ steps.fold.outputs.bumps }}
+          BY: ${{ steps.fold.outputs.by }}
         run: |
           if [ "$MINOR_MOVED" != "true" ]; then echo "no FOLD_MINOR entry moved: nothing owed here"; exit 0; fi
           if [ "$EPOCH_MOVED" = "true" ]; then echo "FOLD_EPOCH moved too: the major rule above judges this PR"; exit 0; fi
           case " $BUMPS " in
-            *" major "*|*" minor "*) echo "FOLD_MINOR moved, and a changeset declares at least a minor: in order" ;;
-            *) echo "::error::FOLD_MINOR moved, but this PR's changesets declare '${BUMPS:-nothing}' for @onryde/seazn-engine: a FOLD_MINOR-only change is at least a minor, never a patch"; exit 1 ;;
+            *" major "*|*" minor "*) echo "FOLD_MINOR moved, and $BY at least a minor: in order" ;;
+            *) echo "::error::FOLD_MINOR moved, but $BY '${BUMPS:-nothing}' for @onryde/seazn-engine: a FOLD_MINOR-only change is at least a minor, never a patch"; exit 1 ;;
           esac
 
   # -------------------------------------------------------------------------
@@ -253,7 +311,8 @@ jobs:
   # -------------------------------------------------------------------------
   downstream:
     name: Downstream (onryde/seazn.club@main on this PR's snapshot)
-    if: github.event_name == 'pull_request'
+    # a release/<version> PR consumes its changesets, so no snapshot is ever published for it to install
+    if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release/')
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     # packages: read installs @onryde/seazn-engine from GitHub Packages with this job's GITHUB_TOKEN.
