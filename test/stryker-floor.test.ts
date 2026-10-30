@@ -845,6 +845,48 @@ describe("--check-file-against: the empty cases, driven through git (review 7, R
   });
 });
 
+// Engine-split 2b Task E2 (plan false premise 2): this repository starts at ONE import commit whose parent is the README commit, so on the
+// import commit CI's HEAD^1 holds no stryker-floor.json at all. That is "no baseline", never a pass by skipping: the working file is checked
+// against ITSELF (parsed, every floor compared with itself, the count printed) with a notice; and a HEAD^1 that does not resolve (a shallow
+// clone) is refused. The repositories here are this repository's shape: the engine, and so the floor file, at the root.
+describe("--check-file-against on this repository's import commit (engine-split 2b E2, plan false premise 2)", () => {
+  /** The README commit, then the import commit adding the floor file `floors`, the engine at the repository root as here. */
+  function importCommit(floors: string): string {
+    const root = fresh();
+    writeFileSync(join(root, "README.md"), "# seazn.club.engine\n");
+    git(root, "init", "-q");
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "first commit");
+    writeFileSync(join(root, "stryker-floor.json"), floors);
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "chore: import @onryde/seazn-engine");
+    return root;
+  }
+
+  spawnIt(4)("the import commit: HEAD^1 (the README commit) has no stryker-floor.json, so the working file is checked against itself: exit 0, a notice, and the count it checked", () => {
+    // the count is the fixture's own: two families, then none
+    for (const [floors, n] of [[{ draws: 50, core: 40 }, 2], [{}, 0]] as const) {
+      const r = run(importCommit(floorFile(floors)), ["--check-file-against", "HEAD^1"]);
+      expect({ status: r.status, stderr: r.stderr }).toEqual({ status: 0, stderr: "" });
+      expect(r.stdout).toContain("::notice::stryker-floor: HEAD^1 has no stryker-floor.json (the commit that brings the floors in): the working file is checked against itself");
+      expect(r.stdout).toContain(`stryker-floor: checked the working file against itself: ${n} floor(s), 0 lowered or removed`);
+    }
+  });
+
+  spawnIt(3)("a shallow clone of the import (fetch-depth 1) cannot resolve HEAD^1: exit 2, never a pass and never a self-check", () => {
+    const root = importCommit(floorFile({ draws: 50, core: 40 }));
+    const clone = join(fresh(), "shallow");
+    git(root, "clone", "-q", "--depth", "1", `file://${root}`, clone);
+    expect(git(clone, "rev-parse", "--is-shallow-repository").trim()).toBe("true");
+    const r = run(clone, ["--check-file-against", "HEAD^1"]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain(`"HEAD^1" is not a commit in this repository`);
+    expect(r.stdout).not.toContain("no floors");
+    expect(r.stdout).not.toContain("compared");
+    expect(r.stdout).not.toContain("checked the working file");
+  });
+});
+
 describe("the CLI's other modes and its refusals", () => {
   const BRACKET = "src/scheduling/bracket.ts";
   /** The draws leg that selects bracket.ts whole (the survivors tests judge ONE leg), read from the groups, not typed. */

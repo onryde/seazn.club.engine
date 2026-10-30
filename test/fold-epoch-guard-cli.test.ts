@@ -824,6 +824,53 @@ describe("fold-epoch-guard CLI: the introducing-PR pass cannot be reopened by mo
   });
 });
 
+// Engine-split 2b Task E2 (plan false premise 2): this repository starts at ONE import commit whose parent is the README commit, so on the
+// import commit CI's HEAD^1 holds no engine at all: no table, no corpus, no guard, anywhere in its tree. That is not the engine directory
+// renamed (whose baseline still holds the corpora somewhere, refused above): it is "no baseline", and no baseline is never a pass by
+// skipping. The tree is checked against ITSELF, every rule that holds without a second side (an entry with no corpus, a corpus with no entry,
+// the table, the stats line) still applies, the counts are printed, and a notice says why. The shallow clone is refused above.
+describe("fold-epoch-guard CLI: this repository's import commit, whose HEAD^1 holds no engine (engine-split 2b E2, plan false premise 2)", () => {
+  /** The README commit, then the import commit adding the real guard, table, stats module and corpora (`edit` runs on the tree first), the
+   *  engine at the repository root as here. */
+  function importRepo(name: string, edit: (repo: Repo) => void = () => {}): Repo {
+    const top = join(scratch, name);
+    mkdirSync(top, { recursive: true });
+    writeFileSync(join(top, "README.md"), "# seazn.club.engine\n");
+    git(top, "init", "-q", "-b", "main");
+    noAutoPack(top);
+    git(top, "add", "-A");
+    git(top, "commit", "-q", "-m", "first commit");
+    for (const f of FILES) {
+      mkdirSync(dirname(join(top, f)), { recursive: true });
+      cpSync(join(ENGINE, f), join(top, f));
+    }
+    const repo: Repo = { top, eng: top };
+    edit(repo);
+    commit(repo, "chore: import @onryde/seazn-engine");
+    return repo;
+  }
+  const NOTICE = `::notice::fold-epoch: HEAD^1 holds no engine (no golden corpus, no ${EPOCH_FILE} and no ${GUARD} anywhere in its tree): the commit that brings the engine in, so the tree is checked against itself`;
+
+  spawnIt(12)("the import commit: HEAD^1 (the README commit) holds no engine, so the tree is checked against itself: exit 0, a notice, and every sport and stream of the real corpora counted", () => {
+    const r = guard(importRepo("import"));
+    expect({ status: r.status, stderr: r.stderr }).toEqual({ status: 0, stderr: "" });
+    expect(r.stdout).toContain(NOTICE);
+    const v = realStatsVersion();
+    expect(r.stdout).toContain(`fold-epoch: ${realSports} sports checked, ${realStreams} streams compared against itself (HEAD^1 holds no engine): 0 violation(s), STATS_FOLD_VERSION ${v} -> ${v}`);
+    expect(violated(r.stdout)).toEqual([]);
+    for (const k of KEYS) expect(lineOf(r.stdout, k), k).toMatch(new RegExp(`^fold-epoch: ${k}: ${move(k)}, matched [1-9]\\d* changed 0 deltas-only 0 removed 0 added 0 recorded 0$`));
+  });
+
+  spawnIt(12)("the self-check has teeth: an imported table naming a sport whose corpus is missing is a violation with nothing at HEAD^1 to compare it to (exit 1)", () => {
+    const r = guard(importRepo("import-gap", (repo) => rmSync(corpusPath(repo, LAST))));
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain(NOTICE);
+    expect(violated(r.stdout)).toEqual([LAST]);
+    expect(lineOf(r.stdout, LAST)).toContain(`a FOLD_EPOCH entry but no golden corpus for "${LAST}"`);
+    expect(r.stdout).toMatch(new RegExp(`fold-epoch: ${realSports} sports checked, \\d+ streams compared against itself \\(HEAD\\^1 holds no engine\\): 1 violation\\(s\\)`));
+  });
+});
+
 describe("fold-epoch-guard CLI: a run that compared nothing, or read something it cannot trust, is refused (exit 2)", () => {
   spawnIt(4)("a baseline with a table but no corpus proves nothing about any stream: refused, not green", () => {
     atBase(mono);

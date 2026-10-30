@@ -1,0 +1,7 @@
+{
+  // Engine-split 2b Task E2: the engine's whole typecheck (tsconfig.json's own `include`: src, test, scripts, the vitest configs), under the
+  // name the Stryker floor's CI wiring test pins as the gates step before the floor (test/ci-wiring.test.ts TSC_STEP, moved verbatim from
+  // onryde/seazn.club, where this config type-checked the matrix's and scripts' tests that tsconfig.scripts.json excluded). Here
+  // tsconfig.json already includes every test, so this config adds nothing and drops nothing: it exists so the pinned step runs the full check.
+  "extends": "./tsconfig.json"
+}

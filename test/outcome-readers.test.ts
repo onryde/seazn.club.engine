@@ -4,14 +4,132 @@
 // and the engine together and stay in onryde/seazn.club. Titles and assertions are verbatim; only paths are re-rooted (the engine
 // is this repository's root: `packages/engine/src/sports` is `src/sports`, and `@seazn/engine/core` is `../src/core/index.ts`). The
 // ledger is onryde/seazn.club docs/superpowers/specs/engine-split/ledgers/2b.json.
+//
+// Engine-split 2b Task E2 (owner ruling 2026-10-30, option A: split the mixed tests, same assertions): the other four tests of that file
+// scanned `apps/web/src`, `packages/engine/src` and `tools/matrix/lib` together. Each is SPLIT: its engine half is below, titled as the source
+// with " (engine half)", running the source's assertion logic verbatim over this repository's `src` alone; the app half keeps the original
+// id in onryde/seazn.club and scans the app's two roots. What is split is the DATA, never the logic: `ALLOWED`, the reader list and
+// `NOT_A_LEDGER_REPLAY` hold exactly the source's `packages/engine/src/...` rows, re-rooted, reasons unedited, and no other row; every
+// threshold and anti-vacuity count is the source's.
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SETTLE_METHODS, settledMethod } from "../src/core/index.ts";
 
 const REPO = resolve(__dirname, "..");
+// (engine half) The source's ROOTS were ["apps/web/src", "packages/engine/src", "tools/matrix/lib"]; the engine's own is this repository's src.
+const ROOTS = ["src"];
+// Any argument name (review Minor 2): `module.outcome(finalState)` drops a settle
+// exactly like `module.outcome(state)` does. Comments are stripped before
+// counting (they name the shape), and every allowed file declares HOW MANY bare
+// calls it holds, so a new one in an allowed file is caught too.
+const BARE = /\b[A-Za-z_$][\w$]*\.outcome\(/g;
+// (engine half) The source's `packages/engine/src/...` rows, re-rooted; its three apps/web rows stay with the app half.
+const ALLOWED: Readonly<Record<string, { calls: number; reason: string }>> = {
+  "src/core/events.ts": { calls: 3, reason: "the kernel itself: the decided flag, outcomeOf, and kernelOwnsEvent's settled-finalize test" },
+  "src/core/sanction-ending.ts": { calls: 1, reason: "W2e X-SE-1 `matchEndFacts`: decided exactly as the fold decides, the module's outcome OR a settlement (`folded.settlement !== null`), for a caller outside the fold (the route, the pad) that already holds the folded result" },
+  "src/testkit/sanction-score.ts": { calls: 3, reason: "testkit: the X-SE-2 sweep (a sanction alone moves no score) walks the module's own generator with every core type but the start redrawn, so no settle is in it, and compares the MODULE's outcome before and after one sanction" },
+  "src/testkit/stoppages.ts": { calls: 1, reason: "testkit: module-level conformance, no settle in its streams" },
+  "src/testkit/conformance.ts": { calls: 5, reason: "testkit: module-level conformance, no settle in its streams" },
+  "src/testkit/simulation.ts": { calls: 3, reason: "testkit: simulation folds without settle" },
+  "src/testkit/scenarios.ts": { calls: 6, reason: "testkit: scenario builder; `played.state` comes from decidedStream, which drives module.apply with the module's own generated events — never a kernel-owned type" },
+  "src/testkit/golden-floor.ts": { calls: 1, reason: "golden floor (GF-1): the module-level outcome of a generator walk, to learn which outcome kinds a module can produce; no walk carries core.settle" },
+  "src/testkit/golden-floor-streams.ts": { calls: 1, reason: "golden floor (GF-1): the one bare read (`moduleOutcome`) of the module's outcome, to find a walk that is decided or a prefix that is still live; the settle story (GF-2 T3) reads the kernel's outcome through `effectiveToken`/`outcomeOf`, and the corpus scan below holds every settle stream to a settled win" },
+  "src/testkit/golden.ts": { calls: 1, reason: "the format-1 recorder (`moduleRecorder`) records the MODULE's outcome; format 2 and later (every committed corpus since GF-2; format 3 adds the player stats) record the effective outcome through outcomeOf in golden-overlay.ts. A stream carrying core.settle is guarded below, not assumed" },
+};
+const stripComments = (text: string): string => text.replace(/^\s*(\/\/|\*|\/\*).*$/gm, "");
+function walk(dir: string, out: string[]): string[] {
+  for (const e of readdirSync(dir)) {
+    const p = join(dir, e);
+    if (statSync(p).isDirectory()) { if (e !== "node_modules" && e !== "__tests__") walk(p, out); }
+    else if (/\.(ts|tsx)$/.test(e) && !/\.test\.tsx?$/.test(e)) out.push(p);
+  }
+  return out;
+}
 
 describe("finding 1: every fold-outcome reader goes through outcomeOf", () => {
+  it("no bare <module>.outcome(state) outside the allowed list, and outcomeOf's readers are exactly the eight moved fold readers (engine half)", () => {
+    const files = ROOTS.flatMap((r) => walk(join(REPO, r), []));
+    expect(files.length).toBeGreaterThan(100);
+    const bare: string[] = [];
+    const readers: string[] = [];
+    const allowedSeen: Record<string, number> = {};
+    let scanned = 0;
+    for (const f of files) {
+      const rel = relative(REPO, f);
+      const text = stripComments(readFileSync(f, "utf8"));
+      if (/\boutcomeOf\(/.test(text) && rel !== "src/core/events.ts") readers.push(rel);
+      const calls = [...text.matchAll(BARE)].map((m) => text.slice(m.index, text.indexOf(")", m.index) + 1));
+      scanned += calls.length;
+      if (ALLOWED[rel] !== undefined) allowedSeen[rel] = calls.length;
+      else for (const c of calls) bare.push(`${rel}: ${c}`);
+    }
+    expect(bare, `${scanned} bare .outcome( calls scanned`).toEqual([]);
+    // Each allowed file holds exactly the calls it declares — a new one there is a new reader, and must be argued.
+    expect(allowedSeen).toEqual(Object.fromEntries(Object.entries(ALLOWED).map(([rel, { calls }]) => [rel, calls])));
+    expect(scanned).toBeGreaterThan(0);
+    // Exactly the six fold readers Step 8 moves (preflight C8), plus the two module player-stat folds
+    // (ruling D-C3). A later task that adds a reader adds it here by name. W2b ruling 112: the testkit's
+    // `onePlayEvent` refuses a drawn event that decides the match, through outcomeOf (settle-aware like every reader).
+    // R116-2: `awardedMatchState` refuses a walkover whose fold decides other than the stored award. Ruling 120: the
+    // testkit's `afterStartEvents` keeps only a sport event that leaves the match undecided after a Start, through
+    // outcomeOf (shared by the ruling-114 and ruling-120 sweeps).
+    // Chess T10 (rebase onto W2b, I-1): the match room's game-over card folds Start + the deciding event (room-snapshot.ts).
+    // (engine half) The source list's `packages/engine/src/...` entries, re-rooted; its apps/web and tools/matrix/lib entries stay with the app half.
+    expect(readers.sort()).toEqual([
+      "src/sports/carrom/carrom.ts",
+      "src/sports/cricket/scorecard.ts",
+      "src/sports/generic/generic.ts",
+      "src/testkit/after-start-events.ts",
+      // GF-1 review fix 2: the floor's undo stream asks the EFFECTIVE outcome whether a mis-tapped forfeit decided the match
+      // and the void reopened it (`effectiveToken`) — the module's own outcome never sees a kernel forfeit.
+      "src/testkit/golden-floor-streams.ts",
+      // GF-1: the golden floor's `settleProbe` folds a settled ledger and reads its EFFECTIVE outcome through outcomeOf,
+      // to prove the settle exemption is still needed (the harness records the module's bare outcome instead).
+      "src/testkit/golden-floor.ts",
+      // GF-2 T1: the golden recorder's format 2 records the EFFECTIVE outcome of every prefix fold (`effectiveFacts`,
+      // `denseOverlay`), so a corpus pins what the server stores and the phone shows, not the module's bare answer.
+      "src/testkit/golden-overlay.ts",
+      "src/testkit/play-event.ts",
+    ]);
+  });
+  it("ruling D-C3: no fold result's outcome is read as a PROPERTY (`x.outcome`, `x.state.outcome`) — that drops a settle too (engine half)", () => {
+    // The second shape of the same defect: `const s = foldMatch(...); s.outcome` reads the module's own outcome
+    // field and never sees a settlement (carrom's and generic's player-stat folds did exactly this). A name bound
+    // to a fold call is tracked per file; a direct `foldMatch(...).outcome` / `.state.outcome` is caught too.
+    const FOLD_BIND = /\b(?:const|let)\s+(\w+)(?:\s*:[^=;\n]+)?\s*=\s*(?:await\s+)?foldMatch(?:WithStoppage)?\(/g;
+    const FOLD_CALL = /\bfoldMatch(?:WithStoppage)?\(/g;
+    const DIRECT = /\bfoldMatch(?:WithStoppage)?\([^;]*?\)(?:\.state)?\.outcome\b(?!\s*\()/g;
+    const files = ROOTS.flatMap((r) => walk(join(REPO, r), []));
+    let foldSites = 0;
+    let boundNames = 0;
+    const property: string[] = [];
+    for (const f of files) {
+      const rel = relative(REPO, f);
+      if (rel === "src/core/events.ts") continue; // the kernel defines the fold
+      const text = readFileSync(f, "utf8").replace(/^\s*(\/\/|\*|\/\*).*$/gm, ""); // comments name the shape
+      foldSites += [...text.matchAll(FOLD_CALL)].length;
+      for (const m of text.matchAll(DIRECT)) property.push(`${rel}: ${m[0].slice(-40)}`);
+      for (const bind of text.matchAll(FOLD_BIND)) {
+        const name = bind[1]!;
+        boundNames++;
+        // The binding's reach: up to the next declaration of the same name (another function's `folded`).
+        const after = bind.index + bind[0].length;
+        const next = new RegExp(`\\b(?:const|let)\\s+${name}\\b`, "g");
+        next.lastIndex = after;
+        const end = next.exec(text)?.index ?? text.length;
+        const read = new RegExp(`\\b${name}(?:\\.state)?\\.outcome\\b(?!\\s*\\()`, "g");
+        for (const m of text.slice(after, end).matchAll(read)) property.push(`${rel}: ${m[0]}`);
+      }
+    }
+    // Anti-vacuity: the scan saw the fold call sites it exists for (the eight readers above fold, and more).
+    expect(foldSites).toBeGreaterThanOrEqual(8);
+    expect(boundNames).toBeGreaterThanOrEqual(5);
+    expect(property, `${foldSites} fold call sites, ${boundNames} fold bindings scanned`).toEqual([]);
+  });
+  it("every allowed file still exists and still holds a bare call (a stale entry is a failure) (engine half)", () => {
+    for (const rel of Object.keys(ALLOWED)) expect(stripComments(readFileSync(join(REPO, rel), "utf8")), rel).toMatch(BARE);
+  });
   type ScanCorpus = { format?: number; streams: { config: string; seed: number; outcome: string; events: { type: string; voids?: string }[] }[] };
   /** One corpus read the way the allowance in golden.ts needs it: what it holds, what was actually checked, and what is wrong. */
   const scanSettles = (file: string, corpus: ScanCorpus, settledMethods: readonly string[]) => {
@@ -91,5 +209,57 @@ describe("finding 1: every fold-outcome reader goes through outcomeOf", () => {
     expect(scanSettles("f", { format: 2, streams: [stream("null", [settle])] }, methods).wrong.join("|"), "no outcome at all").toContain("not a settled win");
     expect(scanSettles("f", { format: 2, streams: [stream(JSON.stringify({ kind: "win", method: "abandoned" }), [settle])] }, methods).wrong.join("|"), "a win that is not a settled one").toContain("not a settled win");
     expect(methods.length, "the engine declares its settled methods").toBeGreaterThan(0);
+  });
+});
+
+// W2a review I-1: two hand-rolled replay loops (the match-centre timeline, the
+// overlay's recent window) handed core.settle to module.apply — every sport
+// throws INVALID_EVENT on it, so every settled fixture lost its derived lines and
+// logged a warning on every render. The engine's own fold dispatches on
+// `kernelOwnsEvent`; every OTHER loop that calls `.apply(` must skip on the
+// same predicate, or be listed here with why it is not a replay of a stored ledger.
+// ANY receiver (review N2): a loop over `sport.apply(` or `m?.apply(` drops a settle
+// exactly like one over `module.apply(` does, so the scan names no receiver at all.
+describe("review I-1: every module.apply replay loop skips what the kernel owns", () => {
+  const APPLY = /\.apply\(/g;
+  // (engine half) The source's `packages/engine/src/...` rows, re-rooted; its two apps/web rows stay with the app half.
+  const NOT_A_LEDGER_REPLAY: readonly { file: string; call?: string; reason: string }[] = [
+    { file: "src/history/history.ts", call: "REVERSIBLE[e.type]?.apply(", reason: "the DIVISION history ledger (schedule_applied, fixtures_generated, …): `REVERSIBLE[type].apply` folds schedule ops, never a match event — no sport module, no core.* type" },
+    { file: "src/testkit/helpers.ts", reason: "testkit: buildStream drives apply with a module's own events" },
+    { file: "src/testkit/sanction-score.ts", reason: "testkit: the X-SE-2 sweep drives apply with the module's own generated play (every core type but the start redrawn) and one synthetic sanction" },
+    { file: "src/testkit/conformance.ts", reason: "testkit: conformance drives apply with a module's own generated events" },
+    { file: "src/testkit/conformance-pad.ts", reason: "testkit: the registry/dispatch drift probe (one call, one message naming it)" },
+    { file: "src/testkit/simulation.ts", reason: "testkit: simulation drives apply with a module's own generated events" },
+    { file: "src/testkit/scenarios.ts", reason: "testkit: scenario builder drives apply with a module's own generated events" },
+  ];
+  it("each module.apply call either sits in a loop that consults kernelOwnsEvent before it, or is listed with its reason (engine half)", () => {
+    const files = ROOTS.flatMap((r) => walk(join(REPO, r), []));
+    let sites = 0;
+    let guarded = 0;
+    const unguarded: string[] = [];
+    const listedSeen = new Set<string>();
+    for (const f of files) {
+      const rel = relative(REPO, f);
+      const text = stripComments(readFileSync(f, "utf8"));
+      for (const m of text.matchAll(APPLY)) {
+        sites++;
+        const line = text.slice(text.lastIndexOf("\n", m.index) + 1, text.indexOf("\n", m.index));
+        const listed = NOT_A_LEDGER_REPLAY.find((x) => x.file === rel && (x.call === undefined || line.includes(x.call)));
+        if (listed !== undefined) { listedSeen.add(`${listed.file}|${listed.call ?? ""}`); continue; }
+        // The loop it sits in: from the nearest `for (` before it. The skip must come between the two.
+        const loop = text.lastIndexOf("for (", m.index);
+        if (loop !== -1 && text.slice(loop, m.index).includes("kernelOwnsEvent(")) guarded++;
+        else unguarded.push(`${rel}: ${line.trim()}`);
+      }
+    }
+    expect(unguarded, `${sites} .apply( call sites scanned`).toEqual([]);
+    expect(sites).toBeGreaterThanOrEqual(guarded + NOT_A_LEDGER_REPLAY.length);
+    // The kernel's own fold, the timeline and the overlay's recent replay — and every listed entry is still real.
+    // (engine half) The ONE expected value the split moves, along the source's own enumeration above: of its three guarded loops
+    // (3 at the tag over the three roots: src/core/events.ts, apps/web/src/server/public-site/timeline.ts, apps/web/src/server/overlay/recent.ts),
+    // the kernel's own fold is this repository's and the other two are the app half's. So the engine's share of the source's 3 is 1 (the
+    // app half's is 2), and zero guarded loops here is still a failure.
+    expect(guarded).toBeGreaterThanOrEqual(1);
+    expect([...listedSeen].sort()).toEqual(NOT_A_LEDGER_REPLAY.map((x) => `${x.file}|${x.call ?? ""}`).sort());
   });
 });

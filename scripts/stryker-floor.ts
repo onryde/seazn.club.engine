@@ -30,7 +30,9 @@
 //   --check-file-against <ref>
 //       the floor only rises (the FLOORS are compared: the recorded measured score and margin are information only): exit 1 when any family's floor in the working file is LOWER than at <ref>, or a family was
 //       removed. stryker-floor.json ABSENT at <ref> means "no floors yet" (PR-A's own first run, where HEAD^1 is main, which
-//       lacks the file): exit 0, printing `no floors at <ref>: nothing to compare`. The file absent in the WORKING TREE is
+//       lacks the file; and this repository's import commit, whose HEAD^1 is the README commit): exit 0, printing `no floors at
+//       <ref>: nothing to compare`, a `::notice::`, and the working file checked against itself with its floor count (engine-split
+//       2b E2: no baseline is never a silent skip). The file absent in the WORKING TREE is
 //       always exit 2: PR-A commits it, so a missing file is a deletion, and after PR-B a deleted floor file must never read
 //       as "no floors" (fail closed). The ref is read with `git rev-parse --verify <ref>^{commit}`, `git ls-tree` and
 //       `git show <commit>:./stryker-floor.json`, all relative to the working directory; the compared count is printed.
@@ -553,7 +555,12 @@ function checkFileAgainst(ref: string): number {
   if (tree.status !== 0) throw new Refusal(`git ls-tree ${ref} failed: ${tree.stderr.trim()}`);
   if (tree.stdout.trim() === "") {
     out(`stryker-floor: no floors at ${ref}: nothing to compare`);
-    return 0;
+    // Engine-split 2b E2 (plan false premise 2): no baseline is not a skip. The working file is held to ITSELF, so what this pass read is
+    // on the record (the import commit, whose HEAD^1 is the README commit, and PR-A's own first run both land here).
+    out(`::notice::stryker-floor: ${ref} has no ${FLOOR_FILE} (the commit that brings the floors in): the working file is checked against itself`);
+    const self = floorDiff(now, now);
+    out(`stryker-floor: checked the working file against itself: ${Object.keys(now).length} floor(s), ${self.length} lowered or removed`);
+    return self.length === 0 ? 0 : 1;
   }
   const show = git(["show", `${commit}:./${FLOOR_FILE}`]);
   if (show.status !== 0) throw new Refusal(`git show ${ref}:./${FLOOR_FILE} failed: ${show.stderr.trim()}`);

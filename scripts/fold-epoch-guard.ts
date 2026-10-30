@@ -78,6 +78,9 @@
 // Prints one line per sport (epoch and minor before -> after, matched/changed/deltas-only/removed/added), one line for STATS_FOLD_VERSION
 // (before -> after and how many streams' stats moved) and a summary,
 // `fold-epoch: N sports checked, M streams compared against <ref>: V violation(s), STATS_FOLD_VERSION a -> b`.
+// A baseline that holds no engine ANYWHERE in its tree (no corpus, no table, no guard: the engine repository's import commit, whose parent
+// is the README commit; engine-split 2b E2) is no baseline, never a skip: a `::notice::`, then the tree compared with ITSELF, the summary
+// reading `compared against itself (<ref> holds no engine)`, every rule that needs no second side still applied (exit 0 or 1 as above).
 // Exit codes, each with one meaning (the one convention, D8):
 //   0  every sport is in order; or the baseline has the corpora but neither src/sport/fold-epoch.ts nor this guard (the PR that introduces
 //      them: nothing to compare);
@@ -834,6 +837,36 @@ function parse(argv: string[]): string {
 
 const countStreams = (side: Side): number => Object.values(side.corpora).reduce((n, c) => n + c.streams.length, 0);
 
+/** Whether `commit` holds no engine ANYWHERE in its tree: no golden corpus, no file named as the table and none named as this guard, at any
+ *  path. Only then is a baseline without corpora "the commit before the engine came in" (the engine repository's README parent); a tree that
+ *  holds any of them elsewhere is an engine directory that moved, and stays refused. Anything git fails on is a refusal. */
+function holdsNoEngine(commit: string, ref: string): boolean {
+  const ls = git(["ls-tree", "-r", "-z", "--name-only", "--full-tree", commit]);
+  if (ls.status !== 0) throw new GuardRefusal(`git ls-tree ${ref} failed: ${ls.stderr.trim()}`);
+  const base = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
+  const engineNames = new Set([base(TABLE), base(GUARD_FILE)]);
+  return !ls.stdout.split("\0").some((n) => n !== "" && (n.endsWith(CORPUS_SUFFIX) || engineNames.has(base(n))));
+}
+
+/** The comparison report and its exit code: one line per sport, the STATS_FOLD_VERSION line, the summary (`against` names the side the tree
+ *  was compared with), the remedy when anything is owed, and the refusal of a pass over no stream. */
+function report(before: Side, after: Side, commit: string, ref: string, against: string): number {
+  const prefix = git(["rev-parse", "--show-prefix"]).stdout.trim(); // "packages/engine/" in the monorepo, "" with the engine at a repository root
+  const { rows, compared, streams, stats, verdicts } = guardVerdicts(before, after, () => foldSourceTouched(changedPaths(commit, ref), prefix));
+  for (const r of rows) {
+    const epoch = `epoch ${r.before ?? "(none)"} -> ${r.after ?? "(none)"}, minor ${r.beforeMinor ?? "(none)"} -> ${r.afterMinor ?? "(none)"}`;
+    out(`fold-epoch: ${r.sport}: ${epoch}, matched ${r.matched} changed ${r.changed} deltas-only ${r.deltasOnly} removed ${r.removed} added ${r.added} recorded ${r.recorded}${r.statsOnly > 0 ? ` stats-only ${r.statsOnly}` : ""}${r.reason === null ? "" : ` - VIOLATION: ${r.reason}`}`);
+  }
+  out(`fold-epoch: STATS_FOLD_VERSION: ${stats.before ?? "(none)"} -> ${stats.after}, player stats moved in ${stats.moved} stream(s)${stats.sports.length === 0 ? "" : ` (${stats.sports.join(", ")})`}${stats.gained === 0 ? "" : `, newly recorded in ${stats.gained} stream(s) (${stats.gainedSports.join(", ")}) under touched fold source`}${stats.reason === null ? "" : ` - VIOLATION: ${stats.reason}`}`);
+  out(`fold-epoch: ${compared.length} sports checked, ${streams} streams compared against ${against}: ${verdicts} violation(s), STATS_FOLD_VERSION ${stats.before ?? "(none)"} -> ${stats.after}`);
+  if (verdicts > 0) {
+    out(`fold-epoch: to clear the violation(s) above, raise the sport's entry in ${prefix}${TABLE} in this same change: FOLD_EPOCH where a line says major owed (a phone computes what moved), FOLD_MINOR where it says minor owed (only the server does)${stats.reason === null ? "" : `, and STATS_FOLD_VERSION in ${prefix}${STATS_FILE} where its line says it must rise (it settles nothing else, and nothing else settles it)`}; CI compares the whole PR with the branch it merges into; to check it before pushing: pnpm --filter @onryde/seazn-engine fold-epoch:check --against origin/main`);
+    return 1;
+  }
+  if (streams === 0) throw new GuardRefusal(`compared no stream against ${against}: the baseline holds no golden corpus to hold the tree to, and a pass over nothing proves nothing`);
+  return 0;
+}
+
 /** Runs one CLI invocation and returns its exit code (the entry point at the bottom sets `process.exitCode` from it). */
 export async function main(argv: string[]): Promise<number> {
   try {
@@ -852,26 +885,20 @@ export async function main(argv: string[]): Promise<number> {
         throw new GuardRefusal(`no ${TABLE} at ${ref}, but the baseline already has ${GUARD_FILE}: the table was moved or renamed, and a fold change cannot be judged against a baseline that has no table at the path this tree reads`);
       }
       if (baseline.corpora.length === 0) {
-        throw new GuardRefusal(`no ${TABLE} at ${ref}, and the baseline holds no golden corpus under ${SPORTS_DIR}: the engine directory was moved or renamed, and there is nothing to hold this tree to`);
+        // Engine-split 2b E2 (plan false premise 2): the engine's own repository starts at ONE import commit whose parent is the README
+        // commit, so there HEAD^1 holds no engine at all. That is not a renamed directory (whose baseline still holds the engine somewhere):
+        // it is "no baseline", and no baseline is never a pass by skipping. The tree is held to ITSELF: every rule that needs no second side
+        // (an entry with no corpus, a corpus with no entry, the table, the stats line) still applies, and the counts are printed.
+        if (!holdsNoEngine(commit, ref)) {
+          throw new GuardRefusal(`no ${TABLE} at ${ref}, and the baseline holds no golden corpus under ${SPORTS_DIR}: the engine directory was moved or renamed, and there is nothing to hold this tree to`);
+        }
+        out(`::notice::fold-epoch: ${ref} holds no engine (no golden corpus, no ${TABLE} and no ${GUARD_FILE} anywhere in its tree): the commit that brings the engine in, so the tree is checked against itself`);
+        return report(after, after, commit, ref, `itself (${ref} holds no engine)`);
       }
       out(`fold-epoch: no ${TABLE} at ${ref}: nothing to compare yet (the tree holds ${Object.keys(after.epochs).length} sports, ${countStreams(after)} streams)`);
       return 0;
     }
-
-    const prefix = git(["rev-parse", "--show-prefix"]).stdout.trim(); // "packages/engine/" in the monorepo, "" with the engine at a repository root
-    const { rows, compared, streams, stats, verdicts } = guardVerdicts(before, after, () => foldSourceTouched(changedPaths(commit, ref), prefix));
-    for (const r of rows) {
-      const epoch = `epoch ${r.before ?? "(none)"} -> ${r.after ?? "(none)"}, minor ${r.beforeMinor ?? "(none)"} -> ${r.afterMinor ?? "(none)"}`;
-      out(`fold-epoch: ${r.sport}: ${epoch}, matched ${r.matched} changed ${r.changed} deltas-only ${r.deltasOnly} removed ${r.removed} added ${r.added} recorded ${r.recorded}${r.statsOnly > 0 ? ` stats-only ${r.statsOnly}` : ""}${r.reason === null ? "" : ` - VIOLATION: ${r.reason}`}`);
-    }
-    out(`fold-epoch: STATS_FOLD_VERSION: ${stats.before ?? "(none)"} -> ${stats.after}, player stats moved in ${stats.moved} stream(s)${stats.sports.length === 0 ? "" : ` (${stats.sports.join(", ")})`}${stats.gained === 0 ? "" : `, newly recorded in ${stats.gained} stream(s) (${stats.gainedSports.join(", ")}) under touched fold source`}${stats.reason === null ? "" : ` - VIOLATION: ${stats.reason}`}`);
-    out(`fold-epoch: ${compared.length} sports checked, ${streams} streams compared against ${ref}: ${verdicts} violation(s), STATS_FOLD_VERSION ${stats.before ?? "(none)"} -> ${stats.after}`);
-    if (verdicts > 0) {
-      out(`fold-epoch: to clear the violation(s) above, raise the sport's entry in ${prefix}${TABLE} in this same change: FOLD_EPOCH where a line says major owed (a phone computes what moved), FOLD_MINOR where it says minor owed (only the server does)${stats.reason === null ? "" : `, and STATS_FOLD_VERSION in ${prefix}${STATS_FILE} where its line says it must rise (it settles nothing else, and nothing else settles it)`}; CI compares the whole PR with the branch it merges into; to check it before pushing: pnpm --filter @onryde/seazn-engine fold-epoch:check --against origin/main`);
-      return 1;
-    }
-    if (streams === 0) throw new GuardRefusal(`compared no stream against ${ref}: the baseline holds no golden corpus to hold the tree to, and a pass over nothing proves nothing`);
-    return 0;
+    return report(before, after, commit, ref, ref);
   } catch (e) {
     if (!(e instanceof GuardRefusal)) throw e;
     err(`fold-epoch: ${e.message}`);

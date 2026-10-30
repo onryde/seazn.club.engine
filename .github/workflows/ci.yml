@@ -1,0 +1,378 @@
+name: CI
+
+# The engine repository's CI (engine-split 2b Task E2): the engine's jobs of onryde/seazn.club's ci.yml, ported with
+# `--workspace packages/engine` / `--filter ./packages/engine` removed (the engine is this repository's root), plus the two jobs only a
+# published package needs: `changeset` (every PR declares its bump, and the bump covers the fold) and `downstream` (onryde/seazn.club@main
+# on this PR's snapshot). On a pull request the checkout is the merge commit, whose first parent (HEAD^1) is the base tip; on a push to
+# main HEAD^1 is the previous commit. The import commit's HEAD^1 is the README commit, which holds no engine: each HEAD^1 gate below checks
+# the tree against itself there, with a notice, and never skips (test/stryker-floor.test.ts, test/single-sport.test.ts and
+# test/fold-epoch-guard-cli.test.ts hold that case). test/ci-wiring.test.ts pins the gates job's floor and fold guard steps and the
+# engine-pack job line by line: read it before reshaping either.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A PR's superseded runs are cancelled; every push to main runs to the end (one group per commit).
+concurrency:
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Least privilege for GITHUB_TOKEN: every job only reads the repository; a job needing more declares its own block.
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Boundaries, the HEAD^1 ratchets, typecheck, drift, lint. No coverage.
+  # -------------------------------------------------------------------------
+  gates:
+    name: Typecheck + lint + drift gates
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v5
+        # Full history: the single-sport ratchet, the Stryker floor and the fold guard below all read HEAD^1; a shallow checkout has
+        # none, and each of them refuses it (exit 2) rather than passing.
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The engine's import boundary and the phone (React Native) safety rule: scripts/engine-boundary.ts, run as seazn.club's
+      # `npm run engine:boundary` was.
+      - run: pnpm boundary
+      # R26: no unreasoned single-sport pin count may rise — against the PR's own baseline, and that baseline against the base branch's
+      # (--against), so a PR cannot raise the ceiling it is checked against. HEAD^1 as above. No `if:`/continue-on-error.
+      - run: pnpm single-sport --check --against HEAD^1
+      # The engine's whole typecheck: tsconfig.tools-tests.json extends tsconfig.json (src, test, scripts), under the name
+      # test/ci-wiring.test.ts pins as the step before the floor.
+      - run: node node_modules/typescript-native/bin/tsc -p tsconfig.tools-tests.json
+      # D14 (W1d): a Stryker floor never falls. HEAD^1 as above. Absent at HEAD^1 (the import commit) means "no floors yet": the CLI
+      # checks the working file against itself, prints its count and a notice, and exits 0.
+      - run: pnpm --filter . --fail-if-no-match mutation:floor --check-file-against HEAD^1
+      # Engine-split D15, D26 (batch 1e): a golden fold that moved must bump that sport's FOLD_EPOCH in the SAME diff, or an outdated phone
+      # folds differently from the server and nobody is told. HEAD^1 as for the floor gate above; a shallow checkout or a root commit has no
+      # HEAD^1 and the CLI refuses (exit 2), it does not pass. A base that holds no engine at all (the import commit's README parent) is the
+      # tree checked against itself, with a notice. A name filter would otherwise match nothing and exit 0 in silence, so
+      # --fail-if-no-match. test/ci-wiring.test.ts pins that this step always runs and always gates.
+      - run: pnpm --filter @onryde/seazn-engine --fail-if-no-match fold-epoch:check --against HEAD^1
+      # Engine schema-snapshot drift gate (#429). The frozen golden corpora compare recorded bytes, so they red only on a state path some
+      # stream WRITES; a config knob no stream sets or an enum member no seed picks can be narrowed with every corpus green. The committed
+      # src/sports/**/<key>.schema.json files are taken from the DECLARATION, so they cover the unexercised half, and this step is what makes
+      # them load-bearing. `git status --porcelain`, not `git diff`: a NEW sport module's snapshot is an UNTRACKED file.
+      - name: Engine schema-snapshot drift gate (#429)
+        run: |
+          pnpm schema:snapshot
+          drift="$(git status --porcelain -- ':(glob)src/sports/**/*.schema.json')"
+          if [ -n "$drift" ]; then
+            echo "$drift"
+            echo "Engine schema snapshots are stale — run 'pnpm schema:snapshot' and commit."
+            git diff -- ':(glob)src/sports/**/*.schema.json'
+            exit 1
+          fi
+      # eslint gate, warnings included: the `lint` script is `eslint --max-warnings 0` (eslint's exit code ignores warnings otherwise).
+      - run: pnpm lint
+
+  # -------------------------------------------------------------------------
+  # The engine suite with its coverage gate, the golden ledgers it folds, and the bounded sim matrix. Named `engine` as in seazn.club
+  # (test/ci-wiring.test.ts reads the job list and expects it). Unconditional: in this repository every change is an engine change.
+  # -------------------------------------------------------------------------
+  engine:
+    name: Engine coverage + golden ledgers + sim matrix
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v5
+        # Full history: the suite's git-driven tests build their own scratch repositories, but a full checkout costs nothing here and
+        # leaves no test reading a HEAD^1 that a shallow clone lacks.
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The engine suite: every sport's golden corpus folded and compared byte for byte, the PROMPT-14 simulation harness (SIM_RUNS
+      # defaults to 200 divisions per sport x format when CI=true), and the coverage gate (vitest.config.ts thresholds).
+      - run: pnpm test:coverage
+      # The golden ledgers are compared, never rewritten, in CI (no UPDATE_GOLDEN / REBASELINE_GOLDEN here; src/testkit/GOLDEN-POLICY.md):
+      # a run that left any *.golden.json other than as committed is a red, whatever the suite said.
+      - name: Golden ledgers left as committed
+        run: |
+          drift="$(git status --porcelain -- ':(glob)**/*.golden.json')"
+          if [ -n "$drift" ]; then
+            echo "$drift"
+            echo "::error::the run rewrote golden ledgers: a golden is re-recorded by hand under src/testkit/GOLDEN-POLICY.md, never by CI."
+            exit 1
+          fi
+          echo "golden ledgers: $(git ls-files -- ':(glob)**/*.golden.json' | wc -l | tr -d ' ') committed, none changed"
+      # Sim matrix (v3/09 §3): bounded profile — every module x format x SIM_SEEDS seeds + the permanent scenario suites; emits
+      # sim-report.json. A failure line prints its reproducing seed token.
+      - name: Sim matrix (bounded CI profile)
+        run: SIM_SEEDS=5 pnpm sim:matrix
+      - name: Sim report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-report
+          path: sim-report.json
+          if-no-files-found: ignore
+      - name: Simulation failure artifacts (repro with `pnpm sim:replay -- <seedToken>`)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-failures
+          path: sim-failures/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
+  # Engine packed-tarball proof (engine-split Task 1b-3, D14). A registry consumer gets the tarball `pnpm pack` makes: compiled dist/,
+  # and `exports` rewritten from publishConfig. This builds it, packs it, and installs it into four fixtures in scratch directories
+  # OUTSIDE the repo: Node strip-types, a Next build with no transpilePackages, a Metro bundle compiled by Hermes, and tsc with
+  # skipLibCheck off. Each prints `<fixture>: <N> checked`; zero is a failure. The paths-filter is kept as seazn.club had it
+  # (test/ci-wiring.test.ts pins it): here its `'**'` glob matches every change.
+  # -------------------------------------------------------------------------
+  engine-pack:
+    name: Engine packed-tarball proof
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # paths-filter reads the PR's changed files via the API; the repo's
+    # default GITHUB_TOKEN is restricted and 403s without this.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: engine-changes
+        with:
+          filters: |
+            engine:
+              - '**'
+              - 'pnpm-lock.yaml'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # run.mjs builds dist/, packs it with the repo-pinned pnpm (asserting the version it ran), and fails on any fixture
+      # that errors or checks nothing. The fixture installs reach the public npm registry.
+      - name: Pack the engine and consume the tarball (node, next, rn, types)
+        if: steps.engine-changes.outputs.engine == 'true'
+        run: node pack-proof/run.mjs
+
+  # -------------------------------------------------------------------------
+  # Changesets (D16, spec §8): every PR declares its release bump, and the bump covers what the fold tables say moved. A moved FOLD_EPOCH
+  # entry (an outdated phone must update) needs a major; a moved FOLD_MINOR entry with FOLD_EPOCH unmoved needs at least a minor. The
+  # Version PR (changeset-release/main) consumes the changesets and adds none, so it is exempt. HEAD^1 is the base tip, as in gates.
+  # -------------------------------------------------------------------------
+  changeset:
+    name: Changeset present, and its bump covers the fold tables
+    if: github.event_name == 'pull_request' && github.head_ref != 'changeset-release/main'
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: The PR adds a changeset
+        run: |
+          set -euo pipefail
+          files="$(git diff --name-only --diff-filter=AM HEAD^1 HEAD -- '.changeset/*.md' | grep -vxF '.changeset/README.md' || true)"
+          if [ -z "$files" ]; then
+            echo "::error::this PR adds no .changeset/*.md: run 'pnpm changeset' and commit the file it writes (a change that releases nothing says so with 'pnpm changeset --empty')"
+            exit 1
+          fi
+          echo "changesets in this PR:"
+          echo "$files"
+      # The tables are found by their declaration under src/ (never by a path written here), read at the base and at the head as their
+      # `sport: n` entries with comments stripped, and compared; the bumps are the `@onryde/seazn-engine` lines of the PR's changesets.
+      - name: Read the fold tables at the base and the head, and the bumps the PR declares
+        id: fold
+        run: |
+          set -euo pipefail
+          entries() {
+            local at
+            at="$(git grep -l -E "^export const $2 = " "$1" -- src | head -n 1 || true)"
+            if [ -z "$at" ]; then echo "::error::no 'export const $2 =' under src/ at $1" >&2; exit 1; fi
+            git show "$at" | sed -n "/^export const $2 = /,/^}/p" | sed 's#//.*##' | grep -oE '[a-z][a-z0-9_]*: [0-9]+' | sort
+          }
+          moved() {
+            local before after
+            before="$(entries HEAD^1 "$1")"
+            after="$(entries HEAD "$1")"
+            if [ -z "$before" ] || [ -z "$after" ]; then echo "::error::$1 declares no entry at the base or the head" >&2; exit 1; fi
+            if [ "$before" = "$after" ]; then echo false; return; fi
+            echo "$1 moved (base -> head):" >&2
+            diff <(echo "$before") <(echo "$after") >&2 || true
+            echo true
+          }
+          epoch="$(moved FOLD_EPOCH)"
+          minor="$(moved FOLD_MINOR)"
+          bumps="$(git diff --name-only --diff-filter=AM HEAD^1 HEAD -- '.changeset/*.md' | grep -vxF '.changeset/README.md' \
+            | while read -r f; do grep -hoE "^[\"']?@onryde/seazn-engine[\"']?: *(major|minor|patch)" "$f" | sed -E 's/.*: *//' || true; done \
+            | sort -u | tr '\n' ' ' || true)"
+          echo "FOLD_EPOCH moved: $epoch; FOLD_MINOR moved: $minor; bumps declared: ${bumps:-(none)}"
+          { echo "epoch=$epoch"; echo "minor=$minor"; echo "bumps=$bumps"; } >> "$GITHUB_OUTPUT"
+      - name: A moved FOLD_EPOCH entry is released as a major
+        env:
+          EPOCH_MOVED: ${{ steps.fold.outputs.epoch }}
+          BUMPS: ${{ steps.fold.outputs.bumps }}
+        run: |
+          if [ "$EPOCH_MOVED" != "true" ]; then echo "no FOLD_EPOCH entry moved: no major owed"; exit 0; fi
+          case " $BUMPS " in
+            *" major "*) echo "FOLD_EPOCH moved, and a changeset declares a major: in order" ;;
+            *) echo "::error::FOLD_EPOCH moved (an outdated phone must update), but this PR's changesets declare '${BUMPS:-nothing}' for @onryde/seazn-engine: a FOLD_EPOCH change is a major"; exit 1 ;;
+          esac
+      - name: A moved FOLD_MINOR entry is released as at least a minor
+        env:
+          EPOCH_MOVED: ${{ steps.fold.outputs.epoch }}
+          MINOR_MOVED: ${{ steps.fold.outputs.minor }}
+          BUMPS: ${{ steps.fold.outputs.bumps }}
+        run: |
+          if [ "$MINOR_MOVED" != "true" ]; then echo "no FOLD_MINOR entry moved: nothing owed here"; exit 0; fi
+          if [ "$EPOCH_MOVED" = "true" ]; then echo "FOLD_EPOCH moved too: the major rule above judges this PR"; exit 0; fi
+          case " $BUMPS " in
+            *" major "*|*" minor "*) echo "FOLD_MINOR moved, and a changeset declares at least a minor: in order" ;;
+            *) echo "::error::FOLD_MINOR moved, but this PR's changesets declare '${BUMPS:-nothing}' for @onryde/seazn-engine: a FOLD_MINOR-only change is at least a minor, never a patch"; exit 1 ;;
+          esac
+
+  # -------------------------------------------------------------------------
+  # Downstream (spec §9.3): onryde/seazn.club@main on THIS PR's snapshot (D16: `0.0.0-pr<N>.<sha>`, published by the release workflow's
+  # PR snapshot job). The app's typecheck, its match-rules contract tests and the tools/matrix unit tests; no DB. Skipped, with a notice
+  # that says why, when there is no snapshot to install: a fork PR (no snapshot is published for one), an app main that does not install
+  # @onryde/seazn-engine from the registry yet (before the cutover), or no snapshot for this PR's commit after ten minutes (a warning).
+  # -------------------------------------------------------------------------
+  downstream:
+    name: Downstream (onryde/seazn.club@main on this PR's snapshot)
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    # packages: read installs @onryde/seazn-engine from GitHub Packages with this job's GITHUB_TOKEN.
+    permissions:
+      contents: read
+      packages: read
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+      MERGE_SHA: ${{ github.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: onryde/seazn.club
+          ref: main
+          path: app
+          persist-credentials: false
+      # registry-url + scope write an .npmrc (NPM_CONFIG_USERCONFIG) sending @onryde/* to GitHub Packages with NODE_AUTH_TOKEN.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          registry-url: https://npm.pkg.github.com
+          scope: '@onryde'
+      - name: Find this PR's snapshot (or skip, saying why)
+        id: snapshot
+        run: |
+          set -euo pipefail
+          skip() { echo "::notice::downstream skipped: $1"; echo "version=" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then skip "a fork PR is given no snapshot (publishing one needs packages: write)"; fi
+          consumers="$(git -C app grep -l 'npm:@onryde/seazn-engine@' -- '*package.json' || true)"
+          if [ -z "$consumers" ]; then skip "onryde/seazn.club@main does not install @onryde/seazn-engine from the registry yet (before the cutover)"; fi
+          for attempt in $(seq 1 20); do
+            if ! versions="$(npm view @onryde/seazn-engine versions --json 2> "$RUNNER_TEMP/npm-view.err")"; then
+              if grep -qE 'E401|E403' "$RUNNER_TEMP/npm-view.err"; then
+                cat "$RUNNER_TEMP/npm-view.err"
+                echo "::error::GitHub Packages refused this job's token: give this repository read access to the @onryde/seazn-engine package"
+                exit 1
+              fi
+              versions="[]"
+            fi
+            # `0.0.0-pr<N>.<sha>`: the sha is the snapshot job's commit, short or full, so a prefix of the head's or the merge commit's sha
+            v="$(node -e '
+              const list = [].concat(JSON.parse(process.argv[1] || "[]"));
+              const pre = `0.0.0-pr${process.env.PR}.`;
+              const shas = [process.env.HEAD_SHA, process.env.MERGE_SHA];
+              const hit = list.filter((x) => typeof x === "string" && x.startsWith(pre) && /^[0-9a-f]{7,40}$/.test(x.slice(pre.length)) && shas.some((s) => s.startsWith(x.slice(pre.length))));
+              process.stdout.write(hit.at(-1) ?? "");
+            ' "$versions")"
+            if [ -n "$v" ]; then
+              echo "snapshot: @onryde/seazn-engine@$v (attempt $attempt)"
+              echo "version=$v" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::warning::downstream skipped: no snapshot 0.0.0-pr${PR}.<sha of $HEAD_SHA or $MERGE_SHA> appeared on GitHub Packages in ten minutes"
+          echo "version=" >> "$GITHUB_OUTPUT"
+      - uses: pnpm/action-setup@v4
+        if: steps.snapshot.outputs.version != ''
+        with:
+          package_json_file: app/package.json
+      - name: Point every consumer at the snapshot and install
+        if: steps.snapshot.outputs.version != ''
+        env:
+          V: ${{ steps.snapshot.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd app
+          for f in $(git grep -l 'npm:@onryde/seazn-engine@' -- '*package.json'); do
+            sed -i -E "s#\"npm:@onryde/seazn-engine@[^\"]*\"#\"npm:@onryde/seazn-engine@$V\"#g" "$f"
+            echo "$f: $(grep -c "npm:@onryde/seazn-engine@$V\"" "$f") consumer line(s) on the snapshot"
+          done
+          pnpm install --no-frozen-lockfile
+          # a glob, not `ls | grep -q`: grep -q stops at the first match and, under pipefail, the SIGPIPE-d ls reads as a failure
+          if ! compgen -G "node_modules/.pnpm/@onryde+seazn-engine@${V}*" > /dev/null; then
+            echo "::error::the install did not resolve @onryde/seazn-engine@$V"
+            exit 1
+          fi
+      # One judge for both test steps: red on zero tests, on any failed suite (a file that fails to COLLECT counts only there), on passed
+      # != total (a skip or todo included), on a file outside the step's directory, and on fewer files than the step named.
+      - name: Write the vitest report judge
+        if: steps.snapshot.outputs.version != ''
+        run: |
+          cat > "$RUNNER_TEMP/judge.cjs" <<'EOF'
+          const fs = require("fs");
+          const path = require("path");
+          const [report, label, dir, wantFiles] = process.argv.slice(2);
+          const r = JSON.parse(fs.readFileSync(report, "utf8"));
+          const files = (r.testResults || []).map((t) => t.name);
+          console.log(`${label}: ${r.numPassedTests}/${r.numTotalTests} tests passed in ${files.length} files, ${r.numFailedTestSuites} failed suite(s)`);
+          const fail = (msg) => { console.error(`::error::${label}: ${msg}`); process.exit(1); };
+          if (!(r.numTotalTests > 0)) fail("ZERO tests ran. A suite that fails to collect reads 0/0, so this is a red, not a pass.");
+          if (r.numFailedTestSuites !== 0) fail(`${r.numFailedTestSuites} suite(s) failed (a file that fails to COLLECT counts here, not in numFailedTests).`);
+          if (r.numPassedTests !== r.numTotalTests) fail(`only ${r.numPassedTests} of ${r.numTotalTests} tests passed (failed, skipped and todo all count against it).`);
+          const root = path.resolve(dir) + path.sep;
+          const stray = files.filter((f) => !f.startsWith(root));
+          if (stray.length > 0) fail(`files outside ${dir} ran: ${stray.join(", ")}`);
+          if (wantFiles !== undefined && files.length !== Number(wantFiles)) fail(`${files.length} files ran, ${wantFiles} were named`);
+          EOF
+      - name: App typecheck
+        if: steps.snapshot.outputs.version != ''
+        run: cd app && npx turbo run typecheck
+      - name: Match-rules contract tests
+        if: steps.snapshot.outputs.version != ''
+        run: |
+          set -euo pipefail
+          cd app/apps/web
+          files="$(ls src/lib/match-rules/__tests__/*.contract.test.ts)"
+          n="$(printf '%s\n' "$files" | wc -l | tr -d ' ')"
+          rm -f "$RUNNER_TEMP/contract.json"
+          npx vitest run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/contract.json" $files
+          node "$RUNNER_TEMP/judge.cjs" "$RUNNER_TEMP/contract.json" "match-rules contracts" src/lib/match-rules/__tests__ "$n"
+      - name: Matrix harness unit tests (DB-free)
+        if: steps.snapshot.outputs.version != ''
+        run: |
+          set -euo pipefail
+          cd app
+          rm -f "$RUNNER_TEMP/matrix.json"
+          ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/matrix.json" --testTimeout=30000 tools/matrix
+          node "$RUNNER_TEMP/judge.cjs" "$RUNNER_TEMP/matrix.json" "matrix harness" tools/matrix
