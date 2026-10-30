@@ -44,9 +44,9 @@ jobs:
       contents: write
       pull-requests: write
       packages: write
-    env:
-      # setup-node's registry-url writes an .npmrc (NPM_CONFIG_USERCONFIG) sending @onryde/* to GitHub Packages with this token.
-      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # NODE_AUTH_TOKEN is on the steps that reach GitHub Packages, never the job (Batch E review m8): the install, the build and the third-party
+    # actions run without it. setup-node's registry-url writes an .npmrc (NPM_CONFIG_USERCONFIG) that sends @onryde/* to GitHub Packages with
+    # $NODE_AUTH_TOKEN, and exports a placeholder for it to every later step; a step's own `env:` replaces that placeholder for that step alone.
     steps:
       - uses: actions/checkout@v5
         # Full history and every tag: the epoch report's baseline is the last v*.*.* tag, and the CHANGELOG names each change's commit.
@@ -98,6 +98,8 @@ jobs:
       - name: Version PR (main holds changesets), or publish (it holds none)
         id: changesets
         uses: changesets/action@v2
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # the publish script (pnpm publish -r) writes the package
         with:
           version-script: pnpm changeset version
           publish-script: pnpm publish -r --no-git-checks
@@ -132,6 +134,7 @@ jobs:
         if: steps.changesets.outputs.has-changesets == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # `npm view` reads the package: GitHub Packages answers no unauthenticated read
           REPORT: ${{ steps.epoch.outputs.file }}
         run: |
           set -euo pipefail
@@ -180,8 +183,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # NODE_AUTH_TOKEN on the publish step alone (Batch E review m8): the install, `changeset version` and the build run this PR's own code,
+    # and none of them needs the registry. See the release job for how the step-level token reaches pnpm.
     env:
-      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR: ${{ github.event.number }}
     steps:
       # The merge commit (the default): its sha is the one the snapshot version carries, and the one `downstream` looks for.
@@ -225,4 +229,6 @@ jobs:
       - if: steps.version.outputs.version != ''
         run: pnpm build:dist
       - if: steps.version.outputs.version != ''
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm publish -r --no-git-checks --tag pr

@@ -261,6 +261,64 @@ describe("mutation.yml and the runner wiring (review 5: R5-I1, m2, m3; moved her
   });
 });
 
+// Batch E close review, I1 (owner ruling 2026-10-30, option A): the tag's "the visibility guard (Review Focus 2)" describe RAN the guard
+// script for real. Its carry (b) test is mixed (mutation.yml's guards, then matrix-truth.yml's as the positive control) and is split here:
+// the engine half keeps the mutation.yml loop and the public pass-through, verbatim, and the matrix-truth.yml control stays with the app
+// half under the source id. The nine-case table ran matrix-truth.yml's script, which reached mutation.yml only through the identity test
+// E3 retired, so the same table, verbatim, now runs mutation.yml's own guard (new ids, ledgered `added`). The stand-in `gh` helper comes
+// with them, its default script mutation.yml's plan guard (one script in every job: the guard test above).
+describe("the visibility guard (Review Focus 2)", () => {
+  /** The guard's script, run for real with a `gh` stand-in that FAILS its first `fails` calls (HTTP 403 on stderr; on stdout the
+   *  raw JSON error body `body` when given, which is what gh 2.95 prints for a 404/401/403/5xx under `--jq`, else nothing) and
+   *  then answers `answer`, and a `sleep` stand-in that records its argument instead of waiting (m4: the retry's backoff is
+   *  observed, never slept). `calls` is how many times the guard asked, `sleeps` the backoffs it took between asks. */
+  const runWith = (env: Record<string, string>, gh: { fails: number; answer: string; body?: string }, script: string = stepOf(MJOBS.plan!, GUARD).script!) => {
+    const dir = mkdtempSync(join(tmpdir(), "gh-"));
+    try {
+      writeFileSync(join(dir, "gh"), `#!/bin/sh\nn=$(cat "$GH_STATE/n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$GH_STATE/n"\nif [ "$n" -le "$GH_FAILS" ]; then if [ -n "$GH_BODY" ]; then echo "$GH_BODY"; fi; echo 'HTTP 403' >&2; exit 1; fi\necho "$GH_ANSWER"\n`, { mode: 0o755 });
+      writeFileSync(join(dir, "sleep"), `#!/bin/sh\necho "$1" >> "$GH_STATE/sleeps"\n`, { mode: 0o755 });
+      const r = spawnSync("bash", ["-c", script], { env: { PATH: `${dir}:${process.env.PATH ?? ""}`, GITHUB_REPOSITORY: "onryde/seazn.club", GH_STATE: dir, GH_FAILS: String(gh.fails), GH_ANSWER: gh.answer, GH_BODY: gh.body ?? "", ...env }, encoding: "utf8" });
+      const lines = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8").split("\n").filter(Boolean) : []);
+      return { status: r.status, stdout: r.stdout, stderr: r.stderr, calls: Number(lines("n")[0] ?? 0), sleeps: lines("sleeps") };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  };
+  const run = (env: Record<string, string>, gh: "public" | "private" | "fail") => runWith(env, gh === "fail" ? { fails: 99, answer: "" } : { fails: 0, answer: gh });
+  const cases: { name: string; env: Record<string, string>; gh: "public" | "private" | "fail"; want: number }[] = [
+    { name: "public, hosted", env: { RUNNER_ENV: "github-hosted", INJECT: "none" }, gh: "public", want: 0 },
+    { name: "public, self-hosted (ruling 68)", env: { RUNNER_ENV: "self-hosted", INJECT: "none" }, gh: "public", want: 0 },
+    { name: "private, hosted", env: { RUNNER_ENV: "github-hosted", INJECT: "none" }, gh: "private", want: 1 },
+    { name: "unreadable (403), hosted", env: { RUNNER_ENV: "github-hosted", INJECT: "none" }, gh: "fail", want: 1 },
+    { name: "public but injected private (the live mutation)", env: { RUNNER_ENV: "github-hosted", INJECT: "private" }, gh: "public", want: 1 },
+    { name: "public but injected internal", env: { RUNNER_ENV: "github-hosted", INJECT: "internal" }, gh: "public", want: 1 },
+    { name: "private but injected public (cannot loosen)", env: { RUNNER_ENV: "github-hosted", INJECT: "public" }, gh: "private", want: 1 },
+    { name: "runner.environment unset", env: { RUNNER_ENV: "", INJECT: "none" }, gh: "public", want: 1 },
+    { name: "private, self-hosted (no hosted minutes; ruling 68)", env: { RUNNER_ENV: "self-hosted", INJECT: "none" }, gh: "private", want: 0 },
+  ];
+  // review m3: the title names the expected exit from the row itself ($want), never the row index.
+  it.each(cases)("$name → exit $want, on mutation.yml's guard", ({ env, gh, want }) => expect(run(env, gh).status).toBe(want));
+
+  it("the guard has the nine cases it was written with, so a row dropped from the table reds here (mutation.yml's guard)", () => {
+    expect(cases).toHaveLength(9);
+  });
+
+  it("carry (b): a refusal on a private repository NAMES the Stryker mutation workflow, in every job, and says nothing of a matrix truth run (run for real, with a stand-in gh) (engine half)", () => {
+    const env = { RUNNER_ENV: "github-hosted", INJECT: "none" };
+    let checked = 0;
+    for (const [name, t] of Object.entries(MJOBS)) {
+      const r = runWith(env, { fails: 0, answer: "private" }, stepOf(t, GUARD).script!);
+      expect(r.status, `${name}: private, hosted is refused`).toBe(1);
+      expect(r.stdout, name).toContain("::error title=Stryker mutation run refused::repository visibility is 'private'");
+      expect(r.stdout, name).toContain("mutation.yml");
+      expect(r.stdout, name).not.toMatch(/Matrix truth|Sharded matrix/);
+      checked++;
+    }
+    expect(checked, "jobs of mutation.yml").toBe(Object.keys(MJOBS).length);
+    // the positive control (matrix-truth.yml's own guard still names itself) stays with the app half in onryde/seazn.club
+    // and the public repository still passes through mutation.yml's guard (a refusal worded differently is not a refusal always)
+    expect(runWith(env, { fails: 0, answer: "public" }, stepOf(MJOBS.plan!, GUARD).script!).status).toBe(0);
+  });
+});
+
 // The probe's trigger names its INPUTS one by one (2026-10-12), never a `packages/engine/stryker*` glob: that glob also took the
 // RECORDED data (an equivalent recorded, a floor raised, a leg re-measured), and each such PR spent 45-60 minutes on a probe its
 // change could not move. A push to main on the same inputs runs the probe too, so main holds the warm incremental file a PR's

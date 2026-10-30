@@ -4,7 +4,8 @@ The pure tournament engine behind [seazn.club](https://seazn.club): an event-sou
 state), the sport modules built on it, competition structure and standings, fixture generation and a scheduling toolkit.
 It has no effectful dependencies: no database, no network, no logger.
 
-The source lives in the seazn.club monorepo (`packages/engine`). Design:
+The source lives in [onryde/seazn.club.engine](https://github.com/onryde/seazn.club.engine). Its history before the split is
+`packages/engine` in onryde/seazn.club at tag `engine-split-base` (`5a67fbf37d`). Design:
 [docs/superpowers/specs/2026-10-13-engine-split-design.md](https://github.com/onryde/seazn.club/blob/main/docs/superpowers/specs/2026-10-13-engine-split-design.md).
 
 ## Install

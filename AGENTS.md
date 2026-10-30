@@ -16,7 +16,8 @@ older than the import. Design of record: onryde/seazn.club `docs/superpowers/spe
 `.npmrc` here holds only the scope line (`@onryde:registry=https://npm.pkg.github.com`). Local installs that need an
 `@onryde` package authenticate with a personal token scoped `read:packages`, kept in your own `~/.npmrc`
 (`//npm.pkg.github.com/:_authToken=<token>`). The token lives only there: never in a repo file, a commit, a log line or
-a command's argv. CI uses `GITHUB_TOKEN`; the publish job alone has `packages: write`.
+a command's argv. CI uses `GITHUB_TOKEN`. Only release.yml's two publishing jobs (`release` and `snapshot`) hold
+`packages: write`, and only their registry steps see it as `NODE_AUTH_TOKEN`.
 
 ## The dev loop (design §9, D17)
 
