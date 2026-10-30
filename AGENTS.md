@@ -50,6 +50,12 @@ nothing. GitHub Actions may not open pull requests in this organisation, so a pe
    `v<version>`, and creates the GitHub Release: the CHANGELOG entry, then the epoch report (the sports this release
    locks out for older capture apps).
 
+## Known red
+
+A check that is red on `main` for a reason already owned elsewhere. A release or merge may pass over ONLY these, each matched by test name in the job log; anything else red stops the merge. Delete the line in the PR that fixes it.
+
+- `test/stryker-sizing.test.ts` (job "Engine coverage + golden ledgers + sim matrix"): leg mutant counts drifted past the 10% line before the split. Owner: the mutation session's re-measure, ported here as one PR (stryker-measured.json, stryker-timeouts.json).
+
 ## Porting a branch that was in flight at the cutover (D37)
 
 A seazn.club branch that edited `packages/engine` lands here as a patch:
