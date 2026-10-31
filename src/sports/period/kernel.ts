@@ -3253,3 +3253,58 @@ export function makePeriodModule(
     // Stryker restore all
   };
 }
+
+// Stryker restore all
+// (again: the `restore` above closes the module's object, so no later node reads it and ruling 109's disable would
+// run on into the natural breaks below; this one leads them, so they are mutated like any other kernel rule.)
+// ---------------------------------------------------------------------------
+// R4 sponsors on stream (spec 2026-10-27 §3.1) — the period sports' natural breaks, one rule for every preset, each
+// naming its own kinds (FIH's quarters and half-time, the IIHF's periods). The sport file wraps its module with it. Kept
+// at the end (and imported here, beside its one reader) so no line above moves: the recorded Stryker equivalents are
+// keyed by line.
+// ---------------------------------------------------------------------------
+import { declareNaturalBreaks, type NaturalBreaks } from "../../sport/natural-breaks.ts";
+
+/** The kinds a period sport names. `halfTime` is the interval at the middle of an even number of regulation periods (FIH's
+ *  after the second quarter); absent, that whistle is a `periodEnd` like any other. */
+export interface PeriodBreakNames {
+  readonly periodEnd: string;
+  readonly halfTime?: string;
+  readonly afterGoal: string;
+}
+
+/** The module `makePeriodModule` built, with the sport's natural breaks set (a new object; the kernel's is left as it was). */
+export function withPeriodNaturalBreaks(
+  module: SportModule<PeriodCfg, PeriodEv, PeriodState>,
+  names: PeriodBreakNames,
+): SportModule<PeriodCfg, PeriodEv, PeriodState> {
+  return { ...module, naturalBreaks: periodNaturalBreaks(names) };
+}
+
+/**
+ * A whistle that closes a period of play and play goes on (the next period, an overtime, a shoot-out) opens the sport's
+ * interval (`periodEnd` or `halfTime`, major); a goal that leaves the match live opens `afterGoal` (minor), the restart
+ * at the centre. Nothing opens when the event ends the match (the full-time whistle, a sudden-death goal).
+ */
+function periodNaturalBreaks(names: PeriodBreakNames): NaturalBreaks<EventEnvelope<PeriodEv | CoreEv>, PeriodState> {
+  const { periodEnd, halfTime, afterGoal } = names;
+  return declareNaturalBreaks<EventEnvelope<PeriodEv | CoreEv>, PeriodState>(
+    [
+      ...(halfTime === undefined ? [] : [{ kind: halfTime, size: "major" as const }]),
+      { kind: periodEnd, size: "major" },
+      { kind: afterGoal, size: "minor" },
+    ],
+    (_ev, before, after) => {
+      if (after.outcome !== null || !(isPlayPhase(after) || after.phase === "SHOOTOUT")) return [];
+      const opened: string[] = [];
+      if (after.goals.home + after.goals.away > before.goals.home + before.goals.away) opened.push(afterGoal);
+      // A whistle that closed a period of play: the next one began (`pushPeriod`), or the shoot-out did.
+      if (isPlayPhase(before) && (after.periods.length > before.periods.length || after.phase === "SHOOTOUT")) {
+        const regulation = periodLabels(after.cfg);
+        const half = regulation.length % 2 === 0 ? regulation[regulation.length / 2] : undefined;
+        opened.push(halfTime !== undefined && after.phase === half ? halfTime : periodEnd);
+      }
+      return opened;
+    },
+  );
+}

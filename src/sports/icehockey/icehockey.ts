@@ -6,7 +6,7 @@
 import { BRACKET_KINDS } from "../../core/types.ts";
 import type { PositionCatalog } from "../../sport/catalog.ts";
 import type { PlayerStatsModel } from "../../stats/stats.ts";
-import { makePeriodModule, PERIOD_RULE_KEYS, periodKeeperStatsFold, type PeriodSuspensionReason } from "../period/kernel.ts";
+import { makePeriodModule, PERIOD_RULE_KEYS, periodKeeperStatsFold, withPeriodNaturalBreaks, type PeriodSuspensionReason } from "../period/kernel.ts";
 import { ICEHOCKEY_RECREATIONAL_SUSPENSIONS, ICEHOCKEY_SUSPENSIONS } from "../period/suspensions.ts";
 
 // S4 (#428) — IIHF's own subset of the shared `PeriodSuspensionReason` union:
@@ -173,7 +173,7 @@ const IIHF_SHOOTOUT = { attempts: 5 } as const;
 // IH-KO-1 (RB2B-9, owner Q7) — a knockout game's overtime is 10 minutes, not the preliminary round's 5.
 const KNOCKOUT_OVERTIME_MINUTES = 10;
 
-export const icehockey = makePeriodModule({
+export const icehockey = withPeriodNaturalBreaks(makePeriodModule({
   key: "icehockey",
   version: "1.0.0",
   // Default = IIHF preliminary-round rules.
@@ -309,4 +309,7 @@ export const icehockey = makePeriodModule({
   // flag and not a cfg knob.
   shotTracking: true,
   goalKindRequired: ICEHOCKEY_GOAL_KIND_REQUIRED,
-});
+}),
+// R4 sponsors on stream (spec 2026-10-27 §3.1) — IIHF: the intermission after each period, and before an overtime or the
+// game-winning shots (`period_end`), and the face-off at centre ice after a goal (`after_goal`).
+{ periodEnd: "period_end", afterGoal: "after_goal" });

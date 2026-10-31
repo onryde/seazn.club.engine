@@ -4671,5 +4671,47 @@ export const cricket: SportModule<CricketCfg, CricketEv, CricketState> = {
     flush();
     return out;
   },
+  naturalBreaks: cricketNaturalBreaks(),
 };
+
+// ---------------------------------------------------------------------------
+// R4 sponsors on stream (spec 2026-10-27 §3.1) — cricket's natural breaks. Kept below the module (and imported here,
+// beside their one reader) so no line above moves: the recorded Stryker equivalents are keyed by line. Function
+// declarations, so the module literal above can call them while it is built.
+// ---------------------------------------------------------------------------
+import { declareNaturalBreaks, type NaturalBreaks } from "../../sport/natural-breaks.ts";
+
+/**
+ * Laws of Cricket 17.1: an over is `ballsPerOver` LEGAL balls (a wide or a no-ball is not one), and the ends change after
+ * it, the short pause between overs (`over_end`, minor). Law 11.2: an interval between innings (`innings_break`, major),
+ * a super over's innings included. One event can do both (the innings' last ball is an over's last); P1 makes it the
+ * innings break. Nothing opens when the event ends the match, or before the start.
+ */
+function cricketNaturalBreaks(): NaturalBreaks<EventEnvelope<CricketEv | CoreEv>, CricketState> {
+  return declareNaturalBreaks(
+    [
+      { kind: "over_end", size: "minor" },
+      { kind: "innings_break", size: "major" },
+    ],
+    cricketBreaksOpened,
+  );
+}
+
+/** Every innings played so far, the super over's after the match's: a list that only ever grows, so an index names one innings. */
+function inningsPlayed(state: CricketState): readonly InningsState[] {
+  return state.superOver === null ? state.innings : [...state.innings, ...state.superOver.innings];
+}
+
+function cricketBreaksOpened(_ev: EventEnvelope<CricketEv | CoreEv>, before: CricketState, after: CricketState): string[] {
+  if (after.outcome !== null || (after.phase !== "live" && after.phase !== "super_over")) return [];
+  const was = inningsPlayed(before);
+  const bpo = after.cfg.ballsPerOver;
+  const opened: string[] = [];
+  inningsPlayed(after).forEach((innings, i) => {
+    const prior = was[i];
+    if (innings.closed && prior?.closed !== true) opened.push("innings_break");
+    if (innings.legalBalls > (prior?.legalBalls ?? 0) && innings.legalBalls % bpo === 0) opened.push("over_end");
+  });
+  return opened;
+}
 

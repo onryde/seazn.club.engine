@@ -924,6 +924,14 @@ export interface SportModule<Cfg, Ev, State> extends FoldableModule<Cfg, State> 
    * TYPE only here; W2c Task 7 fills it per sport.
    */
   abandonOptions?: readonly string[];
+  /**
+   * R4 sponsors on stream (spec 2026-10-27 §3.1) — the pauses this sport's own events open (an over's end, half-time, a
+   * set's end, a timeout), so the overlay can air a sponsor card in one without a table of sports. `opensAt` is asked of
+   * each event the module applies, with the state before and after it (the envelope `apply` took: a kernel-owned event
+   * never reaches it). Build one with `declareNaturalBreaks` (sport/natural-breaks.ts), which holds the declared-kinds-only
+   * and major-wins (P1) promises. Absent = the sport has no pause the engine can see (boardgame, carrom, generic).
+   */
+  naturalBreaks?: import("./natural-breaks.ts").NaturalBreaks<EventEnvelope<Ev | CoreEv>, State>;
 
   // Jul3/06 §3 — optional print-template fragments. Sport-neutral kinds
   // (timetable, standings, roster, participants) live in engine/exports; a

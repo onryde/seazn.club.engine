@@ -10,3 +10,5 @@ export * from "./rule-keys.ts";
 // W2c owner P-5 - the sentences a cfg that cannot share points on an abandon is refused with (generic and carrom), so a
 // client can map each to its own localized copy rather than show the English wire text.
 export * from "./abandon-share.ts";
+// R4 sponsors on stream (spec 2026-10-27 §3.1) — `SportModule.naturalBreaks`: the declaration, its builder and `breakSizeOf`.
+export * from "./natural-breaks.ts";

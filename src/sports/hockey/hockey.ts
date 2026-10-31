@@ -8,7 +8,7 @@
 import { BRACKET_KINDS } from "../../core/types.ts";
 import type { PositionCatalog } from "../../sport/catalog.ts";
 import type { PlayerStatsModel } from "../../stats/stats.ts";
-import { makePeriodModule, PERIOD_RULE_KEYS, periodKeeperStatsFold, type PeriodSuspensionReason } from "../period/kernel.ts";
+import { makePeriodModule, PERIOD_RULE_KEYS, periodKeeperStatsFold, withPeriodNaturalBreaks, type PeriodSuspensionReason } from "../period/kernel.ts";
 import { HOCKEY_SUSPENSIONS, HOCKEY_YOUTH_SUSPENSIONS } from "../period/suspensions.ts";
 
 // S4 (#428) — FIH's own subset of the shared `PeriodSuspensionReason` union:
@@ -124,7 +124,7 @@ const playerStats: PlayerStatsModel = {
   folded: periodKeeperStatsFold(() => hockey, "hockey.goal", "GK", "hockey.shot"),
 };
 
-export const hockey = makePeriodModule({
+export const hockey = withPeriodNaturalBreaks(makePeriodModule({
   key: "hockey",
   version: "1.0.0",
   // Default = FIH outdoor league: 4×15, draws stand, 3/1/0.
@@ -270,4 +270,7 @@ export const hockey = makePeriodModule({
   // preset flag and not a cfg knob.
   shotTracking: true,
   goalKindRequired: HOCKEY_GOAL_KIND_REQUIRED,
-});
+}),
+// R4 sponsors on stream (spec 2026-10-27 §3.1) — FIH: an interval after the first and third quarters (`quarter_end`), the
+// half-time interval after the second (`half_time`), and the restart at the centre after a goal (`after_goal`).
+{ periodEnd: "quarter_end", halfTime: "half_time", afterGoal: "after_goal" });
