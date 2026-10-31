@@ -854,6 +854,155 @@ describe("cricket W4: the extensions are additive", () => {
 });
 
 // ---------------------------------------------------------------------------
+// coarsen's innings boundary — DOMAIN.md module fact 1 (dual fidelity) and
+// conformance §9.6: coarse and fine folds of one match agree on outcome and
+// summary. A ball stream carries no "new innings" event, so `coarsen()` infers
+// the boundary from two signals: the over/ball cursor restarting after a legal
+// ball, or both crease batters unseen in the innings so far. A retirement is a
+// crease change made while the ball is dead, INSIDE the innings (Law 25.4.1,
+// CK-RH-1), so the unseen-pair signal stands down until the next ball.
+//
+// Hand-written streams, not a property: conformance's §9.6 property sets no
+// seed and reaches these shapes only on some runs, so before this block the
+// suppression's mutant was killed or survived depending on the seed.
+// single-sport: the crease and coarsen's innings-boundary inference are cricket's own code.
+// ---------------------------------------------------------------------------
+
+describe("cricket coarsen: a retirement is not an innings boundary (§9.6)", () => {
+  interface Totals {
+    runs: number;
+    wickets: number;
+    legalBalls: number;
+  }
+  const coarsenOf = (events: EventEnvelope[]) =>
+    (cricket.coarsen as (events: readonly EventEnvelope[]) => Array<{
+      type: string;
+      payload: unknown;
+    }>)(events);
+  // The snapshot coarsen writes for one innings: cumulative, open (`partial`),
+  // so the fold's own auto-close rules decide closure. No stream below hits a
+  // boundary, so `boundaries` is 0 throughout.
+  const snapshot = (totals: Totals) => ({ ...totals, boundaries: 0, partial: true });
+  const proveDualFidelity = (events: EventEnvelope[], innings: Totals[]) => {
+    const coarse = coarsenOf(events);
+    // One cumulative snapshot per innings, and nothing else but the start:
+    // ball and retirement are fine-only facts the coarse stream drops.
+    expect(coarse.map((event) => event.type)).toEqual([
+      "core.start",
+      ...innings.map(() => "cricket.innings.summary"),
+    ]);
+    expect(coarse.slice(1).map((event) => event.payload)).toEqual(innings.map(snapshot));
+
+    // Both streams are ones a scorer could enter: the strict write path takes them.
+    const fine = foldStrict(short, events);
+    const coarseState = foldStrict(
+      short,
+      coarse.map((event, i) => makeEnvelope(i, event)),
+    );
+    for (const state of [fine, coarseState]) {
+      expect(state.innings).toHaveLength(innings.length);
+      innings.forEach((totals, i) => expect(state.innings[i]).toMatchObject(totals));
+    }
+    expect(cricket.outcome(coarseState)).toEqual(cricket.outcome(fine));
+    expect(cricket.summary(coarseState)).toEqual(cricket.summary(fine));
+  };
+
+  // (a) Both crease batters change with no delivery in between, so the next
+  // ball is bowled to two batters this innings has not seen. Same innings:
+  // the unseen-pair signal must be suppressed.
+  it("(a) both batters retire (one out, one hurt), then a ball: still one innings", () => {
+    const events = new Ledger()
+      .ball({ striker: "H-1", nonStriker: "H-2", bowler: "A-11", bat: 2 })
+      // No `incoming` named, so the order brings H-3, then H-4 (spec §2.3);
+      // neither enters coarsen's seen set until they face.
+      .ev("cricket.retire", { person: "H-1", reason: "out" })
+      .ev("cricket.retire", { person: "H-2", reason: "hurt" })
+      .ball({ striker: "H-3", nonStriker: "H-4", bowler: "A-11", bat: 2 })
+      .build();
+    // 2 + 2 runs off the bat (Law 18). Retired out is a wicket, retired hurt
+    // is not (Laws 25.4.3 and 25.4.2, CK-RH-1). A retirement is no delivery,
+    // so only the two balls count (CK-RH-2's cricket.retire path).
+    proveDualFidelity(events, [{ runs: 4, wickets: 1, legalBalls: 2 }]);
+  });
+
+  it("(a) a batter is bowled, the partner retires hurt, then a ball: still one innings", () => {
+    const events = new Ledger()
+      .ball({
+        striker: "H-1",
+        nonStriker: "H-2",
+        bowler: "A-11",
+        wicket: { kind: "bowled", out: "H-1", bowlerCredited: true },
+      })
+      // H-3 replaced H-1 on that ball; H-4 replaces H-2 now. One retirement,
+      // yet both ends are new since the last delivery.
+      .ev("cricket.retire", { person: "H-2", reason: "hurt" })
+      .ball({ striker: "H-3", nonStriker: "H-4", bowler: "A-11", bat: 2 })
+      .build();
+    // Bowled is a wicket (Law 32); retired hurt is not (Law 25.4.2, CK-RH-1);
+    // 0 + 2 runs off the bat over two legal balls.
+    proveDualFidelity(events, [{ runs: 2, wickets: 1, legalBalls: 2 }]);
+  });
+
+  // A wide on which the striker is stumped (ICC 22.9, CK-WD-1: stumped stands
+  // off a wide). The incoming batter takes the striker's end.
+  const stumpedOffWide = (events: Ledger, striker: string, nonStriker: string) =>
+    events.ball({
+      striker,
+      nonStriker,
+      bowler: "A-11",
+      extras: { kind: "wide", runs: 1 },
+      wicket: { kind: "stumped", out: striker, fielder: "A-2", bowlerCredited: true },
+    });
+  // A wide is not one of the over's balls, so A's openers face 0.1 again.
+  const awayFacesTwoBalls = (events: Ledger) =>
+    events
+      .ball({ striker: "A-1", nonStriker: "A-2", bowler: "H-11", bat: 2 })
+      .ball({ striker: "A-1", nonStriker: "A-2", bowler: "H-11", bat: 2 });
+  // The other side bats next: 2 + 2 off the bat over two legal balls.
+  const awayInnings: Totals = { runs: 4, wickets: 0, legalBalls: 2 };
+
+  // (b) The other branch: with no retirement since the last ball, an unseen
+  // pair IS the new innings. It is the only signal when the innings before
+  // ended without a legal ball, because the cursor then reads 0.1 on both
+  // sides of the boundary and the restart signal cannot fire.
+  it("(b) an innings all out without a legal ball: the unseen pair alone opens the next", () => {
+    const events = new Ledger();
+    // Strikers H-1, then H-3 to H-11 in order; H-2 survives at the other end.
+    for (const striker of ["H-1", "H-3", "H-4", "H-5", "H-6", "H-7", "H-8", "H-9", "H-10", "H-11"]) {
+      stumpedOffWide(events, striker, "H-2");
+    }
+    proveDualFidelity(awayFacesTwoBalls(events).build(), [
+      // Ten wides at the one-run penalty each (Law 22.6, CK-EX-2), ten
+      // wickets = all out at playersPerSide − 1 (spec §2.3), and no legal
+      // ball: a wide does not count as one of the over (Laws 22.8, 17.3).
+      { runs: 10, wickets: 10, legalBalls: 0 },
+      awayInnings,
+    ]);
+  });
+
+  // (c) The suppression lasts until the next ball and no longer ("suppressed
+  // straight after a retirement"): a retirement early in the innings must not
+  // blind the unseen-pair signal at a later boundary.
+  it("(c) a retirement, then a ball, then the same boundary as (b): the next innings still opens", () => {
+    const events = new Ledger();
+    stumpedOffWide(events, "H-1", "H-2"); // H-3 walks in at the striker's end
+    // H-2 retires out with no `incoming` named: H-4 comes in at the
+    // non-striker's end, so the next ball is to two unseen batters (case a).
+    events.ev("cricket.retire", { person: "H-2", reason: "out" });
+    for (const striker of ["H-3", "H-5", "H-6", "H-7", "H-8", "H-9", "H-10", "H-11"]) {
+      stumpedOffWide(events, striker, "H-4");
+    }
+    proveDualFidelity(awayFacesTwoBalls(events).build(), [
+      // Nine wides at one run each (Law 22.6, CK-EX-2); nine stumpings plus
+      // the retired out (Law 25.4.3, CK-RH-1) = ten wickets, all out; no
+      // legal ball (Laws 22.8, 17.3), and the retirement is no delivery.
+      { runs: 9, wickets: 10, legalBalls: 0 },
+      awayInnings,
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Player leaderboards — the DOMAIN.md row that was `deferred` because
 // `PlayerStatMetric.field`/`sumField` resolved only top-level payload keys and
 // every cricket credit worth a leaderboard is nested. Dotted paths landed in
