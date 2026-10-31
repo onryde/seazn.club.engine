@@ -4,7 +4,8 @@
 //   - can the round be paired legally at all (P-A6), and for an odd field, which bye candidates leave a pairable remainder;
 //   - when none can, the reason (rulebook §3.3; controller ruling R2);
 //   - whether a seated round keeps P-A1, P-A3, P-A4 and, with chess colours on, P-A5;
-//   - whether a bye is minimal: no eligible entrant with a strictly lower score leaves a pairable remainder (§2.3 item 4).
+//   - whether a bye is minimal: no eligible entrant with a strictly lower score leaves a pairable remainder (§2.3 item 4);
+//   - the round after a seated one, and every way to seat a remainder, for the one-round look-ahead (X-SW-10; §3.3 prevention).
 //
 // It is written from the rulebook and FIDE C.04.1 r.2–7 / C.04.3 [C1]–[C3] alone, and it imports nothing — above all not the
 // pairing engine (review M5): an oracle that reuses the code it checks agrees with that code's bugs. Its matching is a plain
@@ -68,10 +69,14 @@ export function colourHistoryLegal(seq: readonly OracleColour[]): boolean {
   return true;
 }
 
-/** Does `pool` split into pairs none of which is in `forbidden` (keys built with oraclePairKey)? A plain recursive search: the
- *  first unmatched entrant is tried with each partner in turn. An odd pool has no perfect matching; an empty one has the empty
- *  matching. */
-export function perfectMatchingExists(pool: readonly string[], forbidden: ReadonlySet<string>): boolean {
+// Every perfect matching of `pool` avoiding `forbidden`, walked one at a time: the first unmatched entrant is tried with each
+// partner in turn. `visit` gets each matching as it is completed and returns true to stop the walk; the walk returns whether it
+// was stopped. An odd pool has no perfect matching; an empty one has the empty matching.
+function walkMatchings(
+  pool: readonly string[],
+  forbidden: ReadonlySet<string>,
+  visit: (boards: readonly (readonly [string, string])[]) => boolean,
+): boolean {
   if (pool.length > ORACLE_MAX_FIELD) {
     throw new Error(`swiss-oracle: the brute force matches a pool of n ≤ 12 (RB3-24), got ${pool.length}`);
   }
@@ -83,16 +88,40 @@ export function perfectMatchingExists(pool: readonly string[], forbidden: Readon
       throw new Error(`swiss-oracle: ${JSON.stringify(key)} is not a pair key the oracle built (oraclePairKey)`);
     }
   }
+  const boards: (readonly [string, string])[] = [];
   const search = (rest: readonly string[]): boolean => {
-    if (rest.length === 0) return true;
+    if (rest.length === 0) return visit([...boards]);
     const first = rest[0] as string;
     for (let i = 1; i < rest.length; i++) {
-      if (forbidden.has(oraclePairKey(first, rest[i] as string))) continue;
-      if (search(rest.filter((_, j) => j !== 0 && j !== i))) return true;
+      const partner = rest[i] as string;
+      if (forbidden.has(oraclePairKey(first, partner))) continue;
+      boards.push([first, partner]);
+      const stopped = search(rest.filter((_, j) => j !== 0 && j !== i));
+      boards.pop();
+      if (stopped) return true;
     }
     return false;
   };
   return search(pool);
+}
+
+/** Does `pool` split into pairs none of which is in `forbidden` (keys built with oraclePairKey)? A plain recursive search: the
+ *  first unmatched entrant is tried with each partner in turn. An odd pool has no perfect matching; an empty one has the empty
+ *  matching. */
+export function perfectMatchingExists(pool: readonly string[], forbidden: ReadonlySet<string>): boolean {
+  return walkMatchings(pool, forbidden, () => true);
+}
+
+/** Every perfect matching of `pool` avoiding `forbidden`, each as its boards (two ids per board, in pool order). The same search
+ *  as perfectMatchingExists, walked to the end: for a question about ALL the ways to seat a round (X-SW-10's "no completion keeps
+ *  the next round pairable"). */
+export function perfectMatchings(pool: readonly string[], forbidden: ReadonlySet<string>): (readonly [string, string])[][] {
+  const out: (readonly [string, string])[][] = [];
+  walkMatchings(pool, forbidden, (boards) => {
+    out.push([...boards]);
+    return false;
+  });
+  return out;
 }
 
 export interface OracleEntrant {
@@ -209,6 +238,25 @@ export function seatedRoundViolations(
     }
   }
   return out;
+}
+
+/** The round after a seated one (X-SW-10's "next round"; rulebook §3.3 prevention): the same field, the seated boards added to
+ *  the pairs that have met (P-A1), the bye added to the bye-ineligible (P-A4), and with colours on, each board's White (home) and
+ *  Black (away) appended to its two sides' sequences (P-A5). Scores are carried as they are: existence does not read them. */
+export function roundAfter(
+  round: OracleRound,
+  seated: { pairings: readonly { home: string; away: string }[]; bye?: string },
+): OracleRound {
+  const played = [...round.played, ...seated.pairings.map((p): [string, string] => [p.home, p.away])];
+  const byeIneligible = new Set(round.byeIneligible ?? []);
+  if (seated.bye !== undefined) byeIneligible.add(seated.bye);
+  if (round.colours === undefined) return { field: round.field, played, byeIneligible };
+  const colours = new Map<string, readonly OracleColour[]>(round.colours);
+  for (const p of seated.pairings) {
+    colours.set(p.home, [...colourOf(round, p.home), "W"]);
+    colours.set(p.away, [...colourOf(round, p.away), "B"]);
+  }
+  return { field: round.field, played, byeIneligible, colours };
 }
 
 /** Bye minimality (rulebook §2.3 item 4; P-Q2's hard core, A3 [C5]): the eligible entrants with a strictly lower score than

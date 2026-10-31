@@ -19,6 +19,15 @@
 // order is fixed (fold distance, then global rank order), so the same inputs
 // always yield the same pairing.
 //
+// With `lookAhead` (W3 X-SW-10; the app sets it when a stage plays more rounds
+// than the safe maximum ⌊n/2⌋), each complete pairing the search reaches, in the
+// same order, is kept only if the next round could still be paired; the search
+// goes on past one that dead-ends, but only among the completions of the bye
+// candidate it already chose (bye minimality outranks it). When none keeps the
+// next round pairable, the first is seated anyway: the round reports
+// `nextRound: "unpairable"` (or "unknown" when the shared budget ran out first)
+// so the organiser can be told, never a refusal (rulebook-W3 §3.3, RB3-4).
+//
 // When it fails, pairRound returns a named refusal (SWISS_NO_LEGAL_PAIRING with
 // its reason) that writes nothing, not even the bye — never an empty or partial
 // round reported as success (W3 X-SW-3; rulebook-W3 §3.3, P-A6; FIDE C.04.3 [C4]).
@@ -49,7 +58,14 @@ export interface SwissConstraints {
   /** Hammes preset (Jul3/08 §7, 20 Jan): pair ADJACENT ranks (1v2, 3v4, …)
    *  instead of folding top-vs-bottom; the no-rematch backtracking is shared. */
   pairing?: "fold" | "rank_adjacent";
+  /** One-round look-ahead (W3 X-SW-10; rulebook-W3 §3.3 prevention, RB3-4; not a FIDE criterion). The app sets it on a stage
+   *  that plays more rounds than the safe maximum ⌊n/2⌋. The search then prefers, among the legal pairings of the bye it
+   *  would choose anyway, one after which the next round can still be paired, and reports its verdict as `nextRound`. */
+  lookAhead?: boolean;
 }
+
+/** Whether the round after this one can be paired legally (X-SW-10): `unknown` when the search budget ran out first. */
+export type SwissNextRound = "pairable" | "unpairable" | "unknown";
 
 export interface SwissPairing {
   home: EntrantId; // chess: White
@@ -78,6 +94,9 @@ export interface SwissRound {
   pairings: SwissPairing[]; // always ⌊n/2⌋ ≥ 1 boards
   bye?: EntrantId; // present iff n is odd: the entrant sitting out
   floated: EntrantId[]; // entrants that downfloated this round (merge into history.floats)
+  // Present iff constraints.lookAhead: can the next round (this field, with this round's boards, bye and colours added) be
+  // paired? "unpairable" seats this round anyway (a soft preference, never a refusal); the app warns the organiser.
+  nextRound?: SwissNextRound;
 }
 
 export type SwissPairResult = SwissRound | SwissRefusal;
@@ -299,23 +318,44 @@ export function pairRound(
     }
     return true;
   };
-  const matchWithin = (list: SwissStanding[]): [SwissStanding, SwissStanding][] | null => {
+  // The search reaches complete pairings ("leaves") one at a time, in preference order, and hands each to a continuation,
+  // which answers whether the search may stop there. Without the look-ahead the first leaf is taken, so the search visits
+  // exactly the nodes it always did. What one search found: no leaf at all ("none"), leaves that were all turned down
+  // ("rejected"), or one that was taken ("accepted").
+  type Found = "none" | "rejected" | "accepted";
+  type Boards = [SwissStanding, SwissStanding][];
+
+  // `k` gets each complete matching of `list` (with the boards chosen before it in the caller's own continuation). When
+  // `k` answers "none", what follows `list` cannot complete whatever `list`'s matching is (the groups below a score
+  // group read only its floaters), so this list's other matchings are not tried. A subset that reached no leaf is
+  // remembered as dead within this run; one whose leaves were turned down is not, since another prefix may be taken.
+  const matchWithin = (list: SwissStanding[], k: (boards: Boards) => Found): Found => {
     const memoFail = new Set<string>();
-    const rec = (remaining: SwissStanding[]): [SwissStanding, SwissStanding][] | null => {
-      if (remaining.length === 0) return [];
-      if (!spend()) return null;
+    const chosen: Boards = [];
+    let deadBelow = false;
+    const rec = (remaining: SwissStanding[]): Found => {
+      if (remaining.length === 0) {
+        const answer = k([...chosen]);
+        if (answer === "none") deadBelow = true;
+        return answer;
+      }
+      if (!spend()) return "none";
       const key = remaining.map((s) => s.entrantId).join(",");
-      if (memoFail.has(key)) return null;
+      if (memoFail.has(key)) return "none";
       const a = remaining[0] as SwissStanding;
       const others = remaining.slice(1);
+      let found: Found = "none";
       for (const b of orderCandidates(a, others)) {
         if (!hardLegal(a, b)) continue;
-        const rest = others.filter((o) => o.entrantId !== b.entrantId);
-        const sub = rec(rest);
-        if (sub !== null) return [[a, b], ...sub];
+        chosen.push([a, b]);
+        const sub = rec(others.filter((o) => o.entrantId !== b.entrantId));
+        chosen.pop();
+        if (sub === "accepted") return "accepted";
+        if (sub === "rejected") found = "rejected";
+        if (deadBelow) return found;
       }
-      memoFail.add(key);
-      return null;
+      if (found === "none") memoFail.add(key);
+      return found;
     };
     return rec(list);
   };
@@ -333,50 +373,166 @@ export function pairRound(
     groups: readonly SwissStanding[][],
     gi: number,
     carry: SwissStanding[],
-  ): [SwissStanding, SwissStanding][] | null => {
-    if (gi >= groups.length) return carry.length === 0 ? [] : null;
+    k: (boards: Boards) => Found,
+  ): Found => {
+    if (gi >= groups.length) return carry.length === 0 ? k([]) : "none";
     const current = [...carry, ...(groups[gi] as SwissStanding[])];
     const isLast = gi === groups.length - 1;
     const parity = current.length % 2;
     const maxFloat = isLast ? 0 : parity + 4; // cap extra floats per group (the pass's cost is held by GROUP_PASS_SHARE)
 
+    let found: Found = "none";
     for (let fc = parity; fc <= maxFloat; fc += 2) {
       if (isLast && fc !== 0) break;
       for (const floaters of floaterChoices(current, fc, floatCountOf)) {
-        if (!spend()) return null;
+        if (!spend()) return found;
         const set = new Set(floaters.map((f) => f.entrantId));
         const rest = current.filter((c) => !set.has(c.entrantId));
-        const here = matchWithin(rest);
-        if (here === null) continue;
-        const sub = pairFrom(groups, gi + 1, floaters);
-        if (sub !== null) return [...here, ...sub];
+        const here = matchWithin(rest, (boards) => pairFrom(groups, gi + 1, floaters, (below) => k([...boards, ...below])));
+        if (here === "accepted") return "accepted";
+        if (here === "rejected") found = "rejected";
       }
     }
-    return null;
+    return found;
   };
 
   // One bye candidate's remainder: the score-group pass first (P-Q1), and only when the groups cannot pair it within
-  // their share of the search budget, the complete search over the whole remainder (P-A6). Floats are read off the
-  // boards either way (below).
-  const pairRemainder = (remainder: SwissStanding[]): [SwissStanding, SwissStanding][] | null => {
+  // their share of the search budget (or, with the look-ahead, every pairing they reached was turned down), the complete
+  // search over the whole remainder (P-A6). Floats are read off the boards either way (below).
+  const pairRemainder = (remainder: SwissStanding[], leaf: (boards: Boards) => Found): Found => {
     cap = Math.min(budget, nodes + Math.floor((budget - nodes) * GROUP_PASS_SHARE));
-    const viaGroups = pairFrom(groupByScore(remainder), 0, []);
+    const viaGroups = pairFrom(groupByScore(remainder), 0, [], leaf);
     cap = budget;
-    if (viaGroups !== null || exhausted) return viaGroups;
-    return matchWithin(remainder);
+    if (viaGroups === "accepted" || exhausted) return viaGroups;
+    const whole = matchWithin(remainder, leaf);
+    return whole === "none" ? viaGroups : whole;
+  };
+
+  // Seat the boards: colours (chess) or home and away, and the downfloats. Each board is turned upper board first (its
+  // place in the pairing order) before either is read. The search does not promise that order: carried floaters arrive
+  // bottom first, and the look-ahead reaches pairings in which two of them meet. Read as reached, such a board would name
+  // the lower side as the one that floated, and give the upper board's colour claim to the lower one.
+  const position = new Map(ordered.map((s, i) => [s, i]));
+  const seat = (boards: Boards): { pairings: SwissPairing[]; floated: EntrantId[] } => {
+    const pairings: SwissPairing[] = [];
+    const floated: EntrantId[] = [];
+    for (const [x, y] of boards) {
+      const [a, b] = (position.get(x) as number) < (position.get(y) as number) ? [x, y] : [y, x];
+      if (a.score !== b.score) floated.push(a.entrantId); // a is the stronger side ⇒ it floated down
+      pairings.push(assignColours(a, b, chess, stateOf));
+    }
+    return { pairings, floated };
+  };
+
+  // The look-ahead's leaf check (X-SW-10): with these boards and this bye seated, can the next round be paired at all? The
+  // same field, with this round's boards played (P-A1), its bye no longer eligible (P-A4), and for chess the colours as
+  // seated (P-A5). Existence only, over the whole field: an odd field adds one bye seat that only a bye-eligible entrant may
+  // take, so a perfect matching that seats it IS a bye choice with a pairable remainder. It draws on the same node budget,
+  // and answers "cut" when that ran out before it proved either answer. `withColours` false lifts the colour limits.
+  const lookAhead = constraints.lookAhead === true;
+  const nextRoundCheck = (boards: Boards, bye: SwissStanding | undefined, withColours: boolean): "yes" | "no" | "cut" => {
+    const metNow = new Set(boards.map(([a, b]) => pairKey(a.entrantId, b.entrantId)));
+    const nextState = new Map<EntrantId, ColourState>();
+    if (withColours) {
+      const take = (id: EntrantId, c: Colour): void => {
+        nextState.set(id, colourState([...(history.colours?.get(id) ?? []), c]));
+      };
+      for (const p of seat(boards).pairings) {
+        take(p.home, "W");
+        take(p.away, "B");
+      }
+    }
+    const stateNext = (id: EntrantId): ColourState => nextState.get(id) ?? stateOf(id);
+    const field = ordered;
+    const byeSeat = field.length % 2 === 1 ? field.length : -1; // index of the extra seat, odd fields only
+    const legal = (i: number, j: number): boolean => {
+      if (j === byeSeat) {
+        const s = field[i] as SwissStanding;
+        return s !== bye && history.byes?.has(s.entrantId) !== true;
+      }
+      const x = (field[i] as SwissStanding).entrantId;
+      const y = (field[j] as SwissStanding).entrantId;
+      const key = pairKey(x, y);
+      if (played.has(key) || metNow.has(key)) return false;
+      if (!withColours) return true;
+      const sx = stateNext(x);
+      const sy = stateNext(y);
+      return (canTake(sx, "W") && canTake(sy, "B")) || (canTake(sx, "B") && canTake(sy, "W"));
+    };
+    const memoFail = new Set<string>();
+    let cut = false;
+    const rec = (remaining: number[]): boolean => {
+      if (remaining.length === 0) return true;
+      if (!spend()) {
+        cut = true;
+        return false;
+      }
+      const key = remaining.join(",");
+      if (memoFail.has(key)) return false;
+      const i = remaining[0] as number;
+      const others = remaining.slice(1);
+      for (const j of others) {
+        if (legal(i, j) && rec(others.filter((o) => o !== j))) return true;
+      }
+      memoFail.add(key);
+      return false;
+    };
+    const seats = Array.from({ length: field.length + (byeSeat >= 0 ? 1 : 0) }, (_, i) => i);
+    return rec(seats) ? "yes" : cut ? "cut" : "no";
   };
 
   for (const bye of candidates) {
-    const matched = pairRemainder(remainderOf(bye));
-    if (matched !== null) {
-      // Assign colours (chess) / home-away, and record downfloats.
-      const pairings: SwissPairing[] = [];
-      const floated: EntrantId[] = [];
-      for (const [a, b] of matched) {
-        if (a.score !== b.score) floated.push(a.entrantId); // a is the stronger side ⇒ it floated down
-        pairings.push(assignColours(a, b, chess, stateOf));
+    // The first leaf this bye reaches is the pairing the search has always returned. With the look-ahead, the search goes on
+    // past a leaf after which the next round cannot pair, but only among this bye's own completions: the bye is the
+    // P-Q2-minimal one, and bye minimality outranks every other criterion (controller ruling R1; rulebook §2.3 item 4).
+    // "accepted" stops the search: the leaf took the boards, or proved that no completion of this bye can be taken.
+    let first: Boards | undefined;
+    let taken: Boards | undefined;
+    // A pairing the score-group pass reaches by several floater choices, and again in the whole-remainder search, is judged
+    // once. The memo is keyed on the boards AS REACHED (each pair in the order the search holds it), not on the set: the
+    // same set reached with a board the other way up is judged again, so its verdict rests on `seat` turning every board
+    // upper side first, and never on the memo standing in for that.
+    const verdicts = new Map<string, boolean>();
+    let baseChecked = false;
+    const leaf = (boards: Boards): Found => {
+      first ??= boards;
+      if (!lookAhead) {
+        taken = boards;
+        return "accepted";
       }
-      return { ok: true, pairings, floated, ...(bye === undefined ? {} : { bye: bye.entrantId }) };
+      const key = boards.map(([a, b]) => JSON.stringify([a.entrantId, b.entrantId])).sort().join("\n");
+      let pairs = verdicts.get(key);
+      if (pairs === undefined) {
+        const answer = nextRoundCheck(boards, bye, chess);
+        if (answer === "cut") return "rejected"; // not proved either way: a later reach judges it again
+        pairs = answer === "yes";
+        verdicts.set(key, pairs);
+      }
+      if (pairs) {
+        taken = boards;
+        return "accepted";
+      }
+      // Turned down. If the next round cannot pair even before this round adds its boards and colours (this bye spent, the
+      // colour limits lifted), no completion of this bye can make it pair: stop here rather than walk them all.
+      if (!baseChecked) {
+        const base = nextRoundCheck([], bye, false);
+        if (base !== "cut") baseChecked = true;
+        if (base === "no") return "accepted";
+      }
+      return "rejected";
+    };
+    pairRemainder(remainderOf(bye), leaf);
+    if (first !== undefined) {
+      // No leaf kept the next round pairable: seat the first anyway (a soft preference, never a refusal), and say why.
+      const nextRound: SwissNextRound = taken !== undefined ? "pairable" : exhausted ? "unknown" : "unpairable";
+      const { pairings, floated } = seat(taken ?? first);
+      return {
+        ok: true,
+        pairings,
+        floated,
+        ...(bye === undefined ? {} : { bye: bye.entrantId }),
+        ...(lookAhead ? { nextRound } : {}),
+      };
     }
     if (exhausted) return refuse("search_limit");
   }
@@ -388,7 +544,7 @@ export function pairRound(
   if (!chess) return refuse("rematch");
   liftColourLimits = true;
   for (const bye of candidates) {
-    if (matchWithin(remainderOf(bye)) !== null) return refuse("colour");
+    if (matchWithin(remainderOf(bye), () => "accepted") === "accepted") return refuse("colour");
     if (exhausted) return refuse("search_limit");
   }
   return refuse("rematch");

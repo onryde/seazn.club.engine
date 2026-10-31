@@ -2,7 +2,26 @@
 // refusal, never an empty or partial round reported as success.
 import { describe, expect, it } from "vitest";
 import { mulberry32 } from "../core/rng.ts";
-import { pairKey, pairRound, SWISS_SEARCH_BUDGET, type Colour, type SwissConstraints, type SwissStanding } from "./swiss.ts";
+import {
+  judgeRound,
+  lowerScoredPairableByes,
+  mayTake,
+  oraclePairKey,
+  perfectMatchings,
+  roundAfter,
+  seatedRoundViolations,
+  type OracleRound,
+} from "../testkit/swiss-oracle.ts";
+import {
+  pairKey,
+  pairRound,
+  SWISS_SEARCH_BUDGET,
+  type Colour,
+  type SwissConstraints,
+  type SwissPairResult,
+  type SwissRound,
+  type SwissStanding,
+} from "./swiss.ts";
 
 // Everyone on 0 points; rank follows the list order (index 0 = rank 1, the strongest).
 const st = (ids: string[]): SwissStanding[] => ids.map((id, i) => ({ entrantId: id, score: 0, rank: i + 1 }));
@@ -271,8 +290,9 @@ describe("X-SW-2 score groups first, bounded floats, a whole-field search only w
 // The rule, read from the rulebook and never from the engine: an entrant's home/away record (home = "W", as the app stores
 // it for every sport) asks for a side. More homes than aways asks away and more aways asks home; a level record asks the
 // side it did not have last; no record asks nothing. On a board both asks are granted when they differ; the same ask goes
-// to the larger imbalance, then to the upper board; a lone ask is granted; with none, the upper board is home (the order of
-// rulebook P-Q5 for colours, applied as a soft preference: nothing here is ever a reason to refuse a pairing).
+// to the larger imbalance, then to the upper board; a lone ask is granted; with none, the upper board is home (an
+// approximation of FIDE C.04.3 art. 5.2's colour allocation order, applied as a soft preference: nothing here is ever a
+// reason to refuse a pairing).
 type Side = "home" | "away";
 type Why = "neutral" | "both" | "imbalance" | "upperBoard" | "upperOnly" | "lowerOnly";
 const asks = (record: readonly Colour[]): { side: Side | null; imbalance: number } => {
@@ -301,8 +321,11 @@ function rulebookSides(upper: string, lower: string, recordOf: (id: string) => r
 // The sweep's time budget, SIZED from measured cost as swiss.test.ts's properties are (T3 controller ruling: a derived budget
 // is sizing; the --testTimeout flag is banned): max(5 s default, events × p99.9 cost of one event × 5 load slack). One event
 // cost 0.90 ms mean, 8.39 ms p99.9, 42 ms max over 4,000 events of this sweep (a probe copy, 2026-10-31, load average ~6;
-// task-4-report.md). 200 events reach every counted bucket (the rarest, a lone ask, ~1 board in 5 events).
+// task-4-report.md). 200 events reach every counted bucket (the rarest, a retried bye, 3 rounds in 200 events). T4b turned
+// on the look-ahead in the events past the safe maximum and added FALLBACK_ROUNDS constructed rounds: the whole test then
+// took 0.26–0.61 s at load average 15–20 (task-4b-report.md), far inside the budget, so the budget stands.
 const SWEEP_EVENTS = 200;
+const FALLBACK_ROUNDS = 20;
 const SWEEP_BUDGET_MS = Math.max(5_000, Math.ceil(SWEEP_EVENTS * 8.4 * 5));
 
 describe("X-SW-4 outside chess, a Swiss board's home side alternates where it can, and never refuses a pairing (rulebook RB3-11, P-Q6; SW-L5)", () => {
@@ -312,16 +335,16 @@ describe("X-SW-4 outside chess, a Swiss board's home side alternates where it ca
   // and p0 is rank 1 (the upper board), p1 rank 2.
   const rec = (entries: [string, Colour[]][]) => new Map(entries);
 
-  it("X-SW-4 non-chess: home last round meets away last round → the sides swap (P-Q6)", () => {
-    const r = pairRound(st(["p0", "p1"]), { played: new Set(), colours: rec([["p0", ["W"]], ["p1", ["B"]]]) });
-    expect(r.ok && r.pairings).toEqual([{ home: "p1", away: "p0" }]); // differential: today p0 home
-  });
-
-  it("X-SW-4 round 1 (no history): the upper board is home", () => {
+  it("X-SW-4 the empty case first: round 1 (no history), the upper board is home", () => {
     expect(pairRound(st(["p0", "p1"]), { played: new Set() })).toMatchObject({ ok: true, pairings: [{ home: "p0", away: "p1" }] });
     // an empty record is no history either
     expect(pairRound(st(["p0", "p1"]), { played: new Set(), colours: rec([["p0", []], ["p1", []]]) }))
       .toMatchObject({ ok: true, pairings: [{ home: "p0", away: "p1" }] });
+  });
+
+  it("X-SW-4 non-chess: home last round meets away last round → the sides swap (P-Q6)", () => {
+    const r = pairRound(st(["p0", "p1"]), { played: new Set(), colours: rec([["p0", ["W"]], ["p1", ["B"]]]) });
+    expect(r.ok && r.pairings).toEqual([{ home: "p1", away: "p0" }]); // differential: today p0 home
   });
 
   it("X-SW-4 soft: three homes running is still paired outside chess (no hard limit)", () => {
@@ -407,21 +430,65 @@ describe("X-SW-4 outside chess, a Swiss board's home side alternates where it ca
     });
   });
 
-  it("X-SW-4 every board of every simulated non-chess event takes the rule's sides, fold and rank-adjacent, before and after a withdrawal; a second call agrees (counted)", () => {
+  it("X-SW-4 every board of every simulated non-chess event takes the rule's sides, fold and rank-adjacent, before and after a withdrawal, a retried bye, the whole-field fallback and the look-ahead; a second call agrees (counted)", () => {
     // Each event is RUN: every record is the sides earlier rounds actually seated (a bye seats no side), so every history is
     // one a real event produces. Results: the higher-ranked side wins 60%, an upset 25%, a draw 15%, on football-like table
     // points (win 3, draw 1; a bye pays the win) so score groups form and split. In 40% of events one entrant withdraws
     // before a round after the first and is never paired again (P-A7). The upper board is the side above the other in the
-    // pairing order the rulebook defines (score, then rank).
+    // pairing order the rulebook defines (score, then rank). As the app does, an event asking for more rounds than the safe
+    // maximum ⌊n/2⌋ pairs with the one-round look-ahead on (X-SW-10). Two paths no real event here reaches often enough are
+    // counted on their own: a retried bye (the bye is not the lowest eligible entrant, P-Q2) and the whole-field fallback
+    // (some score boundary is crossed by more boards than the score-group pass may float across it, parity + 4: so the
+    // boards cannot be the pass's). Real events never cross that bound, so FALLBACK_ROUNDS constructed rounds that must
+    // cross it (below) are judged by the same rule.
     const EVENTS = SWEEP_EVENTS;
     const t = { events: 0, rounds: 0, boards: 0, refused: 0, rankAdjacent: 0, afterWithdrawal: 0, lowerHome: 0,
-      neutral: 0, both: 0, imbalance: 0, upperBoard: 0, upperOnly: 0, lowerOnly: 0 };
+      neutral: 0, both: 0, imbalance: 0, upperBoard: 0, upperOnly: 0, lowerOnly: 0, byeRetry: 0, fallback: 0, lookAhead: 0 };
+    // judge one seated round: every board against the rule's sides; and the two path witnesses
+    const judge = (
+      r: SwissRound,
+      field: readonly SwissStanding[],
+      colours: ReadonlyMap<string, readonly Colour[]>,
+      byes: ReadonlySet<string>,
+      at: Record<string, unknown>,
+    ): { lowerHome: number } => {
+      const of = new Map(field.map((s) => [s.entrantId, s]));
+      const above = (x: string, y: string): boolean => {
+        const [a, b] = [of.get(x) as SwissStanding, of.get(y) as SwissStanding];
+        return a.score !== b.score ? a.score > b.score : a.rank < b.rank;
+      };
+      let lowerHome = 0;
+      for (const p of r.pairings) {
+        const [upper, lower] = above(p.home, p.away) ? [p.home, p.away] : [p.away, p.home];
+        const want = rulebookSides(upper, lower, (id) => colours.get(id) ?? []);
+        expect({ ...at, board: [p.home, p.away] }).toEqual({ ...at, board: [want.home, want.away] });
+        t.boards++;
+        t[want.why]++;
+        if (want.home === lower) lowerHome++; // the rule seats the lower board home: "stronger side always home" would not
+      }
+      // the bye: the lowest eligible entrant in the pairing order is the first candidate (P-Q2); any other was retried
+      const eligible = field.filter((s) => !byes.has(s.entrantId));
+      const lowest = eligible.reduce<SwissStanding | undefined>((lo, s) => (lo === undefined || above(lo.entrantId, s.entrantId) ? s : lo), undefined);
+      if (r.bye !== undefined && r.bye !== lowest?.entrantId) t.byeRetry++;
+      // the fallback: below each score boundary of the paired remainder, count the boards that cross it
+      const paired = field.filter((s) => s.entrantId !== r.bye);
+      const scores = [...new Set(paired.map((s) => s.score))].sort((a, b) => b - a);
+      const scoreOf = (id: string): number => (of.get(id) as SwissStanding).score;
+      const crossesBound = scores.slice(0, -1).some((cut) => {
+        const aboveCut = paired.filter((s) => s.score >= cut).length;
+        const crossing = r.pairings.filter((p) => (scoreOf(p.home) >= cut) !== (scoreOf(p.away) >= cut)).length;
+        return crossing > (aboveCut % 2) + 4;
+      });
+      if (crossesBound) t.fallback++;
+      return { lowerHome };
+    };
     for (let seed = 1; seed <= EVENTS; seed++) {
       const rng = mulberry32(seed);
       const n = 2 + Math.floor(rng() * 23); // 2..24
       const roundsAsked = 1 + Math.floor(rng() * 8); // 1..8
       const pairing: SwissConstraints["pairing"] = rng() < 0.5 ? "fold" : "rank_adjacent";
       const withdrawBefore = roundsAsked >= 2 && rng() < 0.4 ? 2 + Math.floor(rng() * (roundsAsked - 1)) : undefined;
+      const lookAhead = roundsAsked > Math.floor(n / 2); // the app's rule (X-SW-10)
       const ids = Array.from({ length: n }, (_, i) => `p${i}`);
       const rank = new Map(ids.map((id, i) => [id, i + 1]));
       const score = new Map(ids.map((id) => [id, 0]));
@@ -434,27 +501,19 @@ describe("X-SW-4 outside chess, a Swiss board's home side alternates where it ca
         if (round === withdrawBefore) active = active.filter((id) => id !== active[Math.floor(rng() * active.length)]);
         const standings: SwissStanding[] = active.map((id) => ({ entrantId: id, score: score.get(id) as number, rank: rank.get(id) as number }));
         const history = { played, colours, byes };
-        const r = pairRound(standings, history, { pairing });
-        expect(pairRound(standings, history, { pairing })).toEqual(r); // the second call
+        const constraints: SwissConstraints = lookAhead ? { pairing, lookAhead } : { pairing };
+        const r = pairRound(standings, history, constraints);
+        expect(pairRound(standings, history, constraints)).toEqual(r); // the second call
         if (!r.ok) {
           t.refused++; // past what the field can pair: the event stops (its legality is X-SW-1's)
           break;
         }
         t.rounds++;
-        const above = (x: string, y: string): boolean =>
-          (score.get(x) as number) !== (score.get(y) as number)
-            ? (score.get(x) as number) > (score.get(y) as number)
-            : (rank.get(x) as number) < (rank.get(y) as number);
-        for (const p of r.pairings) {
-          const [upper, lower] = above(p.home, p.away) ? [p.home, p.away] : [p.away, p.home];
-          const want = rulebookSides(upper, lower, (id) => colours.get(id) ?? []);
-          expect({ seed, round, board: [p.home, p.away] }).toEqual({ seed, round, board: [want.home, want.away] });
-          t.boards++;
-          t[want.why]++;
-          if (want.home === lower) t.lowerHome++; // the rule seats the lower board home: "stronger side always home" would not
-          if (pairing === "rank_adjacent") t.rankAdjacent++;
-          if (withdrawBefore !== undefined && round >= withdrawBefore) t.afterWithdrawal++;
-        }
+        t.lowerHome += judge(r, standings, colours, byes, { seed, round }).lowerHome;
+        const boards = r.pairings.length;
+        if (pairing === "rank_adjacent") t.rankAdjacent += boards;
+        if (withdrawBefore !== undefined && round >= withdrawBefore) t.afterWithdrawal += boards;
+        if (lookAhead) t.lookAhead += boards;
         for (const p of r.pairings) {
           played.add(pairKey(p.home, p.away));
           colours.set(p.home, [...(colours.get(p.home) ?? []), "W"]);
@@ -475,10 +534,355 @@ describe("X-SW-4 outside chess, a Swiss board's home side alternates where it ca
         }
       }
     }
+    // The constructed fallback rounds: score 1, p0..p(k−1), have all met each other; score 0, q0..q(k−1), have met nobody.
+    // Every p must play a q, so k > 4 boards cross the one boundary and the score-group pass cannot seat them (X-SW-2).
+    // Each entrant brings a random home/away record of 0–4 rounds; with k odd, the boundary takes an odd count.
+    const fallbackBefore = t.fallback;
+    for (let seed = 1; seed <= FALLBACK_ROUNDS; seed++) {
+      const rng = mulberry32(10_000 + seed);
+      const k = 6 + Math.floor(rng() * 3); // 6..8
+      const ps = Array.from({ length: k }, (_, i) => `p${i}`), qs = Array.from({ length: k }, (_, i) => `q${i}`);
+      const field: SwissStanding[] = [
+        ...ps.map((id, i) => ({ entrantId: id, score: 1, rank: i + 1 })),
+        ...qs.map((id, i) => ({ entrantId: id, score: 0, rank: k + 1 + i })),
+      ];
+      const played = new Set(ps.flatMap((x, i) => ps.slice(i + 1).map((y) => pairKey(x, y))));
+      const colours = new Map<string, Colour[]>(
+        [...ps, ...qs].map((id) => [id, Array.from({ length: Math.floor(rng() * 5) }, () => (rng() < 0.5 ? "W" : "B"))]),
+      );
+      const pairing: SwissConstraints["pairing"] = rng() < 0.5 ? "fold" : "rank_adjacent";
+      const r = seated(pairRound(field, { played, colours }, { pairing }));
+      expect(pairRound(field, { played, colours }, { pairing })).toEqual(r); // the second call
+      t.rounds++;
+      t.lowerHome += judge(r, field, colours, new Set(), { fallbackSeed: seed }).lowerHome;
+      if (pairing === "rank_adjacent") t.rankAdjacent += r.pairings.length;
+    }
+    expect(t.fallback - fallbackBefore).toBe(FALLBACK_ROUNDS); // every constructed round took the whole-field search
     // anti-vacuity: every event ran; boards were judged in every branch of the rule, under both pairing shapes, after a
-    // withdrawal, and with the lower board home (where "stronger side always home" differs); refusals were reached too
+    // withdrawal, after a retried bye, from the whole-field fallback, with the look-ahead on, and with the lower board home
+    // (where "stronger side always home" differs); refusals were reached too
     expect(t.events).toBe(EVENTS);
     expect(t.neutral + t.both + t.imbalance + t.upperBoard + t.upperOnly + t.lowerOnly).toBe(t.boards);
     for (const [k, v] of Object.entries(t)) expect([k, v > 0]).toEqual([k, true]);
   }, SWEEP_BUDGET_MS);
+});
+
+// ---------------------------------------------------------------------------
+// X-SW-10 — above the safe maximum, a one-round look-ahead (rulebook §3.3 prevention, RB3-4; not a FIDE criterion)
+// ---------------------------------------------------------------------------
+
+// The look-ahead's question, answered by the oracle from the rulebook and never by the engine: once this round is seated as `r`
+// seats it, can the next round be paired at all? The same field, with this round's boards played, its bye no longer eligible
+// (P-A4), and with chess colours on, its sides appended (P-A5).
+function seated(r: SwissPairResult): SwissRound {
+  if (!r.ok) throw new Error(`expected a seated round, got the refusal ${r.reason}`);
+  return r;
+}
+const nextPairs = (round: OracleRound, r: SwissPairResult): boolean => judgeRound(roundAfter(round, seated(r))).exists;
+const boardsOf = (r: SwissPairResult): string[] => (r.ok ? r.pairings.map((p) => pairKey(p.home, p.away)).sort() : []);
+const keysOf = (pairs: readonly (readonly [string, string])[]): string[] => pairs.map(([a, b]) => pairKey(a, b)).sort();
+const flat = (ids: readonly string[]): OracleRound["field"] => ids.map((id) => ({ id, score: 0 }));
+
+// Example S6 (found by brute force over 6 entrants): rounds 1–2 played a 6-cycle, R1 {p0-p1, p2-p3, p4-p5} and
+// R2 {p0-p5, p1-p2, p3-p4}; every score is 0.
+const S6_IDS = ["p0", "p1", "p2", "p3", "p4", "p5"];
+const S6_PLAYED: [string, string][] = [["p0", "p1"], ["p2", "p3"], ["p4", "p5"], ["p0", "p5"], ["p1", "p2"], ["p3", "p4"]];
+const S6 = { played: new Set(S6_PLAYED.map(([a, b]) => pairKey(a, b))) };
+const S6_ROUND: OracleRound = { field: flat(S6_IDS), played: S6_PLAYED };
+
+describe("X-SW-10 above the safe maximum, a round is paired so that the next round can still pair, where a choice exists (rulebook §3.3 prevention, RB3-4)", () => {
+  it("X-SW-10 empty case first: without lookAhead the result carries no nextRound, and a refusal carries none with it", () => {
+    expect("nextRound" in (pairRound(st(S6_IDS), S6) as object)).toBe(false);
+    expect("nextRound" in (pairRound(st(S6_IDS), S6, { lookAhead: false }) as object)).toBe(false);
+    // a round that cannot be paired is the bare refusal (X-SW-3): there is no seated round to look past
+    const ids = ["a", "b", "c", "d"];
+    const allMet = new Set(ids.flatMap((x, i) => ids.slice(i + 1).map((y) => pairKey(x, y))));
+    const refused = pairRound(st(ids), { played: allMet }, { lookAhead: true });
+    expect(refused).toEqual({ ok: false, code: "SWISS_NO_LEGAL_PAIRING", reason: "rematch", field: 4 });
+    expect("nextRound" in refused).toBe(false);
+  });
+
+  it("X-SW-10 above the safe maximum, round 3 of 6 entrants is paired so that round 4 still pairs (rulebook §3.3 prevention)", () => {
+    // differential: without the look-ahead the fold seats the three diameters, after which the unplayed pairs are two
+    // triangles {p0,p2,p4} and {p1,p3,p5}, so round 4 has no rematch-free pairing (rulebook §3.1's 6 × 5 audit case)
+    const today = pairRound(st(S6_IDS), S6);
+    expect(boardsOf(today)).toEqual(keysOf([["p0", "p3"], ["p1", "p4"], ["p2", "p5"]]));
+    expect(nextPairs(S6_ROUND, today)).toBe(false);
+    const r = pairRound(st(S6_IDS), S6, { lookAhead: true });
+    expect(r.ok && r.nextRound).toBe("pairable");
+    expect(seatedRoundViolations(S6_ROUND, seated(r))).toEqual([]); // still a legal round 3
+    expect(nextPairs(S6_ROUND, r)).toBe(true); // the oracle agrees: round 4 pairs after it
+    expect(boardsOf(r)).not.toEqual(boardsOf(today));
+  });
+
+  it("X-SW-10 when no pairing keeps the next round alive it still pairs, and says so: 4 entrants, round 3 → nextRound 'unpairable'", () => {
+    // R1 {a-b, c-d}, R2 {a-c, b-d}: round 3 is forced {a-d, b-c}; a round 4 cannot exist (even hard maximum n − 1 = 3)
+    const played: [string, string][] = [["a", "b"], ["c", "d"], ["a", "c"], ["b", "d"]];
+    const round: OracleRound = { field: flat(["a", "b", "c", "d"]), played };
+    expect(perfectMatchings(["a", "b", "c", "d"], new Set(played.map(([x, y]) => oraclePairKey(x, y))))).toHaveLength(1); // forced
+    const r = pairRound(st(["a", "b", "c", "d"]), { played: new Set(played.map(([x, y]) => pairKey(x, y))) }, { lookAhead: true });
+    expect(r).toMatchObject({ ok: true, nextRound: "unpairable" }); // a soft preference: never a refusal
+    expect(boardsOf(r)).toEqual(keysOf([["a", "d"], ["b", "c"]]));
+    expect(nextPairs(round, r)).toBe(false);
+  });
+
+  it("X-SW-10 odd field: the next round's bye eligibility counts this round's bye — 5 entrants where only this round's bye holder could take the next bye", () => {
+    // R1 {a-d, b-e} bye c; R2 {a-e, b-c} bye d. Round 3: every score is 0, so e is the lowest eligible, and its remainder pairs
+    // (P-Q2). The remainder {a, b, c, d} can be seated two ways: {a-c, b-d} (the fold's) or {a-b, c-d}.
+    const ids = ["a", "b", "c", "d", "e"];
+    const played: [string, string][] = [["a", "d"], ["b", "e"], ["a", "e"], ["b", "c"]];
+    const round: OracleRound = { field: flat(ids), played, byeIneligible: new Set(["c", "d"]) };
+    const history = { played: new Set(played.map(([x, y]) => pairKey(x, y))), byes: new Set(["c", "d"]) };
+    expect(perfectMatchings(["a", "b", "c", "d"], new Set(played.map(([x, y]) => oraclePairKey(x, y)))).map(keysOf).sort())
+      .toEqual([keysOf([["a", "b"], ["c", "d"]]), keysOf([["a", "c"], ["b", "d"]])]);
+    const today = pairRound(st(ids), history);
+    expect(today.ok && today.bye).toBe("e");
+    expect(boardsOf(today)).toEqual(keysOf([["a", "c"], ["b", "d"]]));
+    // the constructed differential: after the fold's seating, round 4 pairs ONLY with e on the bye again. Its eligible a and b
+    // each leave a rematch-only remainder; the counterfactual that forgets this round's bye (e eligible) would pair
+    expect(nextPairs(round, today)).toBe(false);
+    expect(judgeRound({ ...roundAfter(round, seated(today)), byeIneligible: new Set(["c", "d"]) }).exists).toBe(true);
+    // the look-ahead keeps the bye on e (ruling R1) and seats the other way, after which a or b can take round 4's bye
+    const r = pairRound(st(ids), history, { lookAhead: true });
+    expect(r.ok && r.bye).toBe("e");
+    expect(r.ok && r.nextRound).toBe("pairable");
+    expect(boardsOf(r)).toEqual(keysOf([["a", "b"], ["c", "d"]])); // the only other way to seat e's remainder
+    expect(nextPairs(round, r)).toBe(true);
+    expect(judgeRound(roundAfter(round, seated(r))).pairableByes).toEqual(["a", "b"]);
+  });
+
+  it("X-SW-10 the look-ahead never moves the bye (ruling R1): the lowest bye's only seating dead-ends round 5, a higher bye would not, and the bye stays put with nextRound 'unpairable'", () => {
+    // six entrants a..f played R1 {a-b, c-d, e-f}, R2 {a-e, b-c, d-f}, R3 {a-f, b-d, c-e}; then f withdraws. Round 4 of the five
+    // left: d has the lowest score, so d is the first bye candidate (P-Q2), and its remainder seats only {a-c, b-e}
+    const ids = ["a", "b", "c", "d", "e"];
+    const played: [string, string][] = [["a", "b"], ["c", "d"], ["a", "e"], ["b", "c"], ["b", "d"], ["c", "e"]];
+    const field: SwissStanding[] = [
+      { entrantId: "a", score: 3, rank: 1 }, { entrantId: "b", score: 1, rank: 2 }, { entrantId: "c", score: 2, rank: 3 },
+      { entrantId: "d", score: 0, rank: 4 }, { entrantId: "e", score: 1, rank: 5 },
+    ];
+    const round: OracleRound = { field: field.map((s) => ({ id: s.entrantId, score: s.score })), played };
+    const met = new Set(played.map(([x, y]) => oraclePairKey(x, y)));
+    expect(perfectMatchings(["a", "b", "c", "e"], met).map(keysOf)).toEqual([keysOf([["a", "c"], ["b", "e"]])]);
+    // the trade R1 forbids, shown to exist: a higher-scored bye (c) has a seating after which round 5 still pairs
+    const viaC = perfectMatchings(["a", "b", "d", "e"], met).filter((boards) =>
+      judgeRound(roundAfter(round, { pairings: boards.map(([home, away]) => ({ home, away })), bye: "c" })).exists);
+    expect(viaC.length).toBeGreaterThan(0);
+    const r = pairRound(field, { played: new Set(played.map(([x, y]) => pairKey(x, y))) }, { lookAhead: true });
+    expect(r).toMatchObject({ ok: true, bye: "d", nextRound: "unpairable" });
+    expect(boardsOf(r)).toEqual(keysOf([["a", "c"], ["b", "e"]]));
+    expect(nextPairs(round, r)).toBe(false);
+    expect(lowerScoredPairableByes(round, judgeRound(round), "d")).toEqual([]); // and the bye is minimal (§2.3 item 4)
+    expect(seatedRoundViolations(round, seated(r))).toEqual([]);
+    expect(round.field.map((e) => e.id)).toEqual(ids);
+  });
+
+  it("X-SW-10 second call is identical; chess on reads this round's colours into the next-round check", () => {
+    // six entrants, White first: R1 {p0-p2, p1-p5, p3-p4}, R2 {p0-p1, p2-p3, p5-p4}, R3 {p5-p0, p3-p1, p4-p2}; every score is
+    // 0. Round 4 can be seated two rematch-free ways
+    const rounds: [string, string][][] = [
+      [["p0", "p2"], ["p1", "p5"], ["p3", "p4"]],
+      [["p0", "p1"], ["p2", "p3"], ["p5", "p4"]],
+      [["p5", "p0"], ["p3", "p1"], ["p4", "p2"]],
+    ];
+    const colours = new Map<string, Colour[]>(S6_IDS.map((id) => [id, []]));
+    for (const round of rounds) {
+      for (const [w, b] of round) {
+        (colours.get(w) as Colour[]).push("W");
+        (colours.get(b) as Colour[]).push("B");
+      }
+    }
+    const played = rounds.flat();
+    const round: OracleRound = { field: flat(S6_IDS), played, colours };
+    const history = { played: new Set(played.map(([x, y]) => pairKey(x, y))), colours };
+    expect(perfectMatchings(S6_IDS, new Set(played.map(([x, y]) => oraclePairKey(x, y))))).toHaveLength(2);
+    const today = pairRound(st(S6_IDS), history, { chess: true });
+    expect(boardsOf(today)).toEqual(keysOf([["p0", "p3"], ["p1", "p4"], ["p2", "p5"]]));
+    // the constructed differential: after the fold's seating round 5 has no colour-legal pairing, but only because of round
+    // 4's own colours; judged on rounds 1–3's colours alone (the check that forgets this round's sides) it would pair
+    expect(nextPairs(round, today)).toBe(false);
+    expect(judgeRound({ ...roundAfter(round, seated(today)), colours }).exists).toBe(true);
+    const r = pairRound(st(S6_IDS), history, { chess: true, lookAhead: true });
+    expect(r.ok && r.nextRound).toBe("pairable");
+    expect(boardsOf(r)).toEqual(keysOf([["p0", "p4"], ["p1", "p2"], ["p3", "p5"]]));
+    expect(seatedRoundViolations(round, seated(r))).toEqual([]); // P-A5 as seated
+    expect(nextPairs(round, r)).toBe(true); // with the colours it seated
+    // the second call
+    expect(pairRound(st(S6_IDS), history, { chess: true, lookAhead: true })).toEqual(r);
+    expect(pairRound(st(S6_IDS), S6, { lookAhead: true })).toEqual(pairRound(st(S6_IDS), S6, { lookAhead: true }));
+  });
+
+  it("X-SW-10 chess: boards of two floaters the search reaches upside down are still seated upper board first, so the look-ahead never takes the first pairing again with its colours swapped, and floated names each board's upper side", () => {
+    // A real event: six entrants, White first, R1 {p3-p0, p1-p2, p5-p4}, R2 {p0-p2, p5-p1, p4-p3}, R3 {p1-p0, p2-p4, p3-p5};
+    // a win pays 2, a draw 1. Round 4's pairing order is p1, p3 (5), p4 (4), p0 (2), p2, p5 (1).
+    const rounds: [string, string][][] = [
+      [["p3", "p0"], ["p1", "p2"], ["p5", "p4"]],
+      [["p0", "p2"], ["p5", "p1"], ["p4", "p3"]],
+      [["p1", "p0"], ["p2", "p4"], ["p3", "p5"]],
+    ];
+    const colours = new Map<string, Colour[]>(S6_IDS.map((id) => [id, []]));
+    for (const round of rounds) {
+      for (const [w, b] of round) {
+        (colours.get(w) as Colour[]).push("W");
+        (colours.get(b) as Colour[]).push("B");
+      }
+    }
+    const scores: Record<string, number> = { p0: 2, p1: 5, p2: 1, p3: 5, p4: 4, p5: 1 };
+    const field: SwissStanding[] = S6_IDS.map((id, i) => ({ entrantId: id, score: scores[id] as number, rank: i + 1 }));
+    const played = rounds.flat();
+    const round: OracleRound = { field: field.map((s) => ({ id: s.entrantId, score: s.score })), played, colours };
+    const history = { played: new Set(played.map(([x, y]) => pairKey(x, y))), colours };
+    // the rule's sides on one board: a colour only one assignment allows is forced (rulebook P-A5), else the preferences
+    // decide in rulebookSides' order (an approximation of FIDE C.04.3 art. 5.2)
+    const above = (x: string, y: string): boolean => (scores[x] !== scores[y] ? (scores[x] as number) > (scores[y] as number) : x < y);
+    const recordOf = (id: string): Colour[] => colours.get(id) ?? [];
+    const ruleSides = (x: string, y: string): { home: string; away: string } => {
+      const [upper, lower] = above(x, y) ? [x, y] : [y, x];
+      const upperWhite = mayTake(recordOf(upper), "W") && mayTake(recordOf(lower), "B");
+      const upperBlack = mayTake(recordOf(upper), "B") && mayTake(recordOf(lower), "W");
+      if (upperWhite !== upperBlack) return upperWhite ? { home: upper, away: lower } : { home: lower, away: upper };
+      const { home, away } = rulebookSides(upper, lower, recordOf);
+      return { home, away };
+    };
+    const ruleFloated = (r: SwissPairResult): string[] =>
+      seated(r).pairings.filter((p) => scores[p.home] !== scores[p.away]).map((p) => (above(p.home, p.away) ? p.home : p.away)).sort();
+
+    // without the look-ahead: p1 v p3 within the top group, p4 down to p0, p2 v p5; after it round 5 cannot pair
+    const today = pairRound(field, history, { chess: true });
+    expect(boardsOf(today)).toEqual(keysOf([["p1", "p3"], ["p0", "p4"], ["p2", "p5"]]));
+    expect(seated(today).pairings).toEqual(seated(today).pairings.map((p) => ruleSides(p.home, p.away)));
+    expect(nextPairs(round, today)).toBe(false);
+    // the trap: the look-ahead reaches the same three boards again with p1, p3 floated together and p4, p0 floated together,
+    // each pair the wrong way up (lower board first). Seated as reached, the colours on both boards swap, which would leave
+    // round 5 pairable, but it is the rule's colouring turned over (and would name p0, not p4, as the one who floated)
+    const swapped = seated(today).pairings.map((p) => (pairKey(p.home, p.away) === pairKey("p2", "p5") ? p : { home: p.away, away: p.home }));
+    expect(judgeRound(roundAfter(round, { pairings: swapped })).exists).toBe(true);
+    expect(swapped).not.toEqual(swapped.map((p) => ruleSides(p.home, p.away)));
+
+    // the look-ahead seats the only other way, with the rule's colours, after which round 5 pairs
+    expect(perfectMatchings(S6_IDS, new Set(played.map(([x, y]) => oraclePairKey(x, y))))).toHaveLength(2);
+    const r = pairRound(field, history, { chess: true, lookAhead: true });
+    expect(r.ok && r.nextRound).toBe("pairable");
+    expect(boardsOf(r)).toEqual(keysOf([["p1", "p4"], ["p0", "p5"], ["p2", "p3"]]));
+    expect(seated(r).pairings).toEqual(seated(r).pairings.map((p) => ruleSides(p.home, p.away)));
+    expect([...seated(r).floated].sort()).toEqual(ruleFloated(r)); // each cross-score board's upper side floated down
+    expect(ruleFloated(r)).toEqual(["p0", "p1", "p3"]);
+    expect(nextPairs(round, r)).toBe(true);
+  });
+
+  it("X-SW-10 a part of the field whose seatings were all turned down after one board is tried again after another: 7 entrants, the one keeper lies behind it", () => {
+    // p4 leads on 2, the rest are on 0; p0, p4 and p6 have had byes. P-Q2: p5, the lowest eligible, leaves a rematch-only
+    // remainder, so the bye retries up to p3. Its remainder seats three ways, and the oracle finds one keeper
+    const sc: [string, number][] = [["p0", 0], ["p1", 0], ["p2", 0], ["p3", 0], ["p4", 2], ["p5", 0], ["p6", 0]];
+    const played: [string, string][] = [
+      ["p0", "p1"], ["p0", "p2"], ["p0", "p3"], ["p0", "p4"], ["p1", "p3"], ["p1", "p4"], ["p1", "p5"], ["p2", "p3"], ["p2", "p6"],
+      ["p3", "p4"], ["p3", "p6"],
+    ];
+    const byes = new Set(["p0", "p4", "p6"]);
+    const round: OracleRound = { field: sc.map(([id, score]) => ({ id, score })), played, byeIneligible: byes };
+    const standings: SwissStanding[] = sc.map(([id, score], i) => ({ entrantId: id, score, rank: i + 1 }));
+    const history = { played: new Set(played.map(([x, y]) => pairKey(x, y))), byes };
+    const remainder = sc.map(([id]) => id).filter((id) => id !== "p3");
+    const seatings = perfectMatchings(remainder, new Set(played.map(([x, y]) => oraclePairKey(x, y))));
+    const keepers = seatings.filter((m) => judgeRound(roundAfter(round, { pairings: m.map(([home, away]) => ({ home, away })), bye: "p3" })).exists);
+    expect([seatings.length, keepers.map(keysOf)]).toEqual([3, [keysOf([["p0", "p5"], ["p1", "p2"], ["p4", "p6"]])]]);
+    const today = pairRound(standings, history);
+    expect(today.ok && today.bye).toBe("p3");
+    expect(nextPairs(round, today)).toBe(false); // differential: today's seating dead-ends the next round
+    const r = pairRound(standings, history, { lookAhead: true });
+    expect(r.ok && r.bye).toBe("p3");
+    expect(lowerScoredPairableByes(round, judgeRound(round), "p3")).toEqual([]);
+    expect(r.ok && r.nextRound).toBe("pairable");
+    expect(boardsOf(r)).toEqual(keysOf(keepers[0] ?? []));
+  });
+
+  it("X-SW-10 chess: the search stops early only when the next round cannot pair whatever this round seats, read with the colour limits lifted, since this round's colours can ease them (5 entrants)", () => {
+    // p2 leads on 2 and is the only bye whose remainder pairs (P-Q2). p3 has had two Blacks, so may not take a third (P-A5)
+    const sc: [string, number][] = [["p0", 0], ["p1", 0], ["p2", 2], ["p3", 0], ["p4", 0]];
+    const played: [string, string][] = [["p1", "p2"], ["p2", "p4"], ["p3", "p4"]];
+    const byes = new Set(["p1", "p3", "p4"]);
+    const colours = new Map<string, Colour[]>([["p2", ["B", "B"]], ["p3", ["B", "B"]], ["p4", ["W"]]]);
+    const round: OracleRound = { field: sc.map(([id, score]) => ({ id, score })), played, byeIneligible: byes, colours };
+    const standings: SwissStanding[] = sc.map(([id, score], i) => ({ entrantId: id, score, rank: i + 1 }));
+    const history = { played: new Set(played.map(([x, y]) => pairKey(x, y))), byes, colours };
+    expect(judgeRound(round).pairableByes).toEqual(["p2"]);
+    // the next round, read before this one adds anything (p2's bye spent): with today's colours it cannot pair, with the
+    // colour limits lifted it can. A stop read with the colours kept would give up here
+    const before = { ...round, byeIneligible: new Set([...byes, "p2"]) };
+    expect([judgeRound(before).exists, judgeRound({ ...before, colours: undefined }).exists]).toEqual([false, true]);
+    const today = pairRound(standings, history, { chess: true });
+    expect(nextPairs(round, today)).toBe(false); // differential: the first seating dead-ends the next round
+    const r = pairRound(standings, history, { chess: true, lookAhead: true });
+    expect(r.ok && r.bye).toBe("p2");
+    expect(r.ok && r.nextRound).toBe("pairable");
+    expect(seatedRoundViolations(round, seated(r))).toEqual([]);
+    expect(nextPairs(round, r)).toBe(true); // the oracle agrees, with this round's colours read in
+  });
+
+  it("X-SW-10 the look-ahead draws on the call's one budget (the T2 cap): at the smallest budget the search needs without it, the same round comes back 'unknown' (round 1 of 4, 6, 8 and 10 entrants, counted)", () => {
+    let checked = 0;
+    for (const n of [4, 6, 8, 10]) {
+      const ids = Array.from({ length: n }, (_, i) => `p${i}`);
+      const history = { played: new Set<string>() };
+      let least = 0;
+      while (!pairRound(st(ids), history, {}, least).ok) least++;
+      const plain = pairRound(st(ids), history, {}, least);
+      // relational: the look-ahead's own nodes come out of the same budget, so it has none left at the plain search's least
+      expect(pairRound(st(ids), history, { lookAhead: true }, least)).toEqual({ ...plain, nextRound: "unknown" });
+      // and with enough, round 1's first seating keeps round 2 pairable (n ≥ 4)
+      expect(pairRound(st(ids), history, { lookAhead: true })).toEqual({ ...plain, nextRound: "pairable" });
+      checked++;
+    }
+    expect(checked).toBe(4);
+  });
+
+  it("X-SW-10 X-SW-2 without lookAhead, a score group whose floaters leave the group below dead tries its next floater choice, not its other pairings: 16 at score 2 over two who met, P-Q1's two lowest-ranked float within a budget of 5,000", () => {
+    // score 2: t0..t15 (fresh); score 1: u0, u1, who have met. The top group must float two (fewest floats, the lowest-ranked,
+    // P-Q1) to meet u0 and u1. Its 2,027,025 pairings with no floater all leave u0 v u1, a rematch: once one of them shows
+    // that, the pass moves on to the floaters, as it always has; walking the rest would spend its share of this budget first
+    const ts = Array.from({ length: 16 }, (_, i) => `t${i}`);
+    const field: SwissStanding[] = [
+      ...ts.map((id, i) => ({ entrantId: id, score: 2, rank: i + 1 })),
+      { entrantId: "u0", score: 1, rank: 17 }, { entrantId: "u1", score: 1, rank: 18 },
+    ];
+    let checked = 0;
+    for (const chess of [false, true]) {
+      const r = pairRound(field, { played: new Set([pairKey("u0", "u1")]) }, { chess }, 5_000);
+      expect(r.ok && [...r.floated].sort()).toEqual(["t14", "t15"]);
+      const boards = r.ok ? r.pairings.map((p) => [p.home, p.away].sort().join(" v ")) : [];
+      expect(boards.filter((b) => /^t\d+ v t\d+$/.test(b))).toHaveLength(7); // the other 14 pair within the group
+      expect(boards.filter((b) => /^t1[45] v u[01]$/.test(b))).toHaveLength(2);
+      checked++;
+    }
+    expect(checked).toBe(2);
+  });
+
+  it("X-SW-10 an exhausted budget during the look-ahead returns the first legal pairing with nextRound 'unknown'", () => {
+    // S6 under every budget from 0 to 5,000: the search runs out before any legal pairing (search_limit, the bare refusal),
+    // or after the first legal pairing and before the look-ahead finished (that pairing, 'unknown'), or it finishes: then it
+    // is the answer the default budget gives, however its nodes fell between the score-group pass and the whole-field search
+    const first = pairRound(st(S6_IDS), S6); // the first legal pairing: the diameters
+    expect(first.ok).toBe(true);
+    const full = pairRound(st(S6_IDS), S6, { lookAhead: true });
+    expect(full.ok && full.nextRound).toBe("pairable");
+    expect(nextPairs(S6_ROUND, full)).toBe(true);
+    const seen = { search_limit: 0, unknown: 0, pairable: 0 };
+    for (let budget = 0; budget <= 5_000; budget++) {
+      const r = pairRound(st(S6_IDS), S6, { lookAhead: true }, budget);
+      if (!r.ok) {
+        expect(r).toEqual({ ok: false, code: "SWISS_NO_LEGAL_PAIRING", reason: "search_limit", field: 6 });
+        expect({ budget, after: seen.unknown + seen.pairable }).toEqual({ budget, after: 0 }); // never after a legal pairing
+        seen.search_limit++;
+      } else if (r.nextRound === "unknown") {
+        expect({ budget, r }).toEqual({ budget, r: { ...first, nextRound: "unknown" } });
+        seen.unknown++;
+      } else {
+        expect({ budget, r }).toEqual({ budget, r: full });
+        seen.pairable++;
+      }
+    }
+    expect(seen.search_limit).toBeGreaterThan(0);
+    expect(seen.unknown).toBeGreaterThan(0);
+    expect(seen.pairable).toBeGreaterThan(0); // reached, under budgets far below the default
+    expect(seen.search_limit + seen.unknown + seen.pairable).toBe(5_001);
+  });
 });
