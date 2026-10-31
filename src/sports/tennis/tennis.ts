@@ -3,9 +3,11 @@
 // configuration: the four shipped variants, the (empty) position catalog and
 // the league conventions. Singles vs doubles is the entrant kind (like
 // badminton) — the module never inspects it.
+import type { CoreEv, EventEnvelope } from "../../core/events.ts";
 import type { PositionCatalog } from "../../sport/catalog.ts";
 import { BO1_MATCH_TIEBREAK } from "../../sport/module.ts";
-import { makeNestedModule } from "../nested/kernel.ts";
+import { declareNaturalBreaks, type NaturalBreaks } from "../../sport/natural-breaks.ts";
+import { makeNestedModule, type NestedEv, type NestedState } from "../nested/kernel.ts";
 
 // No positions; one nominated unit (player or pair) per side.
 const positions: PositionCatalog = {
@@ -149,4 +151,43 @@ export const tennis: typeof nestedTennis = {
   // set tie-break (`finalSet.tiebreakTo`, still a set) is not refused, and a stored config that breaks it still loads.
   configWriteIssues: (cfg) =>
     cfg.bestOf === 1 && cfg.finalSet !== "same" && "matchTiebreakTo" in cfg.finalSet ? [BO1_MATCH_TIEBREAK] : [],
+  naturalBreaks: tennisNaturalBreaks(),
 };
+
+/**
+ * R4 sponsors on stream (spec 2026-10-27 §3.1) — ITF Rule 29(a): when changing ends a maximum of 90 seconds is allowed
+ * (`changeover`, minor), except after the first game of each set and during a tie-break, where play is continuous; and a
+ * set break of at most 120 seconds at the end of each set (`set_end`, major). The players change ends after the first,
+ * third and every later odd game of a set (Rule 10, the kernel's `endsChanged`), so a changeover follows an odd game from
+ * the third. A set that closes on an odd game is a change of ends too: P1 makes it the set break. Nothing opens when the
+ * event ends the match. A function declaration, so the module literal above can call it while it is built.
+ */
+function tennisNaturalBreaks(): NaturalBreaks<EventEnvelope<NestedEv | CoreEv>, NestedState> {
+  return declareNaturalBreaks(
+    [
+      { kind: "changeover", size: "minor" },
+      { kind: "set_end", size: "major" },
+    ],
+    tennisBreaksOpened,
+  );
+}
+
+/** The first game of a set with a rest after it: the third (Rule 29(a): none after the first). */
+const FIRST_RESTED_GAME = 3;
+
+function tennisBreaksOpened(_ev: EventEnvelope<NestedEv | CoreEv>, before: NestedState, after: NestedState): string[] {
+  if (after.outcome !== null || after.phase !== "live") return [];
+  const opened: string[] = [];
+  if (after.sets.length > before.sets.length) {
+    opened.push("set_end");
+    // The set's closing game: an odd total is a change of ends as well (Rule 10).
+    const closed = after.sets[after.sets.length - 1];
+    if (closed !== undefined && closed.mtb !== true && (closed.home + closed.away) % 2 === 1) opened.push("changeover");
+    return opened;
+  }
+  // A game of the same set: the count of sets has not moved (a set taken back would reset the games and read as more).
+  if (after.sets.length !== before.sets.length) return opened;
+  const games = after.games.home + after.games.away;
+  if (games > before.games.home + before.games.away && games % 2 === 1 && games >= FIRST_RESTED_GAME) opened.push("changeover");
+  return opened;
+}

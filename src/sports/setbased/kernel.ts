@@ -3060,3 +3060,58 @@ export function makeSetBasedModule(
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// R4 sponsors on stream (spec 2026-10-27 §3.1) — the set-based sports' natural breaks, one rule for every preset, each
+// naming its own kinds (badminton's interval and games, table tennis's timeouts and games, volleyball's timeouts and
+// sets). The sport file wraps its module with it. Kept at the end (and imported here, beside its one reader) so no line
+// above moves: the recorded Stryker equivalents are keyed by line.
+// ---------------------------------------------------------------------------
+import { declareNaturalBreaks, type NaturalBreaks } from "../../sport/natural-breaks.ts";
+
+/** The kinds a set-based sport names. `interval` is badminton's mid-game interval (absent: the sport has none); `timeout`
+ *  is a side's timeout (absent: the sport records none, as `records.timeouts` refuses them). */
+export interface SetBasedBreakNames {
+  readonly setEnd: string;
+  readonly interval?: string;
+  readonly timeout?: string;
+}
+
+/** The module `makeSetBasedModule` built, with the sport's natural breaks set (a new object; the kernel's is left as it was). */
+export function withSetBasedNaturalBreaks(module: SetBasedModule, names: SetBasedBreakNames): SetBasedModule {
+  return { ...module, naturalBreaks: setBasedNaturalBreaks(names) };
+}
+
+const timeoutsTaken = (state: SetBasedState): number => (state.timeouts?.home ?? 0) + (state.timeouts?.away ?? 0);
+
+/**
+ * A set (a game, in badminton and table tennis) that closes and play goes on opens the interval between sets (`setEnd`,
+ * major: BWF 16.2.2, ITTF 3.4.4, FIVB 18.1). The leading score reaching half the set's target opens badminton's
+ * mid-game interval (`interval`, minor: BWF 16.2.1, the engine's `setIntervalMark`), once a set. A timeout opens
+ * `timeout` (minor). A summary that closes a set past its mark is that set's end (P1). Nothing opens when the event ends
+ * the match.
+ */
+function setBasedNaturalBreaks(names: SetBasedBreakNames): NaturalBreaks<EventEnvelope<SetBasedEv | CoreEv>, SetBasedState> {
+  const { setEnd, interval, timeout } = names;
+  return declareNaturalBreaks<EventEnvelope<SetBasedEv | CoreEv>, SetBasedState>(
+    [
+      { kind: setEnd, size: "major" },
+      ...(interval === undefined ? [] : [{ kind: interval, size: "minor" as const }]),
+      ...(timeout === undefined ? [] : [{ kind: timeout, size: "minor" as const }]),
+    ],
+    (_ev, before, after) => {
+      if (after.outcome !== null || after.phase !== "live") return [];
+      const opened: string[] = [];
+      after.sets.forEach((set, i) => {
+        const prior = before.sets[i];
+        if (set.closed && prior?.closed !== true) opened.push(setEnd);
+        if (interval === undefined) return;
+        const mark = setIntervalMark(after.cfg, i);
+        const led = prior === undefined ? 0 : Math.max(prior.home, prior.away);
+        if (led < mark && Math.max(set.home, set.away) >= mark) opened.push(interval);
+      });
+      if (timeout !== undefined && timeoutsTaken(after) > timeoutsTaken(before)) opened.push(timeout);
+      return opened;
+    },
+  );
+}
