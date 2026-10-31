@@ -6,6 +6,7 @@ import {
   pairRound,
   type Colour,
   type SwissHistory,
+  type SwissRefusal,
   type SwissStanding,
 } from "./swiss.ts";
 
@@ -26,7 +27,9 @@ function prng(seed: number): () => number {
 // Simulate a Swiss event: `rank[i] = i+1` (p0 strongest). Results favour the
 // stronger side but allow upsets (~30%) — like a real field, this keeps colour
 // history from perfectly stratifying by score. Returns the per-round pairings
-// plus the accumulated history — enough to assert every invariant.
+// plus the accumulated history — enough to assert every invariant. A refused
+// round (SWISS_NO_LEGAL_PAIRING) seats nothing: the event stops there and the
+// refusal is returned beside the rounds that were paired.
 interface SimRound {
   pairings: { home: string; away: string }[];
   bye?: string;
@@ -35,7 +38,13 @@ function simulate(
   n: number,
   rounds: number,
   opts: { chess?: boolean; seed?: number } = {},
-): { rounds: SimRound[]; colours: Map<string, Colour[]>; played: Set<string>; byes: Set<string> } {
+): {
+  rounds: SimRound[];
+  colours: Map<string, Colour[]>;
+  played: Set<string>;
+  byes: Set<string>;
+  refusal?: SwissRefusal;
+} {
   const ids = field(n);
   const rank = new Map(ids.map((id, i) => [id, i + 1]));
   const score = new Map(ids.map((id) => [id, 0]));
@@ -58,6 +67,7 @@ function simulate(
     }));
     const history: SwissHistory = { played, colours, byes };
     const round = pairRound(standings, history, { chess: opts.chess === true, byeScore: 1 });
+    if (!round.ok) return { rounds: out, colours, played, byes, refusal: round };
 
     for (const p of round.pairings) {
       played.add(pairKey(p.home, p.away));
@@ -84,6 +94,7 @@ describe("pairRound — golden 5-round Swiss on 9 entrants (spec 05 acceptance)"
   const sim = simulate(9, 5, { seed: 7 });
 
   it("pairs every round with exactly one bye (odd field)", () => {
+    expect(sim.refusal).toBeUndefined();
     expect(sim.rounds).toHaveLength(5);
     for (const round of sim.rounds) {
       expect(round.pairings).toHaveLength(4);
@@ -113,6 +124,8 @@ describe("pairRound — bye selection (spec 05 §2.2)", () => {
     const standings: SwissStanding[] = field(5).map((id, i) => ({ entrantId: id, score: 0, rank: i + 1 }));
     // p4 already byed ⇒ next-lowest un-byed is p3.
     const round = pairRound(standings, { played: new Set(), byes: new Set(["p4"]) });
+    expect(round.ok).toBe(true);
+    if (!round.ok) return;
     expect(round.bye).toBe("p3");
     expect(round.pairings).toHaveLength(2);
   });
@@ -120,6 +133,8 @@ describe("pairRound — bye selection (spec 05 §2.2)", () => {
   it("round 1 on an even field pairs the upper board as White (chess)", () => {
     const standings: SwissStanding[] = field(4).map((id, i) => ({ entrantId: id, score: 0, rank: i + 1 }));
     const round = pairRound(standings, { played: new Set() }, { chess: true });
+    expect(round.ok).toBe(true);
+    if (!round.ok) return;
     // Fold 1v3, 2v4; the stronger side of each pair takes White (home).
     expect(round.bye).toBeUndefined();
     expect(round.pairings).toHaveLength(2);
@@ -195,6 +210,8 @@ describe("pairRound — invariants (spec 05 §6)", () => {
   );
 
   it("finds a total pairing whenever a rematch-free matching exists (brute force, n ≤ 10)", () => {
+    let paired = 0;
+    let refused = 0;
     fc.assert(
       fc.property(
         fc.integer({ min: 1, max: 5 }).map((k) => 2 * k), // even n ∈ {2,4,6,8,10}
@@ -214,15 +231,23 @@ describe("pairRound — invariants (spec 05 §6)", () => {
           const round = pairRound(standings, { played });
           const exists = perfectMatchingExists(ids, played);
           if (exists) {
+            paired++;
+            expect(round).toMatchObject({ ok: true }); // a refusal shows its reason here
+            if (!round.ok) return;
             expect(round.pairings).toHaveLength(n / 2);
             // and it must respect the no-rematch constraint
             for (const p of round.pairings) expect(played.has(pairKey(p.home, p.away))).toBe(false);
           } else {
-            expect(round.pairings).toHaveLength(0);
+            refused++;
+            // no rematch-free perfect matching (the brute force above): the named refusal, never an empty round (X-SW-3)
+            expect(round).toEqual({ ok: false, code: "SWISS_NO_LEGAL_PAIRING", reason: "rematch", field: n });
           }
         },
       ),
     );
+    // anti-vacuity: both branches ran
+    expect(paired).toBeGreaterThan(0);
+    expect(refused).toBeGreaterThan(0);
   });
 
   it("is deterministic — identical inputs yield identical pairings", () => {

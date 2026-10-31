@@ -651,7 +651,7 @@ function playSwissStage(
       rank: seeds.get(id) ?? Number.MAX_SAFE_INTEGER,
     }));
     const paired = pairRound(standings, { played, colours, byes, floats }, { chess });
-    if (paired.pairings.length === 0 && entrants.length >= 2) break; // no legal matching left
+    if (!paired.ok) break; // SWISS_NO_LEGAL_PAIRING: the round is refused and seats nothing
     if (paired.bye !== undefined) byes.add(paired.bye);
     for (const id of paired.floated) floats.set(id, (floats.get(id) ?? 0) + 1);
 

@@ -10,6 +10,11 @@
 // search only fails when no rematch-free (and, for chess, colour-legal) perfect
 // matching exists at all. Determinism: candidate order is fixed (fold distance,
 // then global rank order), so the same inputs always yield the same pairing.
+//
+// When it fails, pairRound returns a named refusal (SWISS_NO_LEGAL_PAIRING with
+// its reason) that writes nothing, not even the bye — never an empty or partial
+// round reported as success (W3 X-SW-3; rulebook-W3 §3.3, P-A6; FIDE C.04.3 [C4]).
+import { EngineError } from "../core/errors.ts";
 import type { EntrantId } from "../core/types.ts";
 
 export type Colour = "W" | "B";
@@ -43,11 +48,35 @@ export interface SwissPairing {
   away: EntrantId; // chess: Black
 }
 
+// W3 X-SW-3 (rulebook-W3 §3.3, P-A6): the code of every refusal, and why the round cannot be paired.
+export const SWISS_NO_LEGAL_PAIRING = "SWISS_NO_LEGAL_PAIRING" as const;
+export type SwissRefusalReason =
+  | "field_too_small" // fewer than 2 entrants
+  | "no_bye_candidate" // odd field and every entrant is bye-ineligible (P-A4)
+  | "rematch" // no rematch-free perfect matching exists (P-A1/A6)
+  | "colour" // a rematch-free matching exists, but none meets the chess colour limits (P-A5)
+  | "search_limit"; // the search budget ran out before it proved either
+
+// A round that cannot be paired. It carries no pairing and no bye: the caller seats nothing from it.
+export interface SwissRefusal {
+  readonly ok: false;
+  readonly code: typeof SWISS_NO_LEGAL_PAIRING;
+  readonly reason: SwissRefusalReason;
+  readonly field: number; // standings.length, for the message ("Round N can't be paired")
+}
+
 export interface SwissRound {
-  pairings: SwissPairing[];
-  bye?: EntrantId; // odd field: the entrant sitting out (caller scores it `byeScore`)
+  readonly ok: true;
+  pairings: SwissPairing[]; // always ⌊n/2⌋ ≥ 1 boards
+  bye?: EntrantId; // present iff n is odd: the entrant sitting out
   floated: EntrantId[]; // entrants that downfloated this round (merge into history.floats)
 }
+
+export type SwissPairResult = SwissRound | SwissRefusal;
+
+// The search nodes one pairRound call may visit (the pairing search and the reason probe together). A call that runs out
+// before it either pairs the round or proves it unpairable is refused `search_limit`, never reported as having no pairing.
+export const SWISS_SEARCH_BUDGET: number = 1_000_000;
 
 // Stable, order-independent key for an unordered pair.
 export function pairKey(a: EntrantId, b: EntrantId): string {
@@ -153,7 +182,27 @@ export function pairRound(
   standings: readonly SwissStanding[],
   history: SwissHistory,
   constraints: SwissConstraints = {},
-): SwissRound {
+  budget: number = SWISS_SEARCH_BUDGET,
+): SwissPairResult {
+  // An entrant listed twice would be seated twice (or paired with itself): a caller defect, never a round to pair.
+  const seen = new Set<EntrantId>();
+  for (const s of standings) {
+    if (seen.has(s.entrantId)) {
+      throw new EngineError("CONFIG_INVALID", `pairRound: entrant "${s.entrantId}" appears twice in the standings`, {
+        entrantId: s.entrantId,
+      });
+    }
+    seen.add(s.entrantId);
+  }
+  const refuse = (reason: SwissRefusalReason): SwissRefusal => ({
+    ok: false,
+    code: SWISS_NO_LEGAL_PAIRING,
+    reason,
+    field: standings.length,
+  });
+  // A round needs a board: 0 entrants pair nothing and 1 would sit out alone.
+  if (standings.length < 2) return refuse("field_too_small");
+
   const chess = constraints.chess === true;
   const stateOf = (id: EntrantId): ColourState => colourState(history.colours?.get(id));
 
@@ -178,8 +227,10 @@ export function pairRound(
   }
 
   const played = history.played;
+  // The reason probe (below) re-runs the search with the colour limits lifted, to tell "colour" from "rematch".
+  let liftColourLimits = false;
   const colourLegal = (a: SwissStanding, b: SwissStanding): boolean => {
-    if (!chess) return true;
+    if (!chess || liftColourLimits) return true;
     const sa = stateOf(a.entrantId);
     const sb = stateOf(b.entrantId);
     return (canTake(sa, "W") && canTake(sb, "B")) || (canTake(sa, "B") && canTake(sb, "W"));
@@ -219,18 +270,23 @@ export function pairRound(
   // group, keeping it polynomial across many groups (spec 05 §2.2: "backtracking
   // over transpositions within score groups is sufficient"). `memoFail` prunes
   // dead subsets within the call.
-  // Shared search budget across the whole round: hard colour limits can make a
-  // pathological field's infeasibility proof exponential, so we cap total work.
-  // The cap is far above any feasible small case (a single group of ≤14 explores
-  // < 2^14 nodes), so it never truncates a case the totality property covers; it
-  // only bails on degenerate large fields, where the group then floats instead.
+  // Shared search budget across the whole call (`budget`, default
+  // SWISS_SEARCH_BUDGET): hard colour limits can make a pathological field's
+  // infeasibility proof exponential, so we cap total work. The cap is far above
+  // any feasible small case (a single group of ≤14 explores < 2^14 nodes), so it
+  // never truncates a case the totality property covers. Once it runs out every
+  // further node fails, so the round cannot be paired AND nothing was proved:
+  // `exhausted` makes that a `search_limit` refusal, never a claimed rematch.
   let nodes = 0;
-  const BUDGET = 200_000;
+  let exhausted = false;
   const matchWithin = (list: SwissStanding[]): [SwissStanding, SwissStanding][] | null => {
     const memoFail = new Set<string>();
     const rec = (remaining: SwissStanding[]): [SwissStanding, SwissStanding][] | null => {
       if (remaining.length === 0) return [];
-      if (++nodes > BUDGET) return null;
+      if (++nodes > budget) {
+        exhausted = true;
+        return null;
+      }
       const key = remaining.map((s) => s.entrantId).join(",");
       if (memoFail.has(key)) return null;
       const a = remaining[0] as SwissStanding;
@@ -278,8 +334,16 @@ export function pairRound(
 
   const matched = pairFrom(0, []);
   if (matched === null) {
-    // No rematch-free (colour-legal) perfect matching exists for this field.
-    return { pairings: [], floated: [], ...(bye === undefined ? {} : { bye }) };
+    // No rematch-free (colour-legal) perfect matching was found: refuse, and write nothing, not even the bye (§3.3).
+    // The reason, per the bye candidate the search ran with (controller ruling R2: with several candidates, "colour" if
+    // ANY candidate's remainder matches with the colour limits lifted, else "rematch"): run out of budget anywhere ⇒
+    // "search_limit"; chess, and the remainder pairs once the colour limits are lifted ⇒ "colour"; else "rematch".
+    if (exhausted) return refuse("search_limit");
+    if (!chess) return refuse("rematch");
+    liftColourLimits = true;
+    const rematchFree = pairFrom(0, []);
+    if (exhausted) return refuse("search_limit");
+    return refuse(rematchFree === null ? "rematch" : "colour");
   }
 
   // Assign colours (chess) / home-away, and record downfloats.
@@ -290,7 +354,7 @@ export function pairRound(
     pairings.push(assignColours(a, b, chess, stateOf));
   }
 
-  return { pairings, floated, ...(bye === undefined ? {} : { bye }) };
+  return { ok: true, pairings, floated, ...(bye === undefined ? {} : { bye }) };
 }
 
 // Decide who is home (White in chess). Non-chess: the stronger side (a, already
