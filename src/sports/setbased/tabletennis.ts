@@ -8,7 +8,7 @@
 // reserves the column). That is NOT this module's concern — this module scores a
 // single singles/doubles fixture only (table-tennis.md §4).
 import type { PositionCatalog } from "../../sport/catalog.ts";
-import { makeSetBasedModule, samePointsMap, SET_RULE_KEYS, type SetBasedParams, type SetBasedSanctionLevel } from "./kernel.ts";
+import { makeSetBasedModule, samePointsMap, SET_RULE_KEYS, withSetBasedNaturalBreaks, type SetBasedParams, type SetBasedSanctionLevel } from "./kernel.ts";
 
 // League convention 2/0 for the cfg's own map (`standingsDelta` reads it; configurable).
 const TT_POINTS: SetBasedParams["pointsMap"] = { "*": [2, 0] };
@@ -26,7 +26,7 @@ const positions: PositionCatalog = {
  *  `sanctionLevels`; exported for `@seazn/engine/pad` (pad wave P3.1), so the pad offers this very array. */
 export const TABLETENNIS_SANCTION_LEVELS: readonly SetBasedSanctionLevel[] = ["warning", "penalty"];
 
-export const tabletennis = makeSetBasedModule({
+export const tabletennis = withSetBasedNaturalBreaks(makeSetBasedModule({
   key: "tabletennis",
   version: "1.0.0",
   // spec 04 §5 — ITTF: games to 11, win by 2, no cap; best of 5 by default.
@@ -126,4 +126,7 @@ export const tabletennis = makeSetBasedModule({
       },
     ],
   },
-}, () => tabletennis);
+}, () => tabletennis),
+// R4 sponsors on stream (spec 2026-10-27 §3.1) — ITTF 3.4.4: the interval between games (`game_end`), and a
+// player's or pair's time-out (`timeout`).
+{ setEnd: "game_end", timeout: "timeout" });

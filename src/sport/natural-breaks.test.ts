@@ -1,4 +1,4 @@
-// R4 sponsors on stream, S1 (spec onryde/seazn.club docs/superpowers/specs/2026-10-27-sponsors-on-stream-design.md §3.1;
+// R4 sponsors on stream, S1 + S2 (spec onryde/seazn.club docs/superpowers/specs/2026-10-27-sponsors-on-stream-design.md §3.1;
 // plan decision P1) — `SportModule.naturalBreaks`: the pauses a sport's own events open, which a sponsor card may air in.
 //
 // Where the expected values come from (never from the rule under test):
@@ -6,7 +6,8 @@
 //     tabletennis, volleyball … 3 declare none: boardgame, carrom, generic").
 //   - WHICH kinds a module declares, and their sizes: the module's own `naturalBreaks.kinds` (the engine's declaration).
 //   - WHEN a kind opens: each sport's laws, restated per sport below as an oracle over the folded states and the event's
-//     own payload (the Laws of Cricket 17.1 and 11; IFAB Law 7; FIH Rules of Hockey and IIHF Rules on intervals).
+//     own payload (the Laws of Cricket 17.1 and 11; IFAB Law 7; FIH Rules of Hockey and IIHF Rules on intervals; ITF
+//     Rules 10 and 29; BWF Law 16.2; ITTF 3.4.4; FIVB 15 and 18).
 //   - P1 (plan): a minor and a major opened by the same event are one break, the major.
 // The events are REAL: the module's own generator (`arbitraryEvent`) and its recorded golden corpus, replayed the way the
 // overlay's derived replay folds them (void resolution first, kernel-owned events skipped, `apply` tolerant).
@@ -18,7 +19,9 @@ import type { LineupPair } from "../core/types.ts";
 import type { CricketState } from "../sports/cricket/cricket.ts";
 import { PLAY_PHASES, type FootballState } from "../sports/football/football.ts";
 import { builtinModules } from "../sports/index.ts";
+import type { NestedState } from "../sports/nested/kernel.ts";
 import type { PeriodState } from "../sports/period/kernel.ts";
+import { setTarget, type SetBasedState } from "../sports/setbased/kernel.ts";
 import { goldenCorpora } from "../testkit/corpora.ts";
 import { declaredCfgs } from "../testkit/declared-cfgs.ts";
 import { forEachSport } from "../testkit/for-each-sport.ts";
@@ -29,8 +32,10 @@ import { breakSizeOf, declareNaturalBreaks, type NaturalBreakDecl, type NaturalB
 
 /** Spec §3.1: the three modules with no natural pause the engine can see (the scene carousel is their path). */
 const SPEC_SILENT = ["boardgame", "carrom", "generic"] as const;
-/** Spec §3.1's team sports (S1); the set-based four follow in S2. */
+/** Spec §3.1: "The MVP makes 8 of the 11 modules declare breaks" — the team sports (S1), then the set-based four (S2). */
 const TEAM_SPORTS = ["cricket", "football", "hockey", "icehockey"] as const;
+const SET_SPORTS = ["tennis", "badminton", "tabletennis", "volleyball"] as const;
+const SPEC_DECLARING = [...TEAM_SPORTS, ...SET_SPORTS] as const;
 
 const SEEDS = 40;
 const MAX_EVENTS = 800;
@@ -242,9 +247,9 @@ describe("natural breaks: the sport registry", () => {
     expect(silent).toBe(SPEC_SILENT.length);
   });
 
-  it("the team sports declare their breaks: cricket, football, hockey and ice hockey (spec §3.1)", () => {
-    const keys = declaring().map((m) => m.key);
-    for (const key of TEAM_SPORTS) expect(keys, key).toContain(key);
+  it("exactly the spec's eight declare their breaks: cricket, football, hockey, ice hockey, tennis, badminton, table tennis, volleyball", () => {
+    expect(declaring().map((m) => m.key).sort()).toEqual([...SPEC_DECLARING].sort());
+    expect(declaring().length + SPEC_SILENT.length, "every builtin is on one list or the other").toBe(builtinModules.length);
   });
 
   it("every declared kind is reachable by a real event sequence (forEachSport)", () => {
@@ -263,7 +268,7 @@ describe("natural breaks: the sport registry", () => {
       }
     });
     expect(unreached, JSON.stringify(report)).toEqual([]);
-    expect(report.modulesWithBreaks, JSON.stringify(report)).toBeGreaterThan(0);
+    expect(report.modulesWithBreaks, JSON.stringify(report)).toBe(SPEC_DECLARING.length);
     expect(report.kindsReached, JSON.stringify(report)).toBe(report.kindsDeclared);
     expect(report.eventsChecked, JSON.stringify(report)).toBeGreaterThan(0);
   });
@@ -334,14 +339,14 @@ describe("natural breaks: the sport registry", () => {
 
   it("the match-ending event opens nothing, in every declaring sport", () => {
     const perSport = new Map<string, number>();
-    for (const key of TEAM_SPORTS) {
+    for (const key of SPEC_DECLARING) {
       for (const step of playedOf(sport(key)).steps) {
         if (!decidedNow(step)) continue;
         expect(step.opened, `${step.ledger.label} seq ${step.event.seq} (${step.event.type})`).toEqual([]);
         perSport.set(key, (perSport.get(key) ?? 0) + 1);
       }
     }
-    for (const key of TEAM_SPORTS) expect(perSport.get(key) ?? 0, `${key}: match-ending events checked`).toBeGreaterThan(0);
+    for (const key of SPEC_DECLARING) expect(perSport.get(key) ?? 0, `${key}: match-ending events checked`).toBeGreaterThan(0);
   });
 
   it("the guard behind it: a break-opening event whose after-state is decided opens nothing (each sport's own outcome)", () => {
@@ -349,7 +354,7 @@ describe("natural breaks: the sport registry", () => {
     // never reaches football's guard. Each real break-opening step is asked again with its after-state carrying a real
     // outcome of the same sport: the declaration's promise is "[] once the match is decided", whatever else moved.
     const perSport = new Map<string, number>();
-    for (const key of TEAM_SPORTS) {
+    for (const key of SPEC_DECLARING) {
       const m = sport(key);
       const nb = breaksOf(m);
       const { steps } = playedOf(m);
@@ -363,7 +368,7 @@ describe("natural breaks: the sport registry", () => {
         perSport.set(key, (perSport.get(key) ?? 0) + 1);
       }
     }
-    for (const key of TEAM_SPORTS) expect(perSport.get(key) ?? 0, `${key}: decided break-openers checked`).toBeGreaterThan(0);
+    for (const key of SPEC_DECLARING) expect(perSport.get(key) ?? 0, `${key}: decided break-openers checked`).toBeGreaterThan(0);
   });
 
   it("opensAt is pure: replaying the same ledger again answers the same breaks at the same events", () => {
@@ -520,4 +525,136 @@ describe("natural breaks: hockey and ice hockey (FIH quarters, IIHF periods)", (
       }
     });
   }
+});
+
+describe("natural breaks: tennis (ITF Rules 10 and 29)", () => {
+  const tennis = sport("tennis");
+  const games = (s: NestedState) => s.games.home + s.games.away;
+
+  it("tennis: an odd game from the third opens changeover; the first game and an even game open nothing; a set's end opens set_end", () => {
+    const counts = categorise(playedOf(tennis).steps, (step) => {
+      const before = step.before as NestedState;
+      const after = step.after as NestedState;
+      if (decidedNow(step)) return { category: "the match ends", kinds: [] };
+      const live = after.outcome === null && after.phase === "live";
+      if (live && after.sets.length > before.sets.length) return { category: "a set closes", kinds: ["set_end"] };
+      if (live && games(after) > games(before)) {
+        // Rule 29(a): a rest of up to 90 s when changing ends (after an odd game), but none after a set's first game.
+        if (games(after) === 1) return { category: "a set's first game", kinds: [] };
+        return games(after) % 2 === 1 ? { category: "an odd game from the third", kinds: ["changeover"] } : { category: "an even game", kinds: [] };
+      }
+      return { category: "anything else", kinds: [] };
+    });
+    for (const category of ["the match ends", "a set closes", "a set's first game", "an odd game from the third", "an even game", "anything else"]) {
+      expect(counts.get(category) ?? 0, `${category}: ${JSON.stringify([...counts])}`).toBeGreaterThan(0);
+    }
+  });
+
+  it("tennis: a set-winning point opens ['set_end'] once and not changeover, on an odd set (a change of ends too) as on an even one (P1)", () => {
+    const perParity = { odd: 0, even: 0 };
+    for (const step of playedOf(tennis).steps) {
+      const before = step.before as NestedState;
+      const after = step.after as NestedState;
+      if (step.event.type !== "tennis.point" || after.sets.length <= before.sets.length || decidedNow(step)) continue;
+      expect(step.opened, `${step.ledger.label} seq ${step.event.seq}`).toEqual(["set_end"]);
+      const set = after.sets[after.sets.length - 1];
+      if (set === undefined) throw new Error("a set closed and none is recorded");
+      perParity[(set.home + set.away) % 2 === 1 ? "odd" : "even"]++;
+    }
+    expect(perParity.odd, JSON.stringify(perParity)).toBeGreaterThan(0);
+    expect(perParity.even, JSON.stringify(perParity)).toBeGreaterThan(0);
+  });
+
+  it("tennis: no point inside a tie-break opens anything (Rule 29(a): play is continuous)", () => {
+    let checked = 0;
+    for (const step of playedOf(tennis).steps) {
+      const before = step.before as NestedState;
+      const after = step.after as NestedState;
+      if (before.points.kind === "standard" || after.sets.length > before.sets.length || decidedNow(step)) continue;
+      expect(step.opened, `${step.ledger.label} seq ${step.event.seq}`).toEqual([]);
+      checked++;
+    }
+    expect(checked, `${checked} tie-break points checked`).toBeGreaterThan(0);
+  });
+});
+
+describe("natural breaks: badminton, table tennis and volleyball (BWF 16.2, ITTF 3.4.4, FIVB 15 and 18)", () => {
+  /** BWF 16.2.1 (DOMAIN.badminton.md BD-IN-1): the interval comes when the leading score reaches half the game's target,
+   *  rounded up — 11 in a game to 21. The target is the cfg's, through the fold's own `setTarget`. */
+  const intervalMark = (s: SetBasedState, i: number) => Math.ceil(setTarget(s.cfg, i) / 2);
+  const lead = (set: { home: number; away: number } | undefined) => (set === undefined ? 0 : Math.max(set.home, set.away));
+  const timeouts = (s: SetBasedState) => (s.timeouts?.home ?? 0) + (s.timeouts?.away ?? 0);
+
+  for (const [key, setEnd] of [
+    ["badminton", "game_end"],
+    ["tabletennis", "game_end"],
+    ["volleyball", "set_end"],
+  ] as const) {
+    it(`${key}: a ${setEnd === "game_end" ? "game" : "set"} that closes opens ${setEnd}; ${key === "badminton" ? "the leading score reaching the mark opens interval" : "a timeout opens timeout"}`, () => {
+      const counts = categorise(playedOf(sport(key)).steps, (step) => {
+        const before = step.before as SetBasedState;
+        const after = step.after as SetBasedState;
+        if (decidedNow(step)) return { category: "the match ends", kinds: [] };
+        const live = after.outcome === null && after.phase === "live";
+        const closed = after.sets.some((set, i) => set.closed && before.sets[i]?.closed !== true);
+        const crossed = after.sets.some((set, i) => lead(before.sets[i]) < intervalMark(after, i) && lead(set) >= intervalMark(after, i));
+        if (live && closed && key === "badminton" && crossed) return { category: "a game closes past the mark from below it", kinds: [setEnd] };
+        if (live && closed) return { category: "a set closes", kinds: [setEnd] };
+        if (live && key === "badminton" && crossed) return { category: "the leading score reaches the mark", kinds: ["interval"] };
+        if (live && key !== "badminton" && step.event.type === `${key}.timeout` && timeouts(after) > timeouts(before)) {
+          return { category: "a timeout", kinds: ["timeout"] };
+        }
+        return { category: "anything else", kinds: [] };
+      });
+      const want = key === "badminton" ? ["the leading score reaches the mark"] : ["a timeout"];
+      for (const category of ["the match ends", "a set closes", "anything else", ...want]) {
+        expect(counts.get(category) ?? 0, `${category}: ${JSON.stringify([...counts])}`).toBeGreaterThan(0);
+      }
+    });
+  }
+
+  it("badminton: reaching 11 in a game to 21 opens interval once a game, and a re-poll fold does not open it twice", () => {
+    const badminton = sport("badminton");
+    let games = 0;
+    let atEleven = 0;
+    let repolled = 0;
+    for (const ledger of playedOf(badminton).ledgers) {
+      const steps = replay(ledger);
+      const perGame = new Map<number, number>();
+      for (const step of steps) {
+        if (!step.opened.includes("interval")) continue;
+        const after = step.after as SetBasedState;
+        const i = after.sets.findIndex((set, k) => lead((step.before as SetBasedState).sets[k]) < intervalMark(after, k) && lead(set) >= intervalMark(after, k));
+        perGame.set(i, (perGame.get(i) ?? 0) + 1);
+        // A rally adds one point, so the rally that opens it in a game to 21 lands on 11 itself (BWF 16.2.1).
+        if (step.event.type === "badminton.rally" && setTarget(after.cfg, i) === 21) {
+          expect(lead(after.sets[i]), `${ledger.label} seq ${step.event.seq}`).toBe(11);
+          atEleven++;
+        }
+      }
+      for (const [i, n] of perGame) expect(n, `${ledger.label} game ${i}: interval opened`).toBe(1);
+      games += perGame.size;
+      // The overlay re-folds the ledger on each poll: every prefix answers the interval at the same event, once.
+      const at = steps.filter((s) => s.opened.includes("interval")).map((s) => s.event.seq);
+      if (at.length === 0) continue;
+      const cut = ledger.events.findIndex((e) => e.seq === at[0]);
+      for (const upTo of [cut + 1, cut + 2, ledger.events.length]) {
+        const again = replay(ledger, ledger.events.slice(0, upTo)).filter((s) => s.opened.includes("interval")).map((s) => s.event.seq);
+        expect(again, `${ledger.label}: poll at ${upTo}`).toEqual(at.filter((seq) => again.includes(seq)));
+        expect(new Set(again).size, `${ledger.label}: poll at ${upTo}`).toBe(again.length);
+        expect(again[0], `${ledger.label}: poll at ${upTo}`).toBe(at[0]);
+      }
+      repolled++;
+    }
+    expect(games, `${games} games with an interval`).toBeGreaterThan(0);
+    expect(atEleven, `${atEleven} intervals opened by the rally reaching 11`).toBeGreaterThan(0);
+    expect(repolled, `${repolled} ledgers re-polled`).toBeGreaterThan(0);
+  });
+
+  it("badminton declares no timeout (BWF play has none) and table tennis and volleyball no interval", () => {
+    const kinds = (key: string) => breaksOf(sport(key)).kinds.map((k) => k.kind);
+    expect(kinds("badminton")).not.toContain("timeout");
+    expect(kinds("tabletennis")).not.toContain("interval");
+    expect(kinds("volleyball")).not.toContain("interval");
+  });
 });

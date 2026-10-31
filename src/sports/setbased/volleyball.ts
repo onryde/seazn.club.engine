@@ -7,7 +7,7 @@ import type { PositionCatalog } from "../../sport/catalog.ts";
 import {
   makeSetBasedModule,
   samePointsMap,
-  SET_RULE_KEYS,
+  SET_RULE_KEYS, withSetBasedNaturalBreaks,
   type PointsPair,
   type SetBasedParams,
   type SetBasedSanctionLevel,
@@ -79,7 +79,7 @@ export const VOLLEYBALL_SERVE = {
   rotationCycle: 6,
 } as const satisfies SetBasedServeRotation;
 
-export const volleyball = makeSetBasedModule({
+export const volleyball = withSetBasedNaturalBreaks(makeSetBasedModule({
   key: "volleyball",
   version: "1.0.0",
   // Default = indoor (spec 04 §3.1).
@@ -195,7 +195,10 @@ export const volleyball = makeSetBasedModule({
       },
     ],
   },
-}, () => volleyball);
+}, () => volleyball),
+// R4 sponsors on stream (spec 2026-10-27 §3.1) — FIVB 18.1: the interval between sets (`set_end`); a team's timeout,
+// and indoor's technical timeout at 8 and 16 (`timeout`, FIVB 15.4).
+{ setEnd: "set_end", timeout: "timeout" });
 
 // Jul3/06 §3 — the 12-Jun scoresheet: point-by-point columns per set,
 // signature lines, final result, two matches per A4 (columnsHint: 2).

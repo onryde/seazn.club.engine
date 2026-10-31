@@ -4,7 +4,7 @@
 // Disciplines (MS/WS/MD/WD/XD) are entrant-kind + eligibility combinations, NOT
 // module variants — one module serves all five, so there are no positions.
 import type { PositionCatalog } from "../../sport/catalog.ts";
-import { makeSetBasedModule, SET_RULE_KEYS, type SetBasedSanctionLevel } from "./kernel.ts";
+import { makeSetBasedModule, SET_RULE_KEYS, withSetBasedNaturalBreaks, type SetBasedSanctionLevel } from "./kernel.ts";
 
 // badminton.md §7 — no positions; singles vs doubles is the entrant kind
 // (doc 02 §2), which the module never inspects (scoring reads only wonBy). One
@@ -20,7 +20,7 @@ const positions: PositionCatalog = {
  *  `sanctionLevels`; exported for `@seazn/engine/pad` (pad wave P3.1), so the pad offers this very array. */
 export const BADMINTON_SANCTION_LEVELS: readonly SetBasedSanctionLevel[] = ["warning", "penalty", "expulsion", "disqualification"];
 
-export const badminton = makeSetBasedModule({
+export const badminton = withSetBasedNaturalBreaks(makeSetBasedModule({
   key: "badminton",
   version: "1.0.0",
   // spec 04 §4 — game to 21, deciding game also to 21, hard cap 30.
@@ -108,4 +108,7 @@ export const badminton = makeSetBasedModule({
       },
     ],
   },
-}, () => badminton);
+}, () => badminton),
+// R4 sponsors on stream (spec 2026-10-27 §3.1) — BWF 16.2: the interval when the leading score reaches half the game's
+// target (`interval`), and the interval between games (`game_end`). Badminton has no timeouts.
+{ setEnd: "game_end", interval: "interval" });
