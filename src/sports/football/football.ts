@@ -3508,7 +3508,7 @@ import { declareNaturalBreaks, type NaturalBreaks } from "../../sport/natural-br
 /**
  * IFAB Law 7.2: the half-time interval (`half_time`, major), the HT whistle's: H1 to H2, or Q2 to Q3 in quarters (the
  * real half-time, DOMAIN.md). Every other whistle that play goes on after is a period's end (`period_end`, major): the
- * quarter breaks, the break before extra time and at its half-time, the break before the kicks from the penalty mark.
+ * quarter breaks, the break before extra time and at its half-time.
  * The break before the kicks from the penalty mark is its own kind (`shootout_break`, major), one name across every
  * sport with a shoot-out. The restart after a goal (`after_goal`, minor). Nothing opens when the event ends the match.
  */

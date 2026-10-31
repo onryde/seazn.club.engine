@@ -454,8 +454,14 @@ describe("natural breaks: cricket (Laws of Cricket 17.1 the over, 11 intervals)"
       if (closes && step.event.type === "cricket.innings.summary") return { category: "a summary closes the innings", kinds: ["innings_break"] };
       if (closes) return { category: "an innings closes mid-over", kinds: ["innings_break"] };
       if (endsAnOver(step)) return { category: "an over's last legal ball", kinds: ["over_end"] };
-      // A coarse summary reports overs already bowled: a past over end is not a live pause, wherever its count lands.
-      if (step.event.type === "cricket.innings.summary") return { category: "a summary leaves the innings open", kinds: [] };
+      // A coarse summary reports overs already bowled: a past over end is not a live pause, wherever its count lands. The
+      // count it reports is its own payload's, the over's length the config's.
+      if (step.event.type === "cricket.innings.summary") {
+        const balls = (step.event.payload as { legalBalls: number }).legalBalls;
+        const bpo = (step.ledger.cfg as CricketCfg).ballsPerOver;
+        if (balls > 0 && balls % bpo === 0) return { category: "a summary lands on an over's end, innings open", kinds: [] };
+        return { category: "a summary leaves the innings open mid-over", kinds: [] };
+      }
       return { category: "anything else", kinds: [] };
     });
     for (const category of [
@@ -464,7 +470,8 @@ describe("natural breaks: cricket (Laws of Cricket 17.1 the over, 11 intervals)"
       "a summary closes the innings",
       "an innings closes mid-over",
       "an over's last legal ball",
-      "a summary leaves the innings open",
+      "a summary lands on an over's end, innings open",
+      "a summary leaves the innings open mid-over",
       "anything else",
     ]) {
       expect(counts.get(category) ?? 0, `${category}: ${JSON.stringify([...counts])}`).toBeGreaterThan(0);
@@ -497,7 +504,7 @@ describe("natural breaks: cricket (Laws of Cricket 17.1 the over, 11 intervals)"
 describe("natural breaks: football (IFAB Law 7, the duration of the match)", () => {
   const football = sport("football");
 
-  it("football: half_time at the end of period 1; after_goal on a goal; every other whistle that play continues after opens period_end", () => {
+  it("football: half_time at the HT whistle; shootout_break into the kicks; every other whistle play goes on after opens period_end; after_goal on a goal", () => {
     const counts = categorise(playedOf(football).steps, (step) => {
       const before = step.before as FootballState;
       const after = step.after as FootballState;
@@ -537,7 +544,8 @@ describe("natural breaks: football (IFAB Law 7, the duration of the match)", () 
 
 describe("natural breaks: hockey and ice hockey (FIH quarters, IIHF periods)", () => {
   // FIH: an interval after the first and third quarters, and the half-time interval after the second. IIHF: an
-  // intermission after each period. Play that goes on into an overtime or a shoot-out is after a period end too.
+  // intermission after each period, an overtime included. The break before a shoot-out (FIH's, the IIHF's game-winning
+  // shots) is its own kind, `shootout_break`.
   for (const key of ["hockey", "icehockey"] as const) {
     it(`${key}: an advance that play continues after opens the ${key === "hockey" ? "quarter or half-time" : "period"} break; a goal opens after_goal`, () => {
       const m = sport(key);
