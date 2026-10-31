@@ -322,3 +322,16 @@ export function strykerConcurrency({ cores, memBytes, workersPerSandbox }) {
   const bound = Math.max(2, Math.min(cores - 1, Math.floor(memBytes / (3 * GB))));
   return Math.max(1, Math.floor(bound / workersPerSandbox));
 }
+
+/** The heap cap of a sandbox's runner child, in MB, for the ONE leg whose own dry run was measured to need more than the default
+ *  (stryker.config.mjs's `testRunnerNodeArgs`; its note says why the default is 2560). Every leg not named here gets the default.
+ *
+ *  core-2 (owner ruling A, 2026-10-31): at 888 mutants its dry run ran out of memory at 2560 MB and at 2730, the most the default's
+ *  half-the-runner rule allows; it ran to the end at 4096 (run 41153932848, 3 sandboxes on a hosted runner, 187.8 minutes). Its 3
+ *  children at 4096 are 12 GiB, three quarters of a 16 GB runner, which is what that run held; the concurrency stays the one it was
+ *  measured at (strykerConcurrency, unchanged), because 2 sandboxes would put the leg's phase over the 200-minute split line.
+ *  4096 is the most, not a floor: no runaway mutant's death was timed above it. test/stryker-runner.test.ts holds this table to
+ *  core-2 alone, at 4096, through every leg's loaded config, against those measurements. */
+export const STRYKER_HEAP_MB_BY_LEG = {
+  "core-2": 4096,
+};

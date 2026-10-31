@@ -95,3 +95,4 @@ export declare const STRYKER_EXCLUDED: Record<string, string>;
 export declare const STRYKER_PLACEMENT_OUT_OF_SCOPE: Record<string, string>;
 export declare const STRYKER_VITEST_WORKERS: number;
 export declare function strykerConcurrency(o: { cores: number; memBytes: number; workersPerSandbox: number }): number;
+export declare const STRYKER_HEAP_MB_BY_LEG: Readonly<Record<string, number>>;
