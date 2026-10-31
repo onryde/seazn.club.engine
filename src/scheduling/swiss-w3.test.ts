@@ -255,7 +255,7 @@ describe("X-SW-2 score groups first, bounded floats, a whole-field search only w
     const fresh = pairRound(field, { played: new Set() });
     expect(fresh.ok && fresh.floated).toEqual(["p4"]);
   });
-  it("X-SW-2 after a withdrawal (one entrant leaves the standings) the next round still seats everyone once", () => {
+  it("X-SW-2 X-SW-1 after a withdrawal (one entrant leaves the standings) the next round still seats everyone once (P-A3, P-A7)", () => {
     const r = pairRound(st(["a", "b", "c", "d", "e"]).filter((s) => s.entrantId !== "c"), { played: new Set([pairKey("a", "b")]) });
     expect(r.ok && r.pairings.flatMap((p) => [p.home, p.away]).sort()).toEqual(["a", "b", "d", "e"]);
     expect(r.ok && r.pairings.some((p) => pairKey(p.home, p.away) === pairKey("a", "b"))).toBe(false);

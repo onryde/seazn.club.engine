@@ -1,14 +1,30 @@
-// Swiss pairing — spec 05 §2.2, invariants §6.
+// Swiss pairing — spec 05 §2.2, invariants §6; W3 X-SW-1 (rulebook-W3-swiss §2.1 P-A1/P-A3/P-A4/P-A6, §2.3).
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 import {
   pairKey,
   pairRound,
+  SWISS_NO_LEGAL_PAIRING,
   type Colour,
+  type SwissConstraints,
   type SwissHistory,
   type SwissRefusal,
   type SwissStanding,
 } from "./swiss.ts";
+import {
+  colourCompatible,
+  colourHistoryLegal,
+  judgeRound,
+  lowerScoredPairableByes,
+  mayTake,
+  ORACLE_MAX_FIELD,
+  oraclePairKey,
+  perfectMatchingExists,
+  seatedRoundViolations,
+  type OracleRound,
+} from "../testkit/swiss-oracle.ts";
 
 const field = (n: number): string[] => Array.from({ length: n }, (_, i) => `p${i}`);
 
@@ -28,23 +44,25 @@ function prng(seed: number): () => number {
 // stronger side but allow upsets (~30%) — like a real field, this keeps colour
 // history from perfectly stratifying by score. Returns the per-round pairings
 // plus the accumulated history — enough to assert every invariant. A refused
-// round (SWISS_NO_LEGAL_PAIRING) seats nothing: the event stops there and the
-// refusal is returned beside the rounds that were paired.
+// round (SWISS_NO_LEGAL_PAIRING) seats nothing: the event stops there, and the
+// refusal is returned beside the rounds that were paired (`refusals` holds at
+// most that one), so a property can tell a short event from a full one.
 interface SimRound {
   pairings: { home: string; away: string }[];
   bye?: string;
 }
-function simulate(
-  n: number,
-  rounds: number,
-  opts: { chess?: boolean; seed?: number } = {},
-): {
+interface SimEvent {
   rounds: SimRound[];
+  refusals: SwissRefusal[];
   colours: Map<string, Colour[]>;
   played: Set<string>;
   byes: Set<string>;
-  refusal?: SwissRefusal;
-} {
+}
+function simulate(
+  n: number,
+  rounds: number,
+  opts: { chess?: boolean; seed?: number; pairing?: SwissConstraints["pairing"] } = {},
+): SimEvent {
   const ids = field(n);
   const rank = new Map(ids.map((id, i) => [id, i + 1]));
   const score = new Map(ids.map((id) => [id, 0]));
@@ -66,8 +84,10 @@ function simulate(
       rank: rank.get(id) as number,
     }));
     const history: SwissHistory = { played, colours, byes };
-    const round = pairRound(standings, history, { chess: opts.chess === true, byeScore: 1 });
-    if (!round.ok) return { rounds: out, colours, played, byes, refusal: round };
+    const constraints: SwissConstraints = { chess: opts.chess === true, byeScore: 1 };
+    if (opts.pairing !== undefined) constraints.pairing = opts.pairing;
+    const round = pairRound(standings, history, constraints);
+    if (!round.ok) return { rounds: out, refusals: [round], colours, played, byes };
 
     for (const p of round.pairings) {
       played.add(pairKey(p.home, p.away));
@@ -87,14 +107,14 @@ function simulate(
     }
     out.push({ pairings: round.pairings, ...(round.bye === undefined ? {} : { bye: round.bye }) });
   }
-  return { rounds: out, colours, played, byes };
+  return { rounds: out, refusals: [], colours, played, byes };
 }
 
 describe("pairRound — golden 5-round Swiss on 9 entrants (spec 05 acceptance)", () => {
   const sim = simulate(9, 5, { seed: 7 });
 
   it("pairs every round with exactly one bye (odd field)", () => {
-    expect(sim.refusal).toBeUndefined();
+    expect(sim.refusals).toEqual([]);
     expect(sim.rounds).toHaveLength(5);
     for (const round of sim.rounds) {
       expect(round.pairings).toHaveLength(4);
@@ -145,112 +165,143 @@ describe("pairRound — bye selection (spec 05 §2.2)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Properties — spec 05 §6
+// X-SW-1 — the invariants every simulated event owes (spec 05 §6; rulebook-W3 §2.1, §3.1)
 // ---------------------------------------------------------------------------
 
-// Brute-force: does a rematch-free perfect matching of `pool` exist given the
-// forbidden `played` pairs? (spec 05 §2.2 verify-via-brute-force, n ≤ 10.)
-function perfectMatchingExists(pool: string[], played: ReadonlySet<string>): boolean {
-  if (pool.length === 0) return true;
-  const [a, ...rest] = pool as [string, ...string[]];
-  for (let i = 0; i < rest.length; i++) {
-    const b = rest[i] as string;
-    if (played.has(pairKey(a, b))) continue;
-    const remaining = rest.filter((_, j) => j !== i);
-    if (perfectMatchingExists(remaining, played)) return true;
+// What a whole event owes, round by round, and its round count: every round asked for is paired, or the event stopped at a
+// refusal the rules allow (T1 review: a refusal may never silently shorten what a property checks).
+interface EventTally {
+  events: number;
+  rounds: number;
+  boards: number;
+  byes: number;
+  refused: number;
+  refusalsProved: number;
+}
+const newTally = (): EventTally => ({ events: 0, rounds: 0, boards: 0, byes: 0, refused: 0, refusalsProved: 0 });
+
+function checkEvent(sim: SimEvent, n: number, asked: number, chess: boolean, t: EventTally): void {
+  t.events++;
+  const seen = new Set<string>();
+  const byed = new Set<string>();
+  for (const round of sim.rounds) {
+    t.rounds++;
+    t.boards += round.pairings.length;
+    if (round.bye !== undefined) t.byes++;
+    const seated = [...round.pairings.flatMap((p) => [p.home, p.away]), ...(round.bye === undefined ? [] : [round.bye])];
+    expect(new Set(seated).size).toBe(n); // P-A3: every active entrant…
+    expect(seated).toHaveLength(n); // …exactly once
+    expect(round.pairings).toHaveLength(Math.floor(n / 2));
+    expect(round.bye !== undefined).toBe(n % 2 === 1); // a bye exactly when the field is odd
+    for (const p of round.pairings) {
+      const k = pairKey(p.home, p.away);
+      expect(seen.has(k)).toBe(false); // P-A1
+      seen.add(k);
+    }
+    if (round.bye !== undefined) {
+      expect(byed.has(round.bye)).toBe(false); // P-A4
+      byed.add(round.bye);
+    }
   }
-  return false;
+  const [refusal] = sim.refusals;
+  if (refusal === undefined) {
+    expect(sim.rounds).toHaveLength(asked); // the round count: nothing was cut short
+    return;
+  }
+  t.refused++;
+  expect(sim.refusals).toHaveLength(1);
+  const roundNo = sim.rounds.length + 1;
+  expect(roundNo).toBeLessThanOrEqual(asked);
+  expect(refusal.field).toBe(n);
+  // P-A6 at harness sizes (rulebook §2.3 bound): the search budget decides a field this small, never "ran out"
+  expect(refusal.reason).not.toBe("search_limit");
+  // Rulebook §3.1: up to the safe maximum ⌊n/2⌋ a rematch-free round exists whatever was paired before (Dirac), with a bye
+  // candidate to spare, so only the chess colour limits can refuse a round there
+  if (roundNo <= Math.floor(n / 2)) {
+    expect({ roundNo, n, chess }).toEqual({ roundNo, n, chess: true });
+    expect(refusal.reason).toBe("colour");
+  }
+  // n ≤ 12: the oracle proves the refusal: no legal round exists, for the reason it names (rulebook §2.3 item 3)
+  if (n <= ORACLE_MAX_FIELD) {
+    const v = judgeRound({
+      field: field(n).map((id) => ({ id, score: 0 })),
+      played: sim.rounds.flatMap((r) => r.pairings.map((p): [string, string] => [p.home, p.away])),
+      byeIneligible: sim.byes,
+      ...(chess ? { colours: sim.colours } : {}),
+    });
+    expect(v.exists).toBe(false);
+    expect(refusal.reason).toBe(v.reason);
+    t.refusalsProved++;
+  }
 }
 
-describe("pairRound — invariants (spec 05 §6)", () => {
-  it("no rematch ever, across a simulated tournament (n up to 64)", () => {
+describe("X-SW-1 every paired round seats each active entrant exactly once, with no rematch and no second bye (spec 05 §6; rulebook §2.1)", () => {
+  it("X-SW-1 every paired round seats each active entrant exactly once: ⌊n/2⌋ boards, one bye iff n odd, no rematch, no second bye (n 2–64, counted)", () => {
+    const RUNS = 200;
+    const t = newTally();
     fc.assert(
       fc.property(
-        fc.integer({ min: 2, max: 64 }),
+        // half the events at n ≤ 12, where the rounds asked for pass the safe maximum and the oracle proves the refusal
+        fc.oneof(fc.integer({ min: 2, max: ORACLE_MAX_FIELD }), fc.integer({ min: 2, max: 64 })),
         fc.integer({ min: 1, max: 6 }),
         fc.integer(),
-        (n, rounds, seed) => {
-          const sim = simulate(n, rounds, { seed });
-          const seen = new Set<string>();
-          for (const round of sim.rounds) {
-            for (const p of round.pairings) {
-              const key = pairKey(p.home, p.away);
-              expect(seen.has(key)).toBe(false);
-              seen.add(key);
-            }
-          }
-        },
+        (n, r, seed) => checkEvent(simulate(n, r, { seed }), n, r, false, t),
       ),
+      { numRuns: RUNS },
     );
+    expect(t.events).toBe(RUNS); // anti-vacuity: every event ran, every round counted, and both endings were reached
+    expect(t.rounds).toBeGreaterThan(0);
+    expect(t.boards).toBeGreaterThan(0);
+    expect(t.byes).toBeGreaterThan(0);
+    expect(t.refused).toBeGreaterThan(0);
+    expect(t.refusalsProved).toBeGreaterThan(0);
   });
 
-  it(
-    "chess colour bounds hold: |W−B| ≤ 2 and never 3 in a row (n up to 64)",
-    () => {
-      fc.assert(
-        fc.property(
-          fc.integer({ min: 2, max: 64 }),
-          fc.integer({ min: 1, max: 7 }),
-          fc.integer(),
-          (n, rounds, seed) => {
-            const sim = simulate(n, rounds, { chess: true, seed });
-            for (const [, seq] of sim.colours) {
-              const w = seq.filter((c) => c === "W").length;
-              const b = seq.length - w;
-              expect(Math.abs(w - b)).toBeLessThanOrEqual(2);
-              for (let i = 2; i < seq.length; i++) {
-                expect(seq[i] === seq[i - 1] && seq[i - 1] === seq[i - 2]).toBe(false);
-              }
-            }
-          },
-        ),
-      );
-    },
-    30_000,
-  );
-
-  it("finds a total pairing whenever a rematch-free matching exists (brute force, n ≤ 10)", () => {
-    let paired = 0;
-    let refused = 0;
+  it("X-SW-1 another sport's shape: rank_adjacent pairing keeps the same invariant (counted)", () => {
+    // the swiss_playoff / swiss_knockout templates pair rank-adjacent from round 2 (rulebook P-Q4, RB3-12)
+    const RUNS = 200;
+    const t = newTally();
     fc.assert(
-      fc.property(
-        fc.integer({ min: 1, max: 5 }).map((k) => 2 * k), // even n ∈ {2,4,6,8,10}
-        fc.integer(), // seed for the random `played` history
-        (n, seed) => {
-          const ids = field(n);
-          // Build a random forbidden-pair set deterministically from `seed`.
-          const played = new Set<string>();
-          let x = seed >>> 0;
-          for (let i = 0; i < n; i++) {
-            for (let j = i + 1; j < n; j++) {
-              x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
-              if (x % 3 === 0) played.add(pairKey(ids[i] as string, ids[j] as string));
-            }
-          }
-          const standings: SwissStanding[] = ids.map((id, i) => ({ entrantId: id, score: 0, rank: i + 1 }));
-          const round = pairRound(standings, { played });
-          const exists = perfectMatchingExists(ids, played);
-          if (exists) {
-            paired++;
-            expect(round).toMatchObject({ ok: true }); // a refusal shows its reason here
-            if (!round.ok) return;
-            expect(round.pairings).toHaveLength(n / 2);
-            // and it must respect the no-rematch constraint
-            for (const p of round.pairings) expect(played.has(pairKey(p.home, p.away))).toBe(false);
-          } else {
-            refused++;
-            // no rematch-free perfect matching (the brute force above): the named refusal, never an empty round (X-SW-3)
-            expect(round).toEqual({ ok: false, code: "SWISS_NO_LEGAL_PAIRING", reason: "rematch", field: n });
-          }
-        },
+      fc.property(fc.integer({ min: 2, max: 20 }), fc.integer({ min: 1, max: 6 }), fc.integer(), (n, r, seed) =>
+        checkEvent(simulate(n, r, { seed, pairing: "rank_adjacent" }), n, r, false, t),
       ),
+      { numRuns: RUNS },
     );
-    // anti-vacuity: both branches ran
-    expect(paired).toBeGreaterThan(0);
-    expect(refused).toBeGreaterThan(0);
+    expect(t.events).toBe(RUNS);
+    expect(t.rounds).toBeGreaterThan(0);
+    expect(t.boards).toBeGreaterThan(0);
+    expect(t.byes).toBeGreaterThan(0);
+    expect(t.refused).toBeGreaterThan(0);
+    expect(t.refusalsProved).toBeGreaterThan(0);
   });
 
-  it("is deterministic — identical inputs yield identical pairings", () => {
+  it("X-SW-1 chess on: every paired round seats each entrant once, and the colour bounds hold: |W−B| ≤ 2, never three in a row (n 2–64, counted)", () => {
+    const RUNS = 100;
+    const t = newTally();
+    let sequences = 0;
+    fc.assert(
+      fc.property(fc.integer({ min: 2, max: 64 }), fc.integer({ min: 1, max: 7 }), fc.integer(), (n, rounds, seed) => {
+        const sim = simulate(n, rounds, { chess: true, seed });
+        checkEvent(sim, n, rounds, true, t);
+        for (const [, seq] of sim.colours) {
+          sequences++;
+          const w = seq.filter((c) => c === "W").length;
+          const b = seq.length - w;
+          expect(Math.abs(w - b)).toBeLessThanOrEqual(2);
+          for (let i = 2; i < seq.length; i++) {
+            expect(seq[i] === seq[i - 1] && seq[i - 1] === seq[i - 2]).toBe(false);
+          }
+        }
+      }),
+      { numRuns: RUNS },
+    );
+    expect(t.events).toBe(RUNS);
+    expect(t.rounds).toBeGreaterThan(0);
+    expect(sequences).toBeGreaterThan(0); // anti-vacuity: colour sequences were read
+  });
+
+  it("X-SW-1 is deterministic: identical inputs yield identical results, a refusal included (counted)", () => {
+    let fresh = 0;
     fc.assert(
       fc.property(fc.integer({ min: 2, max: 32 }), (n) => {
         const standings: SwissStanding[] = field(n).map((id, i) => ({
@@ -261,20 +312,295 @@ describe("pairRound — invariants (spec 05 §6)", () => {
         const a = pairRound(standings, { played: new Set() }, { chess: true });
         const b = pairRound(standings, { played: new Set() }, { chess: true });
         expect(a).toEqual(b);
+        fresh++;
       }),
+      { numRuns: 100 },
     );
+    expect(fresh).toBe(100);
+    // with a history (n ≤ 12): the second call agrees whether the round pairs or is refused
+    const seenOutcome = { paired: 0, refused: 0 };
+    fc.assert(
+      fc.property(fc.integer({ min: 2, max: ORACLE_MAX_FIELD }), fc.boolean(), fc.integer(), (n, chess, seed) => {
+        const c = randomRound(n, chess, seed);
+        const a = pairRound(c.standings, c.history, { chess });
+        expect(pairRound(c.standings, c.history, { chess })).toEqual(a);
+        seenOutcome[a.ok ? "paired" : "refused"]++;
+      }),
+      { numRuns: 200 },
+    );
+    expect(seenOutcome.paired).toBeGreaterThan(0);
+    expect(seenOutcome.refused).toBeGreaterThan(0);
   });
 });
 
-// P-A5 (rulebook-W3 §2.1), read pairwise as the reference does (§2.3 item 2): after the round an entrant's colour
-// difference is within [−2, +2] and it has not had the same colour three times running.
-function canPlay(seq: readonly Colour[], c: Colour): boolean {
-  const after = [...seq, c];
-  const white = after.filter((x) => x === "W").length;
-  if (Math.abs(white - (after.length - white)) > 2) return false;
-  const k = after.length;
-  return !(k >= 3 && after[k - 1] === after[k - 2] && after[k - 2] === after[k - 3]);
+// ---------------------------------------------------------------------------
+// X-SW-1 — existence and bye minimality against the independent brute-force oracle (rulebook §2.3 items 3–4; RB3-24, n ≤ 12)
+// ---------------------------------------------------------------------------
+
+const otherColour = (c: Colour): Colour => (c === "W" ? "B" : "W");
+
+// Fisher–Yates on a copy, driven by `rng`.
+function shuffled<T>(items: readonly T[], rng: () => number): T[] {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [out[i], out[j]] = [out[j] as T, out[i] as T];
+  }
+  return out;
 }
+
+// One round as an event of n ≤ 12 can present it. 0..n earlier rounds are actually run: each is a random matching of pairs that
+// have not met, and with chess colours on each board takes a colour assignment P-A5 allows both sides (a pair no assignment suits
+// does not meet). So every colour history is one a legal event produces, at EVERY step (T2 report, concern 3), and `played` and
+// the colours agree. `repeat` tilts boards toward repeating a side's last colour, which makes the absolute preferences — and the
+// colour clashes — a tight field has. Scores are random in {0, 1, 2} (several score groups), and a random share of the field is
+// bye-ineligible (P-A4). The engine gets its own history (swiss.ts's pairKey); the oracle gets the same facts as pairs.
+interface RoundCase {
+  standings: SwissStanding[];
+  history: SwissHistory;
+  judged: OracleRound;
+}
+function randomRound(n: number, chess: boolean, seed: number): RoundCase {
+  const rng = prng(seed);
+  const ids = field(n);
+  const met: [string, string][] = [];
+  const metKeys = new Set<string>();
+  const colours = new Map(ids.map((id) => [id, [] as Colour[]]));
+  const seq = (id: string): Colour[] => colours.get(id) as Colour[];
+  const repeat = rng();
+  const earlier = Math.floor(rng() * (n + 1));
+  for (let k = 0; k < earlier; k++) {
+    const order = shuffled(ids, rng);
+    const seated = new Set<string>();
+    for (const a of order) {
+      if (seated.has(a)) continue;
+      const b = order.find(
+        (x) => x !== a && !seated.has(x) && !metKeys.has(oraclePairKey(a, x)) && (!chess || colourCompatible(seq(a), seq(x))),
+      );
+      if (b === undefined) continue; // a sits this round out
+      seated.add(a);
+      seated.add(b);
+      met.push([a, b]);
+      metKeys.add(oraclePairKey(a, b));
+      if (chess) {
+        const options = (["W", "B"] as const).filter((c) => mayTake(seq(a), c) && mayTake(seq(b), otherColour(c)));
+        const last = seq(a).at(-1);
+        const c: Colour =
+          options.length === 1
+            ? (options[0] as Colour)
+            : last !== undefined && rng() < repeat
+              ? last
+              : rng() < 0.5
+                ? "W"
+                : "B";
+        seq(a).push(c);
+        seq(b).push(otherColour(c));
+      }
+    }
+  }
+  const standings: SwissStanding[] = ids.map((id, i) => ({ entrantId: id, score: Math.floor(rng() * 3), rank: i + 1 }));
+  const byeRate = rng();
+  const byes = new Set(ids.filter(() => rng() < byeRate));
+  return {
+    standings,
+    history: { played: new Set(met.map(([a, b]) => pairKey(a, b))), byes, ...(chess ? { colours } : {}) },
+    judged: {
+      field: standings.map((s) => ({ id: s.entrantId, score: s.score })),
+      played: met,
+      byeIneligible: byes,
+      ...(chess ? { colours } : {}),
+    },
+  };
+}
+
+// Rulebook §2.3 item 4 (P-Q2's hard core; A3 [C5] outranks every other quality criterion): on every paired odd round, no
+// eligible entrant with a strictly LOWER score than the bye leaves a pairable remainder. `extra` is the stage's other
+// constraints: ruling R1 binds the look-ahead to this too, and T4b runs it with `{ lookAhead: true }`.
+function byeMinimality(extra: SwissConstraints, runs: number): { byeCases: number; climbed: number; lowerChecked: number; refused: number } {
+  const t = { byeCases: 0, climbed: 0, lowerChecked: 0, refused: 0 };
+  fc.assert(
+    fc.property(fc.integer({ min: 1, max: Math.floor((ORACLE_MAX_FIELD - 1) / 2) }), fc.boolean(), fc.integer(), (k, chess, seed) => {
+      const n = 2 * k + 1; // odd: 3..11
+      const c = randomRound(n, chess, seed);
+      const r = pairRound(c.standings, c.history, { ...extra, chess });
+      if (!r.ok) {
+        t.refused++; // whether it should have paired is the existence property's question
+        return;
+      }
+      expect(r.bye).toBeDefined();
+      const bye = r.bye as string;
+      const v = judgeRound(c.judged);
+      expect(v.pairableByes).toContain(bye);
+      expect({ seed, n, chess, bye, lowerPairable: lowerScoredPairableByes(c.judged, v, bye) }).toEqual({ seed, n, chess, bye, lowerPairable: [] });
+      const score = new Map(c.standings.map((s) => [s.entrantId, s.score]));
+      const lower = v.eligible.filter((id) => (score.get(id) as number) < (score.get(bye) as number));
+      t.byeCases++;
+      t.lowerChecked += lower.length;
+      if (lower.length > 0) t.climbed++; // the bye climbed past lower-scored candidates, each proved unpairable
+    }),
+    { numRuns: runs },
+  );
+  return t;
+}
+
+describe("X-SW-1 existence and bye minimality against an independent brute-force oracle (rulebook §2.3 items 3–4; RB3-24, n ≤ 12)", () => {
+  it("X-SW-1 (P-A6) pairs whenever a legal pairing exists and refuses only when none does — odd and even, several score groups, chess on and off (brute force n ≤ 12, counted)", () => {
+    const RUNS = 1000; // a colour refusal is ~1.8% of cases: 1000 leave P(none) ≈ 1e-8
+    const t = { cases: 0, paired: 0, refused: 0, rematch: 0, colour: 0, noBye: 0, chessPaired: 0, multiGroupPaired: 0, multiGroupRefused: 0, matchings: 0 };
+    fc.assert(
+      fc.property(fc.integer({ min: 2, max: ORACLE_MAX_FIELD }), fc.boolean(), fc.integer(), (n, chess, seed) => {
+        const c = randomRound(n, chess, seed);
+        const r = pairRound(c.standings, c.history, { chess });
+        const v = judgeRound(c.judged);
+        t.cases++;
+        t.matchings += v.matchingsChecked;
+        const multiGroup = new Set(c.standings.map((s) => s.score)).size > 1;
+        expect({ seed, n, chess, ok: r.ok }).toEqual({ seed, n, chess, ok: v.exists });
+        if (r.ok) {
+          expect(seatedRoundViolations(c.judged, r)).toEqual([]); // P-A1, P-A3, P-A4, P-A5 as seated
+          t.paired++;
+          if (chess) t.chessPaired++;
+          if (multiGroup) t.multiGroupPaired++;
+          return;
+        }
+        // the refusal names the reason (§3.3, ruling R2): no_bye_candidate iff the field is odd and nobody is eligible, else
+        // colour or rematch
+        expect(r).toEqual({ ok: false, code: SWISS_NO_LEGAL_PAIRING, reason: v.reason, field: n });
+        expect(r.reason === "no_bye_candidate").toBe(n % 2 === 1 && v.eligible.length === 0);
+        t.refused++;
+        if (r.reason === "rematch") t.rematch++;
+        if (r.reason === "colour") t.colour++;
+        if (r.reason === "no_bye_candidate") t.noBye++;
+        if (multiGroup) t.multiGroupRefused++;
+      }),
+      { numRuns: RUNS },
+    );
+    // anti-vacuity: every case ran, both outcomes and every refusal reason were reached, and the oracle answered matchings
+    expect(t.cases).toBe(RUNS);
+    expect(t.paired + t.refused).toBe(RUNS);
+    for (const [k, v] of Object.entries(t)) expect([k, v > 0]).toEqual([k, true]);
+  });
+
+  it("X-SW-1 bye minimality: no eligible entrant with a strictly lower score leaves a pairable remainder (rulebook §2.3 item 4, n ≤ 12, counted)", () => {
+    const t = byeMinimality({}, 500); // a climbed bye is ~4% of cases: 500 leave P(none) ≈ 1e-9
+    expect(t.byeCases).toBeGreaterThan(0);
+    expect(t.climbed).toBeGreaterThan(0); // the check met lower-scored candidates and proved each one unpairable
+    expect(t.lowerChecked).toBeGreaterThan(0);
+  });
+
+  // Ruling R1: the look-ahead (T4b) ranks completions only WITHIN the bye candidate this property pins; it never moves the bye up.
+  it.todo("X-SW-1 bye minimality holds with lookAhead on (ruling R1): T4b runs byeMinimality({ lookAhead: true }, 500) with the counts above");
+
+  it("X-SW-1 the oracle is independent: src/testkit/swiss-oracle.ts imports nothing from scheduling or competition", () => {
+    const source = readFileSync(fileURLToPath(new URL("../testkit/swiss-oracle.ts", import.meta.url)), "utf8");
+    // the read is of the oracle, not of an empty or moved file
+    expect(source).toMatch(/export function judgeRound\(/);
+    expect(source).toMatch(/export function perfectMatchingExists\(/);
+    // every module specifier the file names: static imports, re-exports and dynamic imports
+    const named = (text: string): string[] =>
+      [...text.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)["']([^"']+)["']/g)]
+        .map((m) => m[1] as string)
+        .filter((s) => /scheduling|competition|swiss/.test(s));
+    expect(named(source)).toEqual([]);
+    // the scan sees such an import when there is one
+    expect(named(`${source}\nimport { pairRound } from "../scheduling/swiss.ts";\n`)).toEqual(["../scheduling/swiss.ts"]);
+    // and it copies none of swiss.ts's colour and search helpers by name (review M5)
+    for (const helper of ["canTake", "colourLegal", "hardLegal", "assignColours", "preferredColour", "colourState", "orderCandidates", "matchWithin", "pairFrom", "floaterChoices"]) {
+      expect([helper, source.includes(helper)]).toEqual([helper, false]);
+    }
+  });
+});
+
+describe("X-SW-1 the brute-force oracle answers hand-worked cases from the rulebook (RB3-24, the n ≤ 12 half)", () => {
+  const W = "W" as const;
+  const B = "B" as const;
+
+  it("X-SW-1 oracle colour limits (P-A5; C.04.1 r.6–7, C.04.3 [C3]): |W−B| ≤ 2 after the round and never three of one colour running, read pairwise", () => {
+    expect([mayTake([], W), mayTake([], B)]).toEqual([true, true]);
+    expect([mayTake([W, W], W), mayTake([W, W], B)]).toEqual([false, true]); // three running
+    expect([mayTake([B, B], B), mayTake([B, B], W)]).toEqual([false, true]);
+    expect([mayTake([W, B, W, W], W), mayTake([W, B, W, W], B)]).toEqual([false, true]); // +2 now: White would make +3
+    expect(mayTake([W, B, W], W)).toBe(true); // +2 after, two running: within both limits
+    expect(mayTake([B, W, B, B], B)).toBe(false); // −2 now: Black would make −3
+    // [C3]: two with the same absolute preference cannot meet; any other pair has an assignment
+    expect(colourCompatible([W, W], [W, W])).toBe(false);
+    expect(colourCompatible([W, B, W, W], [W, W])).toBe(false);
+    expect(colourCompatible([W, W], [B, B])).toBe(true);
+    expect(colourCompatible([W, W], [])).toBe(true);
+    expect(colourCompatible([W, B, W, W], [B, W, B, B])).toBe(true);
+    // a history a legal event produces holds both limits after every round of it
+    expect([colourHistoryLegal([]), colourHistoryLegal([W, W, B, B]), colourHistoryLegal([W, B, W, W, B])]).toEqual([true, true, true]);
+    expect([colourHistoryLegal([W, W, W]), colourHistoryLegal([B, B, W, B, B]), colourHistoryLegal([B, B, B, B])]).toEqual([false, false, false]);
+  });
+
+  it("X-SW-1 oracle matching (P-A6): K4 splits into three perfect matchings; a 6-cycle's three diameters leave two triangles (rulebook §3.1, §3.2)", () => {
+    const k = (pairs: [string, string][]): Set<string> => new Set(pairs.map(([a, b]) => oraclePairKey(a, b)));
+    expect(perfectMatchingExists([], new Set())).toBe(true); // nobody to seat
+    expect(perfectMatchingExists(["a", "b"], k([["a", "b"]]))).toBe(false);
+    expect(perfectMatchingExists(["a", "b", "c"], new Set())).toBe(false); // an odd pool has no perfect matching
+    // K4 = {a-b, c-d} ∪ {a-c, b-d} ∪ {a-d, b-c}: after two of them the third is left; after all three nothing
+    const k4 = ["a", "b", "c", "d"];
+    expect(perfectMatchingExists(k4, k([["a", "b"], ["c", "d"]]))).toBe(true);
+    expect(perfectMatchingExists(k4, k([["a", "b"], ["c", "d"], ["a", "c"], ["b", "d"]]))).toBe(true);
+    expect(perfectMatchingExists(k4, k([["a", "b"], ["c", "d"], ["a", "c"], ["b", "d"], ["a", "d"], ["b", "c"]]))).toBe(false);
+    // rulebook §3.1's 6 × 5 audit case: rounds 1–2 a 6-cycle, round 3 the diameters ⇒ the unplayed pairs are two triangles
+    const six = field(6);
+    const cycle: [string, string][] = [["p0", "p1"], ["p2", "p3"], ["p4", "p5"], ["p0", "p5"], ["p1", "p2"], ["p3", "p4"]];
+    expect(perfectMatchingExists(six, k(cycle))).toBe(true);
+    expect(perfectMatchingExists(six, k([...cycle, ["p0", "p3"], ["p1", "p4"], ["p2", "p5"]]))).toBe(false);
+    expect(perfectMatchingExists(six, k([...cycle, ["p0", "p2"], ["p1", "p4"], ["p3", "p5"]]))).toBe(true);
+  });
+
+  it("X-SW-1 oracle verdicts: an odd field's pairable byes, the reason when none pairs, and bye minimality (rulebook §2.3 items 3–4, §3.3, ruling R2)", () => {
+    const at = (scores: Record<string, number>): OracleRound["field"] => Object.entries(scores).map(([id, score]) => ({ id, score }));
+    // a, b, c with a–b met: removing a or b leaves a fresh pair, removing c leaves the rematch
+    const one = judgeRound({ field: at({ a: 0, b: 0, c: 0 }), played: [["a", "b"]] });
+    expect(one).toMatchObject({ exists: true, eligible: ["a", "b", "c"], pairableByes: ["a", "b"] });
+    expect(one.reason).toBeUndefined();
+    expect(one.matchingsChecked).toBe(3);
+    // all three met: no bye leaves a pair ⇒ rematch
+    expect(judgeRound({ field: at({ a: 0, b: 0, c: 0 }), played: [["a", "b"], ["a", "c"], ["b", "c"]] })).toMatchObject({ exists: false, pairableByes: [], reason: "rematch" });
+    // the three rotated the bye (rulebook §3.1: an odd field's impossibility starts at n + 1) ⇒ no_bye_candidate
+    expect(judgeRound({ field: at({ a: 0, b: 0, c: 0 }), played: [], byeIneligible: new Set(["a", "b", "c"]) })).toMatchObject({ exists: false, eligible: [], reason: "no_bye_candidate" });
+    // chess: two who never met, each White twice running ⇒ colour; colours off, the same two pair
+    const ww = new Map([["a", [W, W]], ["b", [W, W]]]);
+    expect(judgeRound({ field: at({ a: 0, b: 0 }), played: [], colours: ww })).toMatchObject({ exists: false, reason: "colour" });
+    expect(judgeRound({ field: at({ a: 0, b: 0 }), played: [] })).toMatchObject({ exists: true });
+    // bye minimality: x (0) below y, z (1). With y–z met x's removal leaves the rematch, so a bye on z is minimal…
+    const blocked = { field: at({ x: 0, y: 1, z: 1 }), played: [["y", "z"]] as [string, string][] };
+    const vb = judgeRound(blocked);
+    expect(vb.pairableByes).toEqual(["y", "z"]);
+    expect(lowerScoredPairableByes(blocked, vb, "z")).toEqual([]);
+    // …and with y–z fresh, x leaves a pair, so a bye on z is not
+    const open = { field: at({ x: 0, y: 1, z: 1 }), played: [] as [string, string][] };
+    expect(lowerScoredPairableByes(open, judgeRound(open), "z")).toEqual(["x"]);
+    // a seated round is judged rule by rule
+    expect(seatedRoundViolations(blocked, { pairings: [{ home: "y", away: "x" }], bye: "z" })).toEqual([]);
+    expect(seatedRoundViolations(blocked, { pairings: [{ home: "y", away: "z" }], bye: "x" })).toEqual(["P-A1 y v z have met"]);
+    expect(seatedRoundViolations({ ...blocked, byeIneligible: new Set(["z"]) }, { pairings: [{ home: "y", away: "x" }], bye: "z" })).toEqual(["P-A4 z may not take the bye"]);
+    expect(seatedRoundViolations(blocked, { pairings: [{ home: "y", away: "x" }] })).toEqual(["P-A3 z is seated 0 times", "P-A3 a bye is owed exactly when the field is odd"]);
+    expect(seatedRoundViolations({ field: at({ a: 0, b: 0 }), played: [], colours: new Map([["a", [W, W]]]) }, { pairings: [{ home: "a", away: "b" }] })).toEqual(["P-A5 a may not take W"]);
+  });
+
+  it("X-SW-1 oracle guards: a field outside 2 ≤ n ≤ 12, a duplicated or unkeyable entrant, a foreign pair key, an unknown bye or a colour history no legal event produces is refused by name (assumptions → guards)", () => {
+    const flat = (n: number): OracleRound["field"] => field(n).map((id) => ({ id, score: 0 }));
+    expect(() => judgeRound({ field: flat(ORACLE_MAX_FIELD + 1), played: [] })).toThrow(/2 ≤ n ≤ 12/);
+    expect(() => judgeRound({ field: flat(1), played: [] })).toThrow(/2 ≤ n ≤ 12/);
+    expect(judgeRound({ field: flat(ORACLE_MAX_FIELD), played: [] }).exists).toBe(true); // the bound itself is in range
+    expect(() => perfectMatchingExists(field(ORACLE_MAX_FIELD + 2), new Set())).toThrow(/n ≤ 12/);
+    expect(() => judgeRound({ field: [{ id: "a", score: 0 }, { id: "a", score: 1 }], played: [] })).toThrow(/twice/);
+    expect(() => perfectMatchingExists(["a", "b|c"], new Set())).toThrow(/"\|"/);
+    // a key the oracle did not build (another order, another separator) would silently forbid nothing
+    expect(() => perfectMatchingExists(["a", "b"], new Set(["b|a"]))).toThrow(/pair key/);
+    expect(() => perfectMatchingExists(["a", "b"], new Set(["a-b"]))).toThrow(/pair key/);
+    expect(perfectMatchingExists(["a", "b"], new Set([oraclePairKey("b", "a")]))).toBe(false);
+    expect(() => lowerScoredPairableByes({ field: flat(3), played: [] }, judgeRound({ field: flat(3), played: [] }), "q9")).toThrow(/not in the field/);
+    // BBBB (−4) is outside the limits already; the oracle refuses it rather than judge a round no legal event reaches
+    expect(() => judgeRound({ field: flat(2), played: [], colours: new Map([["p0", [B, B, B, B]]]) })).toThrow(/colour history/);
+    // a colour that is neither W nor B would count as Black and pass unnoticed
+    expect(() => mayTake(["X" as unknown as Colour], W)).toThrow(/neither "W" nor "B"/);
+  });
+});
 
 describe("X-SW-2 bye retry and the whole-field search against a brute-force oracle (P-Q2, P-A6, ruling R2)", () => {
   it("X-SW-2 several score groups, odd and even, chess on and off: pairs iff a legal round exists, byes the first candidate from the bottom whose removal leaves one, else names the reason", () => {
@@ -288,10 +614,12 @@ describe("X-SW-2 bye retry and the whole-field search against a brute-force orac
       const standings: SwissStanding[] = ids.map((id, i) => ({ entrantId: id, score: Math.floor(rng() * 3), rank: i + 1 }));
       const density = rng() * 0.6;
       const byeRate = rng();
-      const played = new Set<string>();
+      const met: [string, string][] = [];
       for (let i = 0; i < n; i++) {
-        for (let j = i + 1; j < n; j++) if (rng() < density) played.add(pairKey(ids[i] as string, ids[j] as string));
+        for (let j = i + 1; j < n; j++) if (rng() < density) met.push([ids[i] as string, ids[j] as string]);
       }
+      const played = new Set(met.map(([a, b]) => pairKey(a, b))); // the engine's history
+      const metForOracle = new Set(met.map(([a, b]) => oraclePairKey(a, b))); // the same facts, keyed by the oracle
       const byes = new Set(ids.filter(() => rng() < byeRate));
       // a colour history a legal event can produce: every round's colour met P-A5 (a random colour, else the other one,
       // which a legal prefix always allows)
@@ -299,20 +627,19 @@ describe("X-SW-2 bye retry and the whole-field search against a brute-force orac
         const seq: Colour[] = [];
         for (let k = Math.floor(rng() * 5); k > 0; k--) {
           const c: Colour = rng() < 0.5 ? "W" : "B";
-          seq.push(canPlay(seq, c) ? c : c === "W" ? "B" : "W");
+          seq.push(mayTake(seq, c) ? c : c === "W" ? "B" : "W");
         }
         return seq;
       };
       const colours = new Map(ids.map((id) => [id, history()]));
       const seq = (id: string): Colour[] => colours.get(id) as Colour[];
       // every pair the round may not seat: a rematch (P-A1), or (chess) no colour assignment suits both (P-A5)
-      const forbidden = new Set(played);
+      const forbidden = new Set(metForOracle);
       if (chess) {
         for (let i = 0; i < n; i++) {
           for (let j = i + 1; j < n; j++) {
             const a = ids[i] as string, b = ids[j] as string;
-            const ok = (canPlay(seq(a), "W") && canPlay(seq(b), "B")) || (canPlay(seq(a), "B") && canPlay(seq(b), "W"));
-            if (!ok) forbidden.add(pairKey(a, b));
+            if (!colourCompatible(seq(a), seq(b))) forbidden.add(oraclePairKey(a, b));
           }
         }
       }
@@ -331,7 +658,7 @@ describe("X-SW-2 bye retry and the whole-field search against a brute-force orac
           bye: "bye" in r ? r.bye : "(none)",
           seatsEachOnce: seated.length === n && new Set(seated).size === n && seated.every((id) => ids.includes(id)), // P-A3
           noRematch: r.pairings.every((p) => !played.has(pairKey(p.home, p.away))), // P-A1
-          coloursLegal: !chess || r.pairings.every((p) => canPlay(seq(p.home), "W") && canPlay(seq(p.away), "B")), // P-A5, as seated
+          coloursLegal: !chess || r.pairings.every((p) => mayTake(seq(p.home), "W") && mayTake(seq(p.away), "B")), // P-A5, as seated
         };
       };
       const r = pairRound(standings, { played, colours, byes }, { chess });
@@ -349,7 +676,7 @@ describe("X-SW-2 bye retry and the whole-field search against a brute-force orac
           if (multiGroup) tally.multiGroupPaired++;
         } else {
           // ruling R2: "colour" iff some candidate's remainder pairs once the colour limits are lifted, else "rematch"
-          const reason = chess && candidates.some((c) => perfectMatchingExists(without(c), played)) ? "colour" : "rematch";
+          const reason = chess && candidates.some((c) => perfectMatchingExists(without(c), metForOracle)) ? "colour" : "rematch";
           want = { ok: false, code: "SWISS_NO_LEGAL_PAIRING", reason, field: n };
           tally[reason]++;
           if (multiGroup) tally.multiGroupRefused++;
