@@ -17,6 +17,9 @@
 // The older "passes at 256 MB" figure (core-1, before W2b) was taken on a low-mutant case and is stale: nothing below uses it.
 // A runaway allocating loop in a worker thread died after 13.9 s at 1024 MB and 42.3 s at 4096 MB (2026-10-05, a 12-core
 // machine): a larger cap is a slower kill, and the time at any cap in between is an interpolation, not a measurement.
+// ONE LEG IS THE EXCEPTION (owner ruling A, 2026-10-31): core-2 grew to 888 mutants, and its dry run ran out of memory at the
+// default cap and at the most the default's own rule allows (2730 MB); it ran to the end at 4096 MB. It alone gets 4096, and the
+// last describe of this file holds that, and what 4096 costs.
 // None of them is taken from the code under test.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -25,7 +28,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { SPAWN_MS, spawnBudget } from "./stryker-spawn.ts";
-import { strykerConcurrency } from "../stryker.groups.mjs";
+import { STRYKER_GROUPS, STRYKER_HEAP_MB_BY_LEG, strykerConcurrency } from "../stryker.groups.mjs";
 
 const ENGINE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const req = createRequire(import.meta.url);
@@ -34,6 +37,8 @@ const req = createRequire(import.meta.url);
  *  fail at, in MB. */
 const DRY_RUN_PASSES_AT_MB = 1792;
 const DRY_RUN_FAILS_AT_MB = 1536;
+/** The default cap those figures chose (stryker.config.mjs's note above `testRunnerNodeArgs`): every leg's but core-2's. */
+const DEFAULT_CAP_MB = 2560;
 /** The headroom over the least passing cap that the cap must keep: 1.4x. 2x (the margin the 256 MB figure allowed) is out of
  *  reach now: 3 children at 2 x 1792 MB are over half a hosted runner (asserted below, so the number is not just a comment). */
 const MARGIN_OVER_PASS = 1.4;
@@ -43,6 +48,16 @@ const RUNAWAY = { lowMb: 1024, lowSeconds: 13.9, highMb: 4096, highSeconds: 42.3
 const HOSTED = { cores: 4, memBytes: 16 * 1024 ** 3, workersPerSandbox: 1 };
 const HOSTED_CONCURRENCY = 3;
 const MB = 1024 ** 2;
+/** THE EXCEPTION'S MEASUREMENTS (onryde/seazn.club mutation.yml dispatches, cold, every log "Cache not found"; the tree engine #5
+ *  re-measured against, which this repository's src/ copies). core-2 at 888 mutants (the instrumenter's count of this tree too):
+ *  its dry run ran out of memory at 2560 MB (run 40984031307, job 123830750053, sha 499f6daf4) and at 2730 MB, the most the
+ *  default's half-the-runner rule below allows (run 41153927287, job 124396508011, sha 46222a238): each "Child process ran out of
+ *  memory" twice, then "DryRunExecutor One or more tests resulted in an error". At 4096 MB it ran to the end (run 41153932848, job
+ *  124396562181, sha 49fd3dbd7): "Creating 3 test runner process(es)" on ubuntu-latest (4 vCPU, 16 GB), 888 of 888 mutants
+ *  tested, no child out of memory, a 187.8-minute job. Fewer sandboxes would not fit the leg: its 10,910 s phase over 2 instead
+ *  of 3 is about 273 minutes, over the 200-minute split line (test/stryker-sizing.test.ts), so the leg would have to be cut again
+ *  and measured again; the exception keeps the concurrency it was measured at. */
+const CORE2 = { leg: "core-2", mutants: 888, failsAtMb: [2560, 2730], passesAtMb: 4096, concurrency: 3, phaseSeconds: 10_910, splitLineMinutes: 200 };
 
 /** The vitest config as vitest itself resolves it, in a plain node process (the config is TypeScript and `defineConfig`'d, so
  *  the resolution is vitest's, not a read of the file), with GITHUB_ACTIONS as given. */
@@ -92,7 +107,7 @@ describe("carry (a): the Stryker runs' vitest does not turn a crashed child's st
   }, spawnBudget(1));
 });
 
-describe("carry (c): the runner child's heap is capped, so a runaway mutant dies in seconds", () => {
+describe("carry (c): the runner child's heap is capped, so a runaway mutant dies in seconds (the DEFAULT cap: the probe's, and every leg's but core-2's)", () => {
   const args = strykerConfig().testRunnerNodeArgs as string[] | undefined;
   const cap = (() => {
     const m = /^--max-old-space-size=(\d+)$/.exec(args?.[0] ?? "");
@@ -144,6 +159,98 @@ describe("carry (c): the runner child's heap is capped, so a runaway mutant dies
   });
 
   it("and the cap is 2560 MB (a deliberate change moves this with the comment above it in stryker.config.mjs)", () => {
-    expect(cap).toBe(2560);
+    expect(cap).toBe(DEFAULT_CAP_MB);
+  });
+});
+
+describe("the ONE per-leg exception: core-2's runner child gets 4096 MB, every other leg the default (owner ruling A, 2026-10-31)", () => {
+  const legs = Object.keys(STRYKER_GROUPS);
+  const CHANGED = "(a changed-lines run)";
+  /** Every leg's testRunnerNodeArgs, and a changed-lines run's (STRYKER_MUTATE), as Stryker loads the config: ONE plain node process
+   *  that imports it once per group (a query string re-evaluates the module), so the seam is the config itself, not the table. */
+  let loaded: Record<string, unknown> | undefined;
+  const argsByLeg = (): Record<string, unknown> => {
+    if (loaded !== undefined) return loaded;
+    const r = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      const out = {};
+      for (const g of ${JSON.stringify(legs)}) {
+        delete process.env.STRYKER_MUTATE;
+        process.env.STRYKER_GROUP = g;
+        out[g] = (await import("./stryker.config.mjs?g=" + g)).default.testRunnerNodeArgs;
+      }
+      process.env.STRYKER_MUTATE = "src/core/events.ts:10-20";
+      out[${JSON.stringify(CHANGED)}] = (await import("./stryker.config.mjs?changed")).default.testRunnerNodeArgs;
+      console.log(JSON.stringify(out));
+    `], { cwd: ENGINE, encoding: "utf8", timeout: SPAWN_MS, env: { ...process.env, STRYKER_GROUP: undefined, STRYKER_MUTATE: undefined } });
+    expect(r.status, r.stderr).toBe(0);
+    loaded = JSON.parse(r.stdout) as Record<string, unknown>;
+    return loaded;
+  };
+  /** Each one's cap in MB; NaN where the args are not exactly one `--max-old-space-size=<integer>` (the first test names those). */
+  const capsByLeg = (): Record<string, number> =>
+    Object.fromEntries(Object.entries(argsByLeg()).map(([g, a]) => {
+      const m = Array.isArray(a) && a.length === 1 ? /^--max-old-space-size=(\d+)$/.exec(String(a[0])) : null;
+      return [g, m ? Number(m[1]) : NaN];
+    }));
+
+  it("every leg, and a changed-lines run, passes exactly one node arg to the runner child, --max-old-space-size=<MB>", () => {
+    const caps = capsByLeg();
+    expect(Object.keys(caps), "every leg and the changed-lines run were loaded").toEqual([...legs, CHANGED]);
+    const malformed = Object.entries(caps).filter(([, mb]) => !Number.isInteger(mb)).map(([g]) => `${g}: ${JSON.stringify(argsByLeg()[g])}`);
+    expect(malformed).toEqual([]);
+    expect(Object.keys(caps).length, "configs checked").toBe(legs.length + 1);
+  }, spawnBudget(1));
+
+  it("core-2 is the ONLY leg above the default cap and its cap is 4096 MB; every other leg, and a changed-lines run, keeps the default exactly", () => {
+    const caps = capsByLeg();
+    const above = Object.entries(caps).filter(([, mb]) => mb > DEFAULT_CAP_MB).map(([g]) => g);
+    expect(above, "the legs above the default cap").toEqual([CORE2.leg]);
+    expect(caps[CORE2.leg], "core-2's cap").toBe(CORE2.passesAtMb);
+    let checked = 0;
+    for (const [g, mb] of Object.entries(caps)) {
+      if (g === CORE2.leg) continue;
+      expect(mb, `${g} keeps the default cap`).toBe(DEFAULT_CAP_MB);
+      checked++;
+    }
+    // every leg but core-2, plus the changed-lines run
+    expect(checked, "configs held to the default").toBe(legs.length);
+    expect(checked).toBeGreaterThan(0);
+  }, spawnBudget(1));
+
+  it("the per-leg table names core-2 and nothing else (an entry for a name that is not a leg would be inert, and one for another leg is a second exception)", () => {
+    expect(STRYKER_HEAP_MB_BY_LEG).toEqual({ [CORE2.leg]: CORE2.passesAtMb });
+    const strays = Object.keys(STRYKER_HEAP_MB_BY_LEG).filter((g) => !legs.includes(g));
+    expect(strays, "entries that are not legs").toEqual([]);
+  });
+
+  it("the exception is measured both ways: above every cap core-2's dry run ran out of memory at, and no higher than the cap it ran to the end at (4096 is the most, not a floor)", () => {
+    const core2 = capsByLeg()[CORE2.leg] as number;
+    // the default itself failed, and so did the most the default's own rule allows (half the runner over 3 children: 2730.7 MB),
+    // so no value of the default could serve core-2: it is an exception, not a default to raise
+    expect(CORE2.failsAtMb).toContain(DEFAULT_CAP_MB);
+    expect(Math.max(...CORE2.failsAtMb), "the default rule's own ceiling, whole MB").toBe(Math.floor(HOSTED.memBytes / 2 / HOSTED_CONCURRENCY / MB));
+    expect(core2, "above every cap the dry run failed at").toBeGreaterThan(Math.max(...CORE2.failsAtMb));
+    expect(core2, "no higher than the cap the leg was measured to pass at: above it nothing was run").toBeLessThanOrEqual(CORE2.passesAtMb);
+    // and a runaway mutant on core-2 dies in the time measured AT that cap (42.3 s): above 4096 MB no kill was timed
+    expect(core2, "no higher than the cap a runaway loop's death was timed at").toBeLessThanOrEqual(RUNAWAY.highMb);
+  }, spawnBudget(1));
+
+  it("core-2's children fit the runner as they were measured to: 3 at 4096 MB are 12 GiB, the three quarters of a hosted runner run 41153932848 ran to the end on, over the default's half (why it is an exception), and fewer sandboxes would put the leg over the split line", () => {
+    const core2 = capsByLeg()[CORE2.leg] as number;
+    expect(strykerConcurrency(HOSTED), "the hosted concurrency is the one the leg was measured at").toBe(CORE2.concurrency);
+    const children = core2 * CORE2.concurrency * MB;
+    const measuredCeiling = CORE2.passesAtMb * CORE2.concurrency * MB;
+    expect(measuredCeiling, "12 GiB is three quarters of the runner, 4 GiB left for Stryker's own process and the OS").toBe((HOSTED.memBytes * 3) / 4);
+    expect(children, "all of core-2's children at their cap, against what the measured run held").toBeLessThanOrEqual(measuredCeiling);
+    expect(children, "over the half the default is held to: the exception is a real departure, so it is pinned").toBeGreaterThan(HOSTED.memBytes / 2);
+    // the other way to fit the half (2 children at 4096) is not measured, and its phase alone would pass the split line
+    expect((CORE2.phaseSeconds * CORE2.concurrency) / (CORE2.concurrency - 1) / 60, "core-2's phase over one sandbox fewer, minutes").toBeGreaterThan(CORE2.splitLineMinutes);
+  }, spawnBudget(1));
+
+  it("the measurement the exception rests on is the one stryker-measured.json records for core-2 (one run, two readers)", () => {
+    const measured = JSON.parse(readFileSync(join(ENGINE, "stryker-measured.json"), "utf8")) as { measured: Record<string, { mutants: number; phaseSeconds: number; run?: { id: number; job: number; sha: string } }> };
+    const leg = measured.measured[CORE2.leg];
+    expect(leg, "core-2 is a measured leg").toBeDefined();
+    expect(leg).toMatchObject({ mutants: CORE2.mutants, phaseSeconds: CORE2.phaseSeconds, run: { id: 41153932848, job: 124396562181, sha: "49fd3dbd7" } });
   });
 });
