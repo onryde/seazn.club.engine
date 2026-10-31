@@ -865,12 +865,12 @@ describe("X-SW-10 above the safe maximum, a round is paired so that the next rou
 });
 
 // ---------------------------------------------------------------------------
-// X-SW-11 — the topscorer colour exception in the final round (RB3-10; FIDE C.04.3 A.6, [C3])
+// X-SW-11 — the topscorer colour exception in the final round (RB3-10; FIDE C.04.3 (1 Feb 2026) Art. 1.8, [C3] Art. 2.1.3)
 // ---------------------------------------------------------------------------
 
 describe("X-SW-11 in the final round a board with a topscorer is exempt from the colour limits; two non-topscorers still are not (RB3-10, C.04.3 [C3])", () => {
   // Chess on throughout but where a case says otherwise. a and b each played White twice running, so both have an absolute
-  // preference for Black (C.04.3 A.6): under the colour limits they may not meet (never three of one colour running, P-A5).
+  // preference for Black (C.04.3 Art. 1.7.1): under the colour limits they may not meet (never three of one colour running, P-A5).
   // finalRoundMaxScore 4 is the most either could have scored before the final round; a topscorer has over half of it.
   const ww = new Map([["a", ["W", "W"] as Colour[]], ["b", ["W", "W"] as Colour[]]]);
   const at = (sa: number, sb: number): SwissStanding[] => [{ entrantId: "a", score: sa, rank: 1 }, { entrantId: "b", score: sb, rank: 2 }];
@@ -891,7 +891,7 @@ describe("X-SW-11 in the final round a board with a topscorer is exempt from the
     expect(pairRound(at(1, 1), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 4 })).toMatchObject({ ok: false, reason: "colour" });
   });
 
-  it("X-SW-11 exactly half is not a topscorer (A.6 'over 50%'): 2 and 2 of 4 are refused", () => {
+  it("X-SW-11 exactly half is not a topscorer (Art. 1.8 'over 50%'): 2 and 2 of 4 are refused", () => {
     expect(pairRound(at(2, 2), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 4 })).toMatchObject({ ok: false, reason: "colour" });
     // and just over half is: 2 of 3.5 makes both topscorers, so they meet
     expect(pairRound(at(2, 2), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 3.5 })).toMatchObject({ ok: true });
@@ -903,6 +903,49 @@ describe("X-SW-11 in the final round a board with a topscorer is exempt from the
     // the mirror, the topscorer on the lower board: a (score 1) keeps its limit and gets Black, b takes a third White
     const mirror = pairRound(at(1, 3), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 4 });
     expect(mirror.ok && mirror.pairings).toEqual([{ home: "b", away: "a" }]);
+  });
+
+  it("X-SW-11 half points: 2.5 of 4 is over half, so two on 2.5 meet; two on 2 of 4 stay refused (Art. 1.8)", () => {
+    expect(pairRound(at(2.5, 2.5), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 4 })).toMatchObject({ ok: true });
+    expect(pairRound(at(2, 2), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 4 })).toMatchObject({ ok: false, reason: "colour" });
+  });
+
+  // The expected colours below are FIDE C.04.3's (1 Feb 2026), not the engine's: Art. 1.7.1 makes the same colour in the two
+  // latest rounds (or a colour difference beyond ±1) an ABSOLUTE preference, Art. 1.7.2 a difference of ±1 a STRONG one, and
+  // art. 5.2.2 grants the stronger. The exception (Art. 1.8, [C3]) lets topscorers meet; it never asks for an assignment that
+  // breaks a limit when the other keeps both players within theirs (controller ruling, T4c fix round 1).
+  it("X-SW-11 the exception relaxes the limits, never mandates breaking them: two topscorers WBW v BWW, both on 3 of 3 → a plays White (Art. 1.7, 5.2.2)", () => {
+    // a (upper board) WBW: difference +1, a strong preference for Black. b BWW: White in the two latest rounds, an absolute
+    // preference for Black. Both ask Black; 5.2.2 grants b's: b Black, a White. (b White would be a third White running.)
+    const colours = new Map([["a", ["W", "B", "W"] as Colour[]], ["b", ["B", "W", "W"] as Colour[]]]);
+    const r = pairRound(at(3, 3), { played: new Set(), colours }, { chess: true, finalRoundMaxScore: 3 });
+    expect(r.ok && r.pairings).toEqual([{ home: "a", away: "b" }]); // differential: today b takes a third White
+    // the same board outside the final round: the same sides
+    expect(pairRound(at(3, 3), { played: new Set(), colours }, { chess: true })).toMatchObject({ ok: true, pairings: [{ home: "a", away: "b" }] });
+    // the mirror, the absolute preference on the upper board: a BWW gets Black
+    const mirror = new Map([["a", ["B", "W", "W"] as Colour[]], ["b", ["W", "B", "W"] as Colour[]]]);
+    expect(pairRound(at(3, 3), { played: new Set(), colours: mirror }, { chess: true, finalRoundMaxScore: 3 })).toMatchObject({ ok: true, pairings: [{ home: "b", away: "a" }] });
+  });
+
+  it("X-SW-11 a topscorer BBWW v a non-topscorer WBW: only one assignment keeps both within their limits, so the topscorer plays Black (Art. 1.7.1, 5.2.2)", () => {
+    // a (score 3 of 4, a topscorer) BBWW: difference 0, but White in the two latest rounds, an absolute preference for Black.
+    // b (score 1) WBW: difference +1, a strong preference for Black. Both assignments keep b within its limits; only a Black
+    // keeps a within its own. 5.2.2 grants the absolute preference: a Black, b White
+    const colours = new Map([["a", ["B", "B", "W", "W"] as Colour[]], ["b", ["W", "B", "W"] as Colour[]]]);
+    const r = pairRound(at(3, 1), { played: new Set(), colours }, { chess: true, finalRoundMaxScore: 4 });
+    expect(r.ok && r.pairings).toEqual([{ home: "b", away: "a" }]); // differential: today a takes a third White
+    expect(pairRound(at(3, 1), { played: new Set(), colours }, { chess: true })).toMatchObject({ ok: true, pairings: [{ home: "b", away: "a" }] });
+  });
+
+  it("X-SW-11 a non-topscorer whose colour history allows neither colour is CONFIG_INVALID, never seated against a topscorer outside its limits (assumption → guard)", () => {
+    // b WWWWBB: colour difference +2 (White would make +3) and Black in the two latest rounds (Black would be a third running).
+    // No legal event produces it: it holds four Whites running. Against topscorer a the board is colour-legal (X-SW-11), and
+    // no assignment keeps b within its limits
+    const colours = new Map([["a", ["W", "W"] as Colour[]], ["b", ["W", "W", "W", "W", "B", "B"] as Colour[]]]);
+    expect(() => pairRound(at(3, 1), { played: new Set(), colours }, { chess: true, finalRoundMaxScore: 4 }))
+      .toThrowError(expect.objectContaining({ code: "CONFIG_INVALID" })); // differential: today seated, b outside its limits
+    // outside the final round b may meet nobody: refused 'colour', as before
+    expect(pairRound(at(3, 1), { played: new Set(), colours }, { chess: true })).toMatchObject({ ok: false, reason: "colour" });
   });
 
   it("X-SW-11 non-chess is unaffected (no hard colour limit to relax); a second call is identical", () => {

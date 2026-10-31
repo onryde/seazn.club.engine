@@ -8,7 +8,8 @@
 //   - the round after a seated one, and every way to seat a remainder, for the one-round look-ahead (X-SW-10; §3.3 prevention).
 //   - the sides of one board: home and away by the record outside chess (X-SW-4), and with chess colours on, a colour P-A5
 //     forces first.
-//   - in a final round (X-SW-11; C.04.3 A.6, [C3]), all of the above with every topscorer free of its own colour limits.
+//   - in a final round (X-SW-11; C.04.3 (1 Feb 2026) Art. 1.8, [C3] Art. 2.1.3), all of the above with every topscorer free of
+//     its own colour limits.
 //
 // It is written from the rulebook and FIDE C.04.1 r.2–7 / C.04.3 [C1]–[C3] alone, and it imports nothing — above all not the
 // pairing engine (review M5): an oracle that reuses the code it checks agrees with that code's bugs. Its matching is a plain
@@ -142,13 +143,13 @@ export interface OracleRound {
   byeIneligible?: ReadonlySet<string>;
   /** Chess colours on: each entrant's colours over its PLAYED games (P-A5); an entrant with none may be left out. Absent = off. */
   colours?: ReadonlyMap<string, readonly OracleColour[]>;
-  /** The final round (X-SW-11; C.04.3 A.6, [C3]), read only with colours on: the most an entrant could have scored before it.
+  /** The final round (X-SW-11; C.04.3 Art. 1.8, [C3] Art. 2.1.3), read only with colours on: the most an entrant could have scored before it.
    *  An entrant with OVER half of it is a topscorer and has no colour limit of its own this round, so a pair with a topscorer
    *  may meet whatever the colours; two non-topscorers keep P-A5. Absent = not the final round. */
   finalRoundMaxScore?: number;
 }
 
-/** The topscorers of a final round (X-SW-11; C.04.3 A.6: over 50% of the maximum score when pairing the final round), from
+/** The topscorers of a final round (X-SW-11; C.04.3 Art. 1.8: over 50% of the maximum score when pairing the final round), from
  *  the round's own field and maximum. Empty when the round is not a final one. A maximum that is not a positive number has no
  *  half to be over: refused by name. */
 export function topscorers(round: OracleRound): Set<string> {
@@ -330,10 +331,30 @@ export function rulebookSides(
   return seat("home", "neutral");
 }
 
-/** The rule's sides with chess colours on (`chess`): a colour only one assignment allows is forced (P-A5), else rulebookSides
- *  decides. Undefined when neither assignment suits both: the two may not meet (C.04.3 [C3]). Outside chess, rulebookSides.
- *  `topscorer` (X-SW-11, a final round's topscorers) names the sides with no limit of their own: on a board of one of each the
- *  non-topscorer's limits alone force a colour; with two, the preferences decide. */
+// FIDE C.04.3 (1 Feb 2026) Art. 1.7.1: an entrant's ABSOLUTE colour preference, or null. A colour difference above +1 asks
+// for Black and below −1 for White; otherwise the same colour in the two latest rounds asks for the other. On a history
+// P-A5 held after every round it is exactly the colour the limits still allow (the other would make the difference ±3, or a
+// third game of one colour running), so granting it IS keeping that entrant within its limits.
+function absolutePreference(seq: readonly OracleColour[]): OracleColour | null {
+  const white = seq.filter((c) => c === "W").length;
+  const difference = white - (seq.length - white);
+  if (difference > 1) return "B";
+  if (difference < -1) return "W";
+  const k = seq.length;
+  if (k >= 2 && seq[k - 1] === seq[k - 2]) return seq[k - 1] === "W" ? "B" : "W";
+  return null;
+}
+
+/** The rule's sides with chess colours on (`chess`), read from FIDE C.04.3 (1 Feb 2026) art. 5.2 over Art. 1.7's
+ *  preferences, never from the engine:
+ *  - the absolute preferences (Art. 1.7.1) are the strongest (5.2.2), so every one is granted where one assignment grants
+ *    them all;
+ *  - two equal absolute preferences cannot both be granted. Two non-topscorers may not meet ([C3], Art. 2.1.3): undefined. In
+ *    a final round (`topscorer`, X-SW-11; Art. 1.8) a topscorer's yields to a non-topscorer's (the non-topscorer keeps its
+ *    limit), and between two topscorers the preferences decide (5.2.2: the wider colour difference, then the upper board);
+ *  - otherwise rulebookSides, the softer preferences (an approximation of 5.2).
+ *  Outside chess, rulebookSides. With chess on, a history P-A5 did not hold after every round is refused by name: on it an
+ *  absolute preference and the limits part ways. */
 export function ruleSides(
   upper: string,
   lower: string,
@@ -342,11 +363,28 @@ export function ruleSides(
   topscorer: (id: string) => boolean = () => false,
 ): { home: string; away: string } | undefined {
   if (chess) {
-    const allowed = (id: string, c: OracleColour): boolean => topscorer(id) || mayTake(recordOf(id), c);
-    const upperWhite = allowed(upper, "W") && allowed(lower, "B");
-    const upperBlack = allowed(upper, "B") && allowed(lower, "W");
-    if (!upperWhite && !upperBlack) return undefined;
-    if (upperWhite !== upperBlack) return upperWhite ? { home: upper, away: lower } : { home: lower, away: upper };
+    for (const id of [upper, lower]) {
+      if (!colourHistoryLegal(recordOf(id))) {
+        throw new Error(`swiss-oracle: ${id}'s colour history ${recordOf(id).join("")} is not one a legal event produces`);
+      }
+    }
+    const upperGets = (c: OracleColour): { home: string; away: string } =>
+      c === "W" ? { home: upper, away: lower } : { home: lower, away: upper };
+    const flipped = (c: OracleColour): OracleColour => (c === "W" ? "B" : "W");
+    const up = absolutePreference(recordOf(upper));
+    const low = absolutePreference(recordOf(lower));
+    if (up !== null && up === low) {
+      const upTop = topscorer(upper);
+      const lowTop = topscorer(lower);
+      if (!upTop && !lowTop) return undefined;
+      if (!lowTop) return upperGets(flipped(up)); // the lower side, no topscorer, is granted its own (low === up)
+      if (!upTop) return upperGets(up); // the upper side, no topscorer, is granted its own
+      // two topscorers: the preferences below
+    } else if (up !== null) {
+      return upperGets(up); // and the lower side's absolute preference, if any, is the other colour
+    } else if (low !== null) {
+      return upperGets(flipped(low));
+    }
   }
   const { home, away } = rulebookSides(upper, lower, recordOf);
   return { home, away };
