@@ -92,10 +92,10 @@ function evalExpr(raw: string, ctx: Record<string, unknown>, cancelled = false):
   // The expression is this repo's own committed workflow text, restricted to the token whitelist above.
   return new Function("ref", "fj", "join", "format", "always", "cancelled", "success", `return (${js});`)(ref, fj, join, format, () => true, () => cancelled, () => !cancelled);
 }
-const ctxOf = (o: { event: string; head?: string | null; weekly?: string; planResult?: string; scope?: string; headRef?: string; runId?: string; prNumber?: number; matrix?: string }) => ({
+const ctxOf = (o: { event: string; head?: string | null; weekly?: string; planResult?: string; scope?: string; group?: string; headRef?: string; runId?: string; prNumber?: number; matrix?: string }) => ({
   github: { event_name: o.event, repository: SAME_REPO, head_ref: o.headRef ?? "", run_id: o.runId ?? "1", event: o.event === "pull_request" ? { pull_request: { number: o.prNumber ?? 1, head: { repo: o.head === null ? null : { full_name: o.head ?? SAME_REPO } } } } : {} },
   vars: { STRYKER_WEEKLY_ENABLED: o.weekly ?? "true" },
-  inputs: { scope: o.scope ?? "" },
+  inputs: { scope: o.scope ?? "", group: o.group ?? "" },
   needs: { plan: { result: o.planResult ?? "success", outputs: { matrix: o.matrix ?? "" } }, "matrix-rows": { outputs: { run: "true" } } },
 });
 
@@ -159,7 +159,7 @@ describe("mutation.yml and the runner wiring (review 5: R5-I1, m2, m3; moved her
   it("every guard step of BOTH workflows takes RUNNER_ENV from runner.environment, never a literal (the one line that decides whether private hosted minutes can be billed) (engine half)", () => {
     const all = [...Object.values(MJOBS)];
     // anti-vacuity, mutation.yml's share: the source's floor (> 4) was "matrix-truth's four plus mutation's" (at least one of
-    // mutation's); this half holds every one of mutation.yml's three jobs, which is stronger than that share
+    // mutation's); this half holds every one of mutation.yml's four jobs, which is stronger than that share
     expect(all.length).toBeGreaterThanOrEqual(3);
     for (const t of all) expect(stepOf(t, GUARD).body).toContain("RUNNER_ENV: ${{ runner.environment }}");
   });
@@ -187,9 +187,9 @@ describe("mutation.yml and the runner wiring (review 5: R5-I1, m2, m3; moved her
     expect(keys.get("fail-fast")).toBe("false");
     expect(keys.get("max-parallel"), "a literal integer, not an expression").toMatch(/^\d+$/);
     expect(keys.get("max-parallel"), "the cap, 12").toBe("12");
-    // the cap is on the job that fans out and nowhere else (plan and floors are single jobs: a cap there would mean nothing)
-    for (const n of ["plan", "floors"]) expect(MJOBS[n], `${n} has no matrix to cap`).not.toContain("max-parallel");
-    expect(Object.keys(MJOBS).length, "all three jobs were read").toBe(3);
+    // the cap is on the job that fans out and nowhere else (plan, drift and floors are single jobs: a cap there would mean nothing)
+    for (const n of ["plan", "drift", "floors"]) expect(MJOBS[n], `${n} has no matrix to cap`).not.toContain("max-parallel");
+    expect(Object.keys(MJOBS).length, "all four jobs were read").toBe(4);
   });
   // Split out of packages/engine/test/stryker-sizing.test.ts (engine-split 1d-1, spec §5.4 / R20): the engine's test keeps the half that reads
   // mutation.yml; this half reads THIS file, which sits outside the package. The figures are about the org's shared hosted slots, not about runner sharing.
@@ -484,18 +484,22 @@ describe("mutation.yml: triggers, the weekly gate and the fork gate (T9 conventi
     }
   });
 
-  it("the three jobs are plan, mutate and floors; mutate needs plan, floors needs both, and plan and floors have the 15-minute timeout", () => {
-    expect(Object.keys(MJOBS)).toEqual(["plan", "mutate", "floors"]);
+  it("the four jobs are plan, drift, mutate and floors; drift needs nothing, mutate needs plan, floors needs both, and plan, drift and floors have the 15-minute timeout", () => {
+    expect(Object.keys(MJOBS)).toEqual(["plan", "drift", "mutate", "floors"]);
+    // drift needs nothing: it reports up front, beside the plan, and never holds back the fan-out (owner ruling 2026-10-31)
+    expect(MJOBS.drift).not.toMatch(/^ {4}needs:/m);
     expect(MJOBS.mutate).toMatch(/needs:\s*\[plan\]/);
     expect(MJOBS.floors).toMatch(/needs:\s*\[plan, mutate\]/);
     expect(MJOBS.plan).toMatch(/timeout-minutes: 15\b/);
+    expect(MJOBS.drift).toMatch(/timeout-minutes: 15\b/);
     expect(MJOBS.floors).toMatch(/timeout-minutes: 15\b/);
     expect(MJOBS.plan).toContain("outputs:\n      matrix: ${{ steps.matrix.outputs.matrix }}");
   });
 
-  it("plan and mutate spell the fork condition in their own `if:` (plan the weekly gate beside it), and floors runs only when the plan holds a leg with a floor: each evaluated over every event, with the matrix the plan step really writes (10 cases x 3 jobs = 30 evaluations)", () => {
+  it("plan and mutate spell the fork condition in their own `if:` (plan the weekly gate beside it), drift runs only on the weekly run and a `group=all` dispatch, and floors runs only when the plan holds a leg with a floor: each evaluated over every event, with the matrix the plan step really writes (10 cases x 4 jobs = 40 evaluations)", () => {
     let evaluated = 0;
     const plan = ifOf(MJOBS.plan!);
+    const drift = ifOf(MJOBS.drift!);
     const mutate = ifOf(MJOBS.mutate!);
     const floors = ifOf(MJOBS.floors!);
     expect(plan).toContain("(github.event_name != 'schedule' || vars.STRYKER_WEEKLY_ENABLED == 'true')");
@@ -504,32 +508,69 @@ describe("mutation.yml: triggers, the weekly gate and the fork gate (T9 conventi
     // probe-only plan, a pull request or `workflow_dispatch group=probe`, has no floor: --check-all refuses the probe). The fromJSON
     // term comes LAST: a skipped or failed plan wrote no matrix, and `&&` stops before it is parsed.
     expect(floors).toBe("always() && needs.plan.result == 'success' && join(fromJSON(needs.plan.outputs.matrix).include.*.group, ',') != 'probe'");
-    const ran = (event: string, group: string) => ({ event, matrix: planMatrix(event, group) });
-    const cases: { name: string; ctx: Record<string, unknown>; plan: boolean; mutate: boolean; floors: boolean }[] = [
-      { name: "workflow_dispatch group=all", ctx: ctxOf(ran("workflow_dispatch", "all")), plan: true, mutate: true, floors: true },
-      { name: "workflow_dispatch of one leg", ctx: ctxOf(ran("workflow_dispatch", "draws-3")), plan: true, mutate: true, floors: true },
+    // drift: plan's weekly gate verbatim, then the two runs that measure the tree (owner ruling 2026-10-31); never a PR, so no fork term
+    expect(drift).toBe("(github.event_name != 'schedule' || vars.STRYKER_WEEKLY_ENABLED == 'true') && (github.event_name == 'schedule' || inputs.group == 'all')");
+    const ran = (event: string, group: string) => ({ event, group, matrix: planMatrix(event, group) });
+    const cases: { name: string; ctx: Record<string, unknown>; plan: boolean; drift: boolean; mutate: boolean; floors: boolean }[] = [
+      { name: "workflow_dispatch group=all", ctx: ctxOf(ran("workflow_dispatch", "all")), plan: true, drift: true, mutate: true, floors: true },
+      { name: "workflow_dispatch of one leg", ctx: ctxOf(ran("workflow_dispatch", "draws-3")), plan: true, drift: false, mutate: true, floors: true },
       // N1: the documented probe-only dispatch plans [probe]; floors must skip, not refuse the probe
-      { name: "workflow_dispatch group=probe", ctx: ctxOf(ran("workflow_dispatch", "probe")), plan: true, mutate: true, floors: false },
-      { name: "schedule, enabled", ctx: ctxOf({ ...ran("schedule", ""), weekly: "true" }), plan: true, mutate: true, floors: true },
+      { name: "workflow_dispatch group=probe", ctx: ctxOf(ran("workflow_dispatch", "probe")), plan: true, drift: false, mutate: true, floors: false },
+      { name: "schedule, enabled", ctx: ctxOf({ ...ran("schedule", ""), weekly: "true" }), plan: true, drift: true, mutate: true, floors: true },
       // the disabled weekly firing: plan is skipped by its own `if:` and wrote no matrix, and mutate by `needs: [plan]` (a skipped
-      // need skips the job); floors has always(), so only its own `needs.plan.result == 'success'` keeps it from running
-      { name: "schedule, disabled", ctx: ctxOf({ event: "schedule", weekly: "", planResult: "skipped" }), plan: false, mutate: true, floors: false },
+      // need skips the job); floors has always(), so only its own `needs.plan.result == 'success'` keeps it from running; drift
+      // needs nothing, so its own copy of the weekly gate is what skips it
+      { name: "schedule, disabled", ctx: ctxOf({ event: "schedule", weekly: "", planResult: "skipped" }), plan: false, drift: false, mutate: true, floors: false },
       // a pull request plans the probe
-      { name: "PR from the same repository", ctx: ctxOf(ran("pull_request", "")), plan: true, mutate: true, floors: false },
-      { name: "PR from a fork", ctx: ctxOf({ event: "pull_request", head: "someone-else/seazn.club", planResult: "skipped" }), plan: false, mutate: false, floors: false },
-      { name: "PR whose head repository was deleted", ctx: ctxOf({ event: "pull_request", head: null, planResult: "skipped" }), plan: false, mutate: false, floors: false },
+      { name: "PR from the same repository", ctx: ctxOf(ran("pull_request", "")), plan: true, drift: false, mutate: true, floors: false },
+      { name: "PR from a fork", ctx: ctxOf({ event: "pull_request", head: "someone-else/seazn.club", planResult: "skipped" }), plan: false, drift: false, mutate: false, floors: false },
+      { name: "PR whose head repository was deleted", ctx: ctxOf({ event: "pull_request", head: null, planResult: "skipped" }), plan: false, drift: false, mutate: false, floors: false },
       // a push to main on the probe's inputs plans the probe (the warm-up main's cache is kept by); the weekly switch does not gate it
-      { name: "push to main, weekly switch off", ctx: ctxOf({ ...ran("push", ""), weekly: "" }), plan: true, mutate: true, floors: false },
+      { name: "push to main, weekly switch off", ctx: ctxOf({ ...ran("push", ""), weekly: "" }), plan: true, drift: false, mutate: true, floors: false },
       // plan itself failed: there is no matrix, so nothing for floors to judge
-      { name: "workflow_dispatch whose plan failed", ctx: ctxOf({ event: "workflow_dispatch", planResult: "failure" }), plan: true, mutate: true, floors: false },
+      { name: "workflow_dispatch whose plan failed", ctx: ctxOf({ event: "workflow_dispatch", planResult: "failure" }), plan: true, drift: false, mutate: true, floors: false },
     ];
     for (const c of cases) {
       expect(evalIf(plan, c.ctx), `plan: ${c.name}`).toBe(c.plan);
+      expect(evalIf(drift, c.ctx), `drift: ${c.name}`).toBe(c.drift);
       expect(evalIf(mutate, c.ctx), `mutate: ${c.name}`).toBe(c.mutate);
       expect(evalIf(floors, c.ctx), `floors: ${c.name}`).toBe(c.floors);
-      evaluated += 3;
+      evaluated += 4;
     }
-    expect(evaluated).toBe(30);
+    expect(evaluated).toBe(40);
+  }, spawnBudget(6));
+
+  it("the weekly run and a `group=all` dispatch are COLD and STRICT (owner ruling 2026-10-31): the mutate job skips its incremental restore on exactly the events the drift job runs on, still saves, and the drift job runs the sizing test with STRYKER_DRIFT_STRICT=1, the variable that test reads", () => {
+    const restoreBody = stepOf(MJOBS.mutate!, "Restore the incremental file").body;
+    const restoreIf = /^ {8}if: (.+?)\s*(?:#.*)?$/m.exec(restoreBody)?.[1];
+    expect(restoreIf, "the restore has its own `if:` (a restore with none is warm on every run)").toBeDefined();
+    expect(MJOBS.mutate!.match(/uses: actions\/cache\/restore@/g), "one restore in the leg's job, the gated one").toHaveLength(1);
+    const drift = ifOf(MJOBS.drift!);
+    const ran = (event: string, group: string, weekly = "true") => ctxOf({ event, group, weekly, matrix: planMatrix(event, group) });
+    // the events on which the mutate job runs (a skipped plan skips it, so those are not cases here)
+    const cases: { name: string; ctx: Record<string, unknown>; cold: boolean }[] = [
+      { name: "workflow_dispatch group=all", ctx: ran("workflow_dispatch", "all"), cold: true },
+      { name: "schedule, enabled", ctx: ran("schedule", ""), cold: true },
+      { name: "workflow_dispatch of one leg", ctx: ran("workflow_dispatch", "draws-3"), cold: false },
+      { name: "workflow_dispatch group=probe", ctx: ran("workflow_dispatch", "probe"), cold: false },
+      { name: "PR from the same repository", ctx: ran("pull_request", ""), cold: false },
+      { name: "push to main", ctx: ran("push", "", ""), cold: false },
+    ];
+    let evaluated = 0;
+    for (const c of cases) {
+      expect(evalIf(restoreIf!, c.ctx), `restore: ${c.name}`).toBe(!c.cold);
+      expect(evalIf(drift, c.ctx), `drift (strict) runs exactly where the restore does not: ${c.name}`).toBe(c.cold);
+      evaluated += 2;
+    }
+    expect(evaluated).toBe(2 * cases.length);
+    expect(cases.filter((c) => c.cold).length, "both cold runs are cases").toBe(2);
+    // the save keeps the cold run's file for a later warm dispatch: its condition reads only the check, never the event
+    const saveIf = /^ {8}if: (.+?)\s*(?:#.*)?$/m.exec(stepOf(MJOBS.mutate!, "Save the incremental file").body)![1]!;
+    expect(saveIf).not.toMatch(/event_name|inputs\./);
+    // strict: the step sets the variable the sizing test reads, and runs that file (a deleted variable or a renamed one is red here)
+    expect(runLine(MJOBS.drift!, "Mutant counts within the drift (strict)")).toBe("STRYKER_DRIFT_STRICT=1 pnpm exec vitest run test/stryker-sizing.test.ts");
+    expect(readFileSync(join(REPO, "test/stryker-sizing.test.ts"), "utf8"), "the sizing test reads the same variable").toContain('process.env.STRYKER_DRIFT_STRICT === "1"');
+    expect(stepOf(MJOBS.drift!, "Mutant counts within the drift (strict)").body, "a strict verdict is a red step, never advisory").not.toContain("continue-on-error");
   }, spawnBudget(6));
 
   it("a push to a pull request cancels the run it supersedes and nothing else is ever cancelled: one top-level `concurrency:` whose group is the PR's number for a PR and the run's own id otherwise", () => {
@@ -924,7 +965,7 @@ describe("mutation.yml: the floors job judges each family on all its legs, run t
     expect(floorStep.body, "no step-level `if:` that could skip it").not.toMatch(/^ {8}if:/m);
     expect(floorLine).toBe('pnpm mutation:floor --check-all floors-in --legs "$LEGS" --skip-if-no-floors');
     // the install the jobs share is the engine's own (Stryker, vitest and the TypeScript parser are its devDependencies)
-    for (const job of ["mutate", "floors"] as const) expect(MJOBS[job], job).toContain("run: pnpm install --frozen-lockfile --filter .... --fail-if-no-match");
+    for (const job of ["drift", "mutate", "floors"] as const) expect(MJOBS[job], job).toContain("run: pnpm install --frozen-lockfile --filter .... --fail-if-no-match");
     expect(MUT).not.toMatch(/run: pnpm install --frozen-lockfile\s*$/m);
     // the artifacts the job unpacks are those of the families it judges: every non-probe leg is in a family
     expect(Object.values(STRYKER_FAMILIES).flat().sort()).toEqual(Object.keys(STRYKER_GROUPS).filter((g) => g !== "probe").sort());

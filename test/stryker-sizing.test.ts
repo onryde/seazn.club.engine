@@ -79,6 +79,27 @@ const SETUP_SECONDS = 60;
 /** A leg's mutant count may drift this far from the one its time was measured with before the time is stale: the timeout's
  *  1.5 factor covers the growth, past it the leg must be measured (and, over the line, cut) again. */
 const COUNT_DRIFT = 0.1;
+/** WHERE THE DRIFT IS A FAILURE (owner ruling 2026-10-31). A leg past the drift is a WARNING on pull request and push CI: a feature PR
+ *  cannot clear it, since only re-running the leg (1 to 3 hours, done in the 01:00-06:00 window) gives a new measurement. It is a
+ *  FAILURE where the tree is measured: mutation.yml's `drift` job runs this file with STRYKER_DRIFT_STRICT=1 on the cold weekly run
+ *  and on a `group=all` dispatch. Only the stale-list verdict of the two drift tests softens; their anti-vacuity counts, and every
+ *  other assertion in this file, are strict in both modes. */
+const DRIFT_STRICT = process.env.STRYKER_DRIFT_STRICT === "1";
+/** The drift verdict: strict, the stale list must be empty; otherwise a visible warning (and a GitHub annotation under Actions) that
+ *  names each stale leg and what to do. An empty list is silent in both modes. */
+function verdict(stale: readonly string[], message: string): void {
+  if (DRIFT_STRICT) {
+    expect(stale, message).toEqual([]);
+    return;
+  }
+  if (stale.length === 0) return;
+  const text = `${message}: ${stale.join("; ")}`;
+  // eslint-disable-next-line no-console -- the warning IS the verdict off the strict path (owner ruling 2026-10-31)
+  console.warn(`Stryker drift (a warning here; STRYKER_DRIFT_STRICT=1 makes it a failure): ${text}`);
+  // one line, as a workflow command must be (%, CR and LF escaped)
+  // eslint-disable-next-line no-console -- the GitHub annotation, read from the job log by the Actions runner
+  if (process.env.GITHUB_ACTIONS === "true") console.warn(`::warning title=Stryker drift::${text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")}`);
+}
 /** The probe's own run: 134 mutants (the PR self-proof, D3). */
 const PROBE_MUTANTS = HOSTED_PROBE_MUTANTS;
 /** The mutants no leg holds, from the committed list beside the sizing data (stryker-unscored.json). Where a cut falls INSIDE a
@@ -415,7 +436,9 @@ describe("every leg is under the 200-minute split line, from what the full run m
     expect(whole, "legs left whole").toBeGreaterThan(50);
   });
 
-  it("each leg's mutant count is within the drift of the one its time was measured with: past it the time is stale and the leg is measured again", async () => {
+  // The two drift tests: past the drift is a warning here and a failure under STRYKER_DRIFT_STRICT=1 (`verdict`, owner ruling
+  // 2026-10-31); what they count, and every other assertion in them, is strict either way.
+  it("each leg's mutant count is within the drift of the one its time was measured with: past it the time is stale and the leg is measured again (a warning on PR and push CI, a failure with STRYKER_DRIFT_STRICT=1)", async () => {
     const byLeg = await counts();
     const recorded = (g: string): number => {
       for (const s of Object.values(MEASURED.split)) if (s.parts[g] !== undefined) return s.parts[g].mutants;
@@ -436,21 +459,25 @@ describe("every leg is under the 200-minute split line, from what the full run m
     const why = stale.some((x) => atOrdinal(x.split(":")[0] as string))
       ? "; a leg cut at an ordinal anchor (`if#N`) moved because an `if` was added or removed above its cut: RE-CUT it (stryker-cuts.test.ts names the anchor), do not just re-run it"
       : "";
-    expect(stale, `legs whose count moved more than 10%: re-run the leg, then record its measurement in stryker-measured.json${why}`).toEqual([]);
+    verdict(stale, `legs whose count moved more than 10%: re-run the leg, then record its measurement in stryker-measured.json${why}`);
   }, INSTRUMENT_BUDGET_MS);
 
-  it("a re-split leg holds every mutant of the leg it came from: its parts' mutants plus the lost containers are the count the run measured, and the containers it lost are the ones ITS OWN cuts leave in no part (T20 review M3)", async () => {
+  it("a re-split leg holds every mutant of the leg it came from: its parts' mutants plus the lost containers are the count the run measured, and the containers it lost are the ones ITS OWN cuts leave in no part (T20 review M3; today's parts past the drift: a warning on PR and push CI, a failure with STRYKER_DRIFT_STRICT=1)", async () => {
     const byLeg = await counts();
     let lost = 0;
     let parts = 0;
     let boundaries = 0;
     const lostByCuts: Unscored[] = [];
+    const drifted: string[] = [];
+    let driftChecked = 0;
     for (const [g, s] of Object.entries(MEASURED.split)) {
       const recordedSum = Object.values(s.parts).reduce((n, p) => n + p.mutants, 0);
       expect(recordedSum + s.lost, `${g}: the parts recorded plus the lost containers are the leg's count`).toBe(s.mutants);
-      // and today's count, from the instrumenter, agrees to the drift (the exact equality held when the cut was made)
+      // and today's count, from the instrumenter, agrees to the drift (the exact equality held when the cut was made); past it is the
+      // drift verdict below, a warning off the strict path
       const nowSum = Object.keys(s.parts).reduce((n, leg) => n + (byLeg[leg] as number), 0);
-      expect(Math.abs(nowSum - recordedSum), `${g}: the parts hold ${nowSum} mutants now, ${recordedSum} when cut`).toBeLessThanOrEqual(recordedSum * COUNT_DRIFT);
+      if (Math.abs(nowSum - recordedSum) > recordedSum * COUNT_DRIFT) drifted.push(`${g}: the parts hold ${nowSum} mutants now, ${recordedSum} when cut`);
+      driftChecked++;
       // What THIS leg's cuts lose, from the instrumenter (never from the recorded `lost`): the mutants the leg held whole before it was cut
       // (inside the lines its parts cover together) whose node spans the line where one of its parts ends and the next of ITS parts
       // begins. A boundary against another leg's part is that leg's older cut, and a container that ran outside the leg was in no leg.
@@ -481,6 +508,8 @@ describe("every leg is under the 200-minute split line, from what the full run m
     const older = UNSCORED.filter((u) => !mine.has(unscoredKey(u)));
     expect(older.length, "the older member cuts' entries (the T20-PRE cuts: no re-split leg's parts meet at them)").toBeGreaterThan(0);
     expect(older.length + lost, "the list is the older entries and the re-split legs' own, nothing else").toBe(UNSCORED.length);
+    expect(driftChecked, "re-split legs whose parts were held to the drift").toBe(Object.keys(MEASURED.split).length);
+    verdict(drifted, "re-split legs whose parts' count moved more than 10% since the cut: re-run the parts (a part cut at an ordinal anchor `if#N` is RE-CUT, stryker-cuts.test.ts names the anchor), then record them in stryker-measured.json");
   }, INSTRUMENT_BUDGET_MS);
 
   it("every part is timed from its own run, and the part cut again records which parts took its place (T20 step 2b and the last three parts)", () => {
