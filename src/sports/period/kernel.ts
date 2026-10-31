@@ -3266,10 +3266,12 @@ export function makePeriodModule(
 import { declareNaturalBreaks, type NaturalBreaks } from "../../sport/natural-breaks.ts";
 
 /** The kinds a period sport names. `halfTime` is the interval at the middle of an even number of regulation periods (FIH's
- *  after the second quarter); absent, that whistle is a `periodEnd` like any other. */
+ *  after the second quarter); absent, that whistle is a `periodEnd` like any other. `shootout` is the break before the
+ *  shoot-out (FIH's, the IIHF's game-winning shots), one name across the sports that have one. */
 export interface PeriodBreakNames {
   readonly periodEnd: string;
   readonly halfTime?: string;
+  readonly shootout: string;
   readonly afterGoal: string;
 }
 
@@ -3283,15 +3285,17 @@ export function withPeriodNaturalBreaks(
 
 /**
  * A whistle that closes a period of play and play goes on (the next period, an overtime, a shoot-out) opens the sport's
- * interval (`periodEnd` or `halfTime`, major); a goal that leaves the match live opens `afterGoal` (minor), the restart
- * at the centre. Nothing opens when the event ends the match (the full-time whistle, a sudden-death goal).
+ * interval (`periodEnd`, `halfTime`, or `shootout` before a shoot-out, major); a goal that leaves the match live opens
+ * `afterGoal` (minor), the restart at the centre. Nothing opens when the event ends the match (the full-time whistle, a
+ * sudden-death goal).
  */
 function periodNaturalBreaks(names: PeriodBreakNames): NaturalBreaks<EventEnvelope<PeriodEv | CoreEv>, PeriodState> {
-  const { periodEnd, halfTime, afterGoal } = names;
+  const { periodEnd, halfTime, shootout, afterGoal } = names;
   return declareNaturalBreaks<EventEnvelope<PeriodEv | CoreEv>, PeriodState>(
     [
       ...(halfTime === undefined ? [] : [{ kind: halfTime, size: "major" as const }]),
       { kind: periodEnd, size: "major" },
+      { kind: shootout, size: "major" },
       { kind: afterGoal, size: "minor" },
     ],
     (_ev, before, after) => {
@@ -3302,7 +3306,8 @@ function periodNaturalBreaks(names: PeriodBreakNames): NaturalBreaks<EventEnvelo
       if (isPlayPhase(before) && (after.periods.length > before.periods.length || after.phase === "SHOOTOUT")) {
         const regulation = periodLabels(after.cfg);
         const half = regulation.length % 2 === 0 ? regulation[regulation.length / 2] : undefined;
-        opened.push(halfTime !== undefined && after.phase === half ? halfTime : periodEnd);
+        if (after.phase === "SHOOTOUT") opened.push(shootout);
+        else opened.push(halfTime !== undefined && after.phase === half ? halfTime : periodEnd);
       }
       return opened;
     },

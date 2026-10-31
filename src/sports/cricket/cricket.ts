@@ -4686,6 +4686,10 @@ import { declareNaturalBreaks, type NaturalBreaks } from "../../sport/natural-br
  * it, the short pause between overs (`over_end`, minor). Law 11.2: an interval between innings (`innings_break`, major),
  * a super over's innings included. One event can do both (the innings' last ball is an over's last); P1 makes it the
  * innings break. Nothing opens when the event ends the match, or before the start.
+ *
+ * Only a delivery (`cricket.ball`, `cricket.superover.ball`) opens an over's end. A coarse innings summary opens none,
+ * whatever overs it crosses or lands on: it reports overs already bowled, and a past over end is not a live pause. A
+ * summary that closes the innings does open the innings break: that interval is the one being played now.
  */
 function cricketNaturalBreaks(): NaturalBreaks<EventEnvelope<CricketEv | CoreEv>, CricketState> {
   return declareNaturalBreaks(
@@ -4702,15 +4706,19 @@ function inningsPlayed(state: CricketState): readonly InningsState[] {
   return state.superOver === null ? state.innings : [...state.innings, ...state.superOver.innings];
 }
 
-function cricketBreaksOpened(_ev: EventEnvelope<CricketEv | CoreEv>, before: CricketState, after: CricketState): string[] {
+/** The events that bowl a ball: the only ones whose legal ball can be an over's last, live. */
+const CRICKET_DELIVERIES: ReadonlySet<string> = new Set(["cricket.ball", "cricket.superover.ball"]);
+
+function cricketBreaksOpened(ev: EventEnvelope<CricketEv | CoreEv>, before: CricketState, after: CricketState): string[] {
   if (after.outcome !== null || (after.phase !== "live" && after.phase !== "super_over")) return [];
   const was = inningsPlayed(before);
   const bpo = after.cfg.ballsPerOver;
+  const delivery = CRICKET_DELIVERIES.has(ev.type);
   const opened: string[] = [];
   inningsPlayed(after).forEach((innings, i) => {
     const prior = was[i];
     if (innings.closed && prior?.closed !== true) opened.push("innings_break");
-    if (innings.legalBalls > (prior?.legalBalls ?? 0) && innings.legalBalls % bpo === 0) opened.push("over_end");
+    if (delivery && innings.legalBalls > (prior?.legalBalls ?? 0) && innings.legalBalls % bpo === 0) opened.push("over_end");
   });
   return opened;
 }

@@ -310,6 +310,7 @@ export const icehockey = withPeriodNaturalBreaks(makePeriodModule({
   shotTracking: true,
   goalKindRequired: ICEHOCKEY_GOAL_KIND_REQUIRED,
 }),
-// R4 sponsors on stream (spec 2026-10-27 §3.1) — IIHF: the intermission after each period, and before an overtime or the
-// game-winning shots (`period_end`), and the face-off at centre ice after a goal (`after_goal`).
-{ periodEnd: "period_end", afterGoal: "after_goal" });
+// R4 sponsors on stream (spec 2026-10-27 §3.1) — IIHF: the intermission after each period and before an overtime
+// (`period_end`), the break before the game-winning shots (`shootout_break`), and the face-off at centre ice after a goal
+// (`after_goal`).
+{ periodEnd: "period_end", shootout: "shootout_break", afterGoal: "after_goal" });

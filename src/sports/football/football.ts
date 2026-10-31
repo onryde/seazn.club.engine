@@ -3509,13 +3509,15 @@ import { declareNaturalBreaks, type NaturalBreaks } from "../../sport/natural-br
  * IFAB Law 7.2: the half-time interval (`half_time`, major), the HT whistle's: H1 to H2, or Q2 to Q3 in quarters (the
  * real half-time, DOMAIN.md). Every other whistle that play goes on after is a period's end (`period_end`, major): the
  * quarter breaks, the break before extra time and at its half-time, the break before the kicks from the penalty mark.
- * The restart after a goal (`after_goal`, minor). Nothing opens when the event ends the match.
+ * The break before the kicks from the penalty mark is its own kind (`shootout_break`, major), one name across every
+ * sport with a shoot-out. The restart after a goal (`after_goal`, minor). Nothing opens when the event ends the match.
  */
 function footballNaturalBreaks(): NaturalBreaks<EventEnvelope<FootballEv | CoreEv>, FootballState> {
   return declareNaturalBreaks(
     [
       { kind: "half_time", size: "major" },
       { kind: "period_end", size: "major" },
+      { kind: "shootout_break", size: "major" },
       { kind: "after_goal", size: "minor" },
     ],
     footballBreaksOpened,
@@ -3528,6 +3530,7 @@ function footballBreaksOpened(_ev: EventEnvelope<FootballEv | CoreEv>, before: F
   if (after.goals.home + after.goals.away > before.goals.home + before.goals.away) opened.push("after_goal");
   // A whistle that closed a period of play: the next one began (`pushPeriod`), or the kicks did.
   const closedPlay = isPlayPhase(before.phase) && (after.periods.length > before.periods.length || after.phase === "SHOOTOUT");
-  if (closedPlay) opened.push(after.phase === "H2" || after.phase === "Q3" ? "half_time" : "period_end");
+  if (closedPlay && after.phase === "SHOOTOUT") opened.push("shootout_break");
+  else if (closedPlay) opened.push(after.phase === "H2" || after.phase === "Q3" ? "half_time" : "period_end");
   return opened;
 }

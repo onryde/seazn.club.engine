@@ -272,5 +272,6 @@ export const hockey = withPeriodNaturalBreaks(makePeriodModule({
   goalKindRequired: HOCKEY_GOAL_KIND_REQUIRED,
 }),
 // R4 sponsors on stream (spec 2026-10-27 §3.1) — FIH: an interval after the first and third quarters (`quarter_end`), the
-// half-time interval after the second (`half_time`), and the restart at the centre after a goal (`after_goal`).
-{ periodEnd: "quarter_end", halfTime: "half_time", afterGoal: "after_goal" });
+// half-time interval after the second (`half_time`), the break before a shoot-out (`shootout_break`), and the restart
+// at the centre after a goal (`after_goal`).
+{ periodEnd: "quarter_end", halfTime: "half_time", shootout: "shootout_break", afterGoal: "after_goal" });

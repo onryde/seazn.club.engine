@@ -16,10 +16,10 @@ import { EngineError } from "../core/errors.ts";
 import { isCoreEventType, kernelOwnsEvent, resolveVoids, type EventEnvelope } from "../core/events.ts";
 import { mulberry32 } from "../core/rng.ts";
 import type { LineupPair } from "../core/types.ts";
-import type { CricketState } from "../sports/cricket/cricket.ts";
+import type { CricketBallEv, CricketCfg, CricketState } from "../sports/cricket/cricket.ts";
 import { PLAY_PHASES, type FootballState } from "../sports/football/football.ts";
 import { builtinModules } from "../sports/index.ts";
-import type { NestedState } from "../sports/nested/kernel.ts";
+import { endsChanged, type NestedState } from "../sports/nested/kernel.ts";
 import type { PeriodState } from "../sports/period/kernel.ts";
 import { setTarget, type SetBasedState } from "../sports/setbased/kernel.ts";
 import { goldenCorpora } from "../testkit/corpora.ts";
@@ -371,6 +371,39 @@ describe("natural breaks: the sport registry", () => {
     for (const key of SPEC_DECLARING) expect(perSport.get(key) ?? 0, `${key}: decided break-openers checked`).toBeGreaterThan(0);
   });
 
+  it("the guard's other half: a break-opening event whose after-state is out of play and undecided (not started, abandoned awaiting its ruling) opens nothing", () => {
+    // Synthetic, like the test above: no real event both opens a break and leaves play. The out-of-play phases are the
+    // sport's own: the phase `init` folds to, and the phase a real `core.abandon` leaves an undecided match in (football
+    // and the period sports under `replay`, the set-based sports and tennis always; a cricket abandon always decides).
+    const report: Record<string, { phases: string[]; checked: number }> = {};
+    for (const key of SPEC_DECLARING) {
+      const m = sport(key);
+      const nb = breaksOf(m);
+      const { ledgers, steps } = playedOf(m);
+      const first = ledgers[0];
+      if (first === undefined) throw new Error(`${key}: no ledger was played`);
+      const phases = new Set([(m.init(first.cfg, first.lineups) as { phase: string }).phase]);
+      for (const step of steps) {
+        if (step.event.type === "core.abandon" && m.outcome(step.after) === null) phases.add((step.after as { phase: string }).phase);
+      }
+      let checked = 0;
+      for (const phase of phases) {
+        for (const step of steps) {
+          if (step.opened.length === 0) continue;
+          const after = { ...(step.after as object), phase };
+          expect(nb.opensAt(step.event, step.before, after), `${step.ledger.label} seq ${step.event.seq} in ${phase}`).toEqual([]);
+          checked++;
+        }
+      }
+      report[key] = { phases: [...phases], checked };
+    }
+    for (const key of SPEC_DECLARING) expect(report[key]?.checked ?? 0, `${key}: ${JSON.stringify(report)}`).toBeGreaterThan(0);
+    // Every sport whose abandon can leave the match undecided was asked that phase too, not only the pre-start one.
+    for (const key of ["tennis", "badminton", "tabletennis", "volleyball"]) {
+      expect(report[key]?.phases, `${key}: ${JSON.stringify(report)}`).toContain("abandoned");
+    }
+  });
+
   it("opensAt is pure: replaying the same ledger again answers the same breaks at the same events", () => {
     let checked = 0;
     for (const m of declaring()) {
@@ -403,27 +436,35 @@ describe("natural breaks: cricket (Laws of Cricket 17.1 the over, 11 intervals)"
   const cricket = sport("cricket");
   const inningsOf = (s: CricketState) => [...s.innings, ...(s.superOver?.innings ?? [])];
 
+  /** The innings the scorebook has closed: an innings break begins when this count moves (Law 11.2). */
+  const closedInnings = (s: CricketState) => inningsOf(s).filter((inn) => inn.closed).length;
+  /** Law 17.3: a no ball and a wide are not among the over's balls. Read off the delivery's own payload. */
+  const legalDelivery = (p: CricketBallEv) => p.runs.extras?.kind !== "wide" && p.runs.extras?.kind !== "noball";
+  /** Law 17.1: the delivery the ledger stamps as the over's `ballsPerOver`-th (the CONFIG's), and a legal one, ends it. */
+  const endsAnOver = (step: Step) =>
+    (step.event.type === "cricket.ball" || step.event.type === "cricket.superover.ball") &&
+    legalDelivery(step.event.payload as CricketBallEv) &&
+    (step.event.payload as CricketBallEv).ballInOver === (step.ledger.cfg as CricketCfg).ballsPerOver;
+
   it("cricket: the 6th legal ball of an over opens over_end; the innings' last ball opens innings_break and not over_end", () => {
     const counts = categorise(playedOf(cricket).steps, (step) => {
-      const before = step.before as CricketState;
-      const after = step.after as CricketState;
       if (decidedNow(step)) return { category: "the match ends", kinds: [] };
-      const live = after.outcome === null && (after.phase === "live" || after.phase === "super_over");
-      const was = inningsOf(before);
-      const now = inningsOf(after);
-      const bpo = after.cfg.ballsPerOver;
-      const closed = now.some((inn, i) => inn.closed && !(was[i]?.closed ?? false));
-      const overDone = now.some((inn, i) => inn.legalBalls > (was[i]?.legalBalls ?? 0) && inn.legalBalls % bpo === 0);
-      if (live && closed && overDone) return { category: "an innings closes on an over's last legal ball", kinds: ["innings_break"] };
-      if (live && closed) return { category: "an innings closes mid-over", kinds: ["innings_break"] };
-      if (live && overDone) return { category: "an over's last legal ball", kinds: ["over_end"] };
+      const closes = closedInnings(step.after as CricketState) > closedInnings(step.before as CricketState);
+      if (closes && endsAnOver(step)) return { category: "an innings closes on an over's last legal ball", kinds: ["innings_break"] };
+      if (closes && step.event.type === "cricket.innings.summary") return { category: "a summary closes the innings", kinds: ["innings_break"] };
+      if (closes) return { category: "an innings closes mid-over", kinds: ["innings_break"] };
+      if (endsAnOver(step)) return { category: "an over's last legal ball", kinds: ["over_end"] };
+      // A coarse summary reports overs already bowled: a past over end is not a live pause, wherever its count lands.
+      if (step.event.type === "cricket.innings.summary") return { category: "a summary leaves the innings open", kinds: [] };
       return { category: "anything else", kinds: [] };
     });
     for (const category of [
       "the match ends",
       "an innings closes on an over's last legal ball",
+      "a summary closes the innings",
       "an innings closes mid-over",
       "an over's last legal ball",
+      "a summary leaves the innings open",
       "anything else",
     ]) {
       expect(counts.get(category) ?? 0, `${category}: ${JSON.stringify([...counts])}`).toBeGreaterThan(0);
@@ -435,21 +476,16 @@ describe("natural breaks: cricket (Laws of Cricket 17.1 the over, 11 intervals)"
     let followed = 0;
     const steps = playedOf(cricket).steps;
     steps.forEach((step, k) => {
-      const before = inningsOf(step.before as CricketState);
-      const after = inningsOf(step.after as CricketState);
-      const bpo = (step.after as CricketState).cfg.ballsPerOver;
-      const i = after.length - 1;
-      const b = before[i];
-      const a = after[i];
-      if (step.event.type !== "cricket.ball" || b === undefined || a === undefined || a.closed) return;
-      if (b.legalBalls % bpo !== bpo - 1 || a.legalBalls !== b.legalBalls) return;
+      if (step.event.type !== "cricket.ball") return;
+      const ball = step.event.payload as CricketBallEv;
+      if (legalDelivery(ball) || ball.ballInOver !== (step.ledger.cfg as CricketCfg).ballsPerOver || decidedNow(step)) return;
+      if (closedInnings(step.after as CricketState) > closedInnings(step.before as CricketState)) return;
       expect(step.opened, `${step.ledger.label} seq ${step.event.seq}`).toEqual([]);
       checked++;
-      // The next event of the same match that adds a legal ball to this innings: the over's last.
-      const next = steps.slice(k + 1).find((s) => s.ledger === step.ledger && (inningsOf(s.after as CricketState)[i]?.legalBalls ?? 0) > a.legalBalls);
-      if (next === undefined || decidedNow(next)) return;
-      const n = inningsOf(next.after as CricketState)[i];
-      if (n === undefined || n.closed || n.legalBalls !== a.legalBalls + 1) return;
+      // The next delivery of the same match: the over's last ball bowled again (Law 17.3: the illegal one is not of the over).
+      const next = steps.slice(k + 1).find((s) => s.ledger === step.ledger && s.event.type === "cricket.ball");
+      if (next === undefined || decidedNow(next) || !endsAnOver(next)) return;
+      if (closedInnings(next.after as CricketState) > closedInnings(next.before as CricketState)) return;
       expect(next.opened, `${next.ledger.label} seq ${next.event.seq}: the legal ball after the illegal one`).toEqual(["over_end"]);
       followed++;
     });
@@ -470,15 +506,16 @@ describe("natural breaks: football (IFAB Law 7, the duration of the match)", () 
       if (live && step.event.type === "football.period") {
         // Law 7.2: the half-time interval is the HT whistle's (in quarters it closes Q2: DOMAIN.md "the real half-time").
         const marker = (step.event.payload as { phase: string }).phase;
-        return marker === "HT"
-          ? { category: "the half-time whistle", kinds: ["half_time"] }
-          : { category: `the ${marker} whistle, play goes on`, kinds: ["period_end"] };
+        if (marker === "HT") return { category: "the half-time whistle", kinds: ["half_time"] };
+        // The kicks from the penalty mark (Law 10.3) follow their own break: one kind across every sport with a shoot-out.
+        if (after.phase === "SHOOTOUT") return { category: "into the shoot-out", kinds: ["shootout_break"] };
+        return { category: `the ${marker} whistle, play goes on`, kinds: ["period_end"] };
       }
       const goals = (s: FootballState) => s.goals.home + s.goals.away;
       if (live && step.event.type === "football.goal" && goals(after) > goals(before)) return { category: "a goal", kinds: ["after_goal"] };
       return { category: "anything else", kinds: [] };
     });
-    for (const category of ["the match ends", "the half-time whistle", "a goal", "anything else"]) {
+    for (const category of ["the match ends", "the half-time whistle", "into the shoot-out", "a goal", "anything else"]) {
       expect(counts.get(category) ?? 0, `${category}: ${JSON.stringify([...counts])}`).toBeGreaterThan(0);
     }
     // Quarters (mini-soccer) and the deciders put play on after other whistles: at least one of them is reached.
@@ -510,6 +547,8 @@ describe("natural breaks: hockey and ice hockey (FIH quarters, IIHF periods)", (
         if (decidedNow(step)) return { category: "the match ends", kinds: [] };
         const live = after.outcome === null && after.phase !== "done" && after.phase !== "abandoned" && after.phase !== "final";
         if (live && step.event.type === `${key}.period.advance` && after.phase !== before.phase) {
+          // FIH's shoot-out and the IIHF's game-winning shots follow their own break, one kind across the sports.
+          if (after.phase === "SHOOTOUT") return { category: "into the shoot-out", kinds: ["shootout_break"] };
           if (key === "icehockey") return { category: `into ${after.phase}`, kinds: ["period_end"] };
           return after.phase === "Q3"
             ? { category: "the half-time whistle", kinds: ["half_time"] }
@@ -519,7 +558,7 @@ describe("natural breaks: hockey and ice hockey (FIH quarters, IIHF periods)", (
         if (live && step.event.type === `${key}.goal` && goals(after) > goals(before)) return { category: "a goal", kinds: ["after_goal"] };
         return { category: "anything else", kinds: [] };
       });
-      const want = key === "hockey" ? ["the half-time whistle", "into Q2", "into Q4"] : ["into P2", "into P3"];
+      const want = key === "hockey" ? ["the half-time whistle", "into Q2", "into Q4", "into the shoot-out"] : ["into P2", "into P3", "into OT", "into the shoot-out"];
       for (const category of ["the match ends", "a goal", "anything else", ...want]) {
         expect(counts.get(category) ?? 0, `${category}: ${JSON.stringify([...counts])}`).toBeGreaterThan(0);
       }
@@ -530,22 +569,26 @@ describe("natural breaks: hockey and ice hockey (FIH quarters, IIHF periods)", (
 describe("natural breaks: tennis (ITF Rules 10 and 29)", () => {
   const tennis = sport("tennis");
   const games = (s: NestedState) => s.games.home + s.games.away;
+  const setsWon = (s: NestedState) => s.setsWon.home + s.setsWon.away;
 
   it("tennis: an odd game from the third opens changeover; the first game and an even game open nothing; a set's end opens set_end", () => {
     const counts = categorise(playedOf(tennis).steps, (step) => {
       const before = step.before as NestedState;
       const after = step.after as NestedState;
       if (decidedNow(step)) return { category: "the match ends", kinds: [] };
-      const live = after.outcome === null && after.phase === "live";
-      if (live && after.sets.length > before.sets.length) return { category: "a set closes", kinds: ["set_end"] };
-      if (live && games(after) > games(before)) {
-        // Rule 29(a): a rest of up to 90 s when changing ends (after an odd game), but none after a set's first game.
-        if (games(after) === 1) return { category: "a set's first game", kinds: [] };
-        return games(after) % 2 === 1 ? { category: "an odd game from the third", kinds: ["changeover"] } : { category: "an even game", kinds: [] };
-      }
+      // Rule 29(a)'s set break: the score shows one more set won.
+      if (setsWon(after) > setsWon(before)) return { category: "a set closes", kinds: ["set_end"] };
+      // Rule 29(a): play is continuous inside a tie-break, though the players change ends every six points.
+      if (before.points.kind !== "standard") return { category: "a tie-break point", kinds: [] };
+      // Rule 10 (the kernel's own `endsChanged`, TN-EN-1): the ends change after an odd game. Rule 29(a): the changeover
+      // rests up to 90 s, except after the first game of a set.
+      const turned = endsChanged(after) && !endsChanged(before);
+      if (turned && games(after) === 1) return { category: "a set's first game", kinds: [] };
+      if (turned) return { category: "an odd game from the third", kinds: ["changeover"] };
+      if (endsChanged(before) && !endsChanged(after)) return { category: "an even game", kinds: [] };
       return { category: "anything else", kinds: [] };
     });
-    for (const category of ["the match ends", "a set closes", "a set's first game", "an odd game from the third", "an even game", "anything else"]) {
+    for (const category of ["the match ends", "a set closes", "a tie-break point", "a set's first game", "an odd game from the third", "an even game", "anything else"]) {
       expect(counts.get(category) ?? 0, `${category}: ${JSON.stringify([...counts])}`).toBeGreaterThan(0);
     }
   });
@@ -639,10 +682,11 @@ describe("natural breaks: badminton, table tennis and volleyball (BWF 16.2, ITTF
       if (at.length === 0) continue;
       const cut = ledger.events.findIndex((e) => e.seq === at[0]);
       for (const upTo of [cut + 1, cut + 2, ledger.events.length]) {
-        const again = replay(ledger, ledger.events.slice(0, upTo)).filter((s) => s.opened.includes("interval")).map((s) => s.event.seq);
-        expect(again, `${ledger.label}: poll at ${upTo}`).toEqual(at.filter((seq) => again.includes(seq)));
-        expect(new Set(again).size, `${ledger.label}: poll at ${upTo}`).toBe(again.length);
-        expect(again[0], `${ledger.label}: poll at ${upTo}`).toBe(at[0]);
+        const prefix = ledger.events.slice(0, upTo);
+        const inside = new Set(prefix.map((e) => e.seq));
+        const again = replay(ledger, prefix).filter((s) => s.opened.includes("interval")).map((s) => s.event.seq);
+        expect(again, `${ledger.label}: poll at ${upTo}`).toEqual(at.filter((seq) => inside.has(seq)));
+        expect(again.length, `${ledger.label}: poll at ${upTo} holds the first interval`).toBeGreaterThan(0);
       }
       repolled++;
     }
