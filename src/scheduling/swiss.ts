@@ -38,7 +38,7 @@ export interface SwissStanding {
 
 export interface SwissHistory {
   played: ReadonlySet<string>; // pairKey(a,b) of every fixture already contested — no rematch (hard)
-  colours?: ReadonlyMap<EntrantId, readonly Colour[]>; // colour sequence per entrant (chess)
+  colours?: ReadonlyMap<EntrantId, readonly Colour[]>; // colour sequence per entrant; outside chess its home/away record (home = "W"), read softly (X-SW-4)
   byes?: ReadonlySet<EntrantId>; // entrants NOT eligible for the bye: already had one, or (FIDE C.04.1(d)) won a walkover. Read only by the bye pick.
   floats?: ReadonlyMap<EntrantId, number>; // downfloat count (avoid repeat floats — soft)
 }
@@ -394,21 +394,22 @@ export function pairRound(
   return refuse("rematch");
 }
 
-// Decide who is home (White in chess). Non-chess: the stronger side (a, already
-// the upper board) is home. Chess: satisfy the hard rules first, then colour
-// preferences; neutral ⇒ the upper board takes White (round-1 S1 = White).
+// Decide who is home (White in chess; a is the upper board). Chess: satisfy the
+// hard rules first, then colour preferences. Outside chess the same preferences
+// alternate home and away, softly (W3 X-SW-4; rulebook RB3-11, P-Q6): the side
+// that was home more often (or last) plays away, and there is no hard limit to
+// satisfy. Either way, neutral ⇒ the upper board is home (round-1 S1 = White).
 function assignColours(
   a: SwissStanding,
   b: SwissStanding,
   chess: boolean,
   stateOf: (id: EntrantId) => ColourState,
 ): SwissPairing {
-  if (!chess) return { home: a.entrantId, away: b.entrantId };
-
   const sa = stateOf(a.entrantId);
   const sb = stateOf(b.entrantId);
-  const aW = canTake(sa, "W") && canTake(sb, "B");
-  const aB = canTake(sa, "B") && canTake(sb, "W");
+  // Outside chess both assignments are open: home/away is never a reason to refuse or to override a preference.
+  const aW = !chess || (canTake(sa, "W") && canTake(sb, "B"));
+  const aB = !chess || (canTake(sa, "B") && canTake(sb, "W"));
 
   let aColour: Colour;
   if (aW && !aB) aColour = "W";
