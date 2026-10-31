@@ -77,5 +77,11 @@ Then open the engine PR and the paired app PR (step 2 above).
   imports another test file are attributed to whichever worker reached them first.
 - Several tests locate the repository with `git rev-parse --show-toplevel` (`test/layout.ts`), so run them from a git
   checkout of this repository.
+- Stryker sizing (`test/stryker-sizing.test.ts`, `stryker-measured.json`): a leg whose mutant count drifts more than 10% from
+  its measured count is a WARNING on PR and push CI, and a FAILURE on mutation.yml's weekly run and `group=all` dispatches,
+  whose `drift` job sets `STRYKER_DRIFT_STRICT=1` (owner ruling 2026-10-31). Re-measure the named legs (re-run, or re-cut an
+  ordinal anchor) in the 01:00–06:00 window and record them in `stryker-measured.json`.
+- The weekly and `group=all` mutation runs are COLD: they never restore an incremental file, so a survived static mutant is
+  re-run against today's tests (they still save one for later single-leg dispatches). Owner ruling 2026-10-31.
 - Golden corpora (`*.golden.json`) and `FOLD_EPOCH` / `FOLD_MINOR` move only on purpose: a fold change that alters a
   recorded outcome bumps the epoch (`pnpm fold-epoch:check`), and the version follows it (§8).
