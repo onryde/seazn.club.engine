@@ -5,12 +5,14 @@
 // deviation, rulebook-W3 RB3-1).
 //
 // Implementation, a simplified Dutch: order by score group then pairing rank and
-// pair each score group by fold (or rank-adjacent), floating the fewest and the
-// lowest-ranked down to the next group (P-Q1). An odd field's bye goes to the
+// pair each score group by fold (or rank-adjacent), floating the fewest down to
+// the next group, the lowest-ranked among the least-floated (P-Q1; FIDE C.04.3
+// ranks avoiding a repeat float above rank). An odd field's bye goes to the
 // lowest eligible entrant whose removal leaves a pairable remainder, trying the
 // candidates from the bottom up (P-Q2). When the score groups cannot pair a
-// remainder, a COMPLETE backtracking matching over the whole remainder (fold
-// preferred, every transposition explored) decides it. Completeness is what makes
+// remainder within their share of the search budget, a COMPLETE backtracking
+// matching over the whole remainder (fold preferred, every transposition
+// explored) decides it. Completeness is what makes
 // "a round is paired whenever a legal one exists" hold (P-A6): the search fails
 // only when no bye candidate leaves a rematch-free (and, for chess, colour-legal)
 // perfect matching, or the node budget runs out first. Determinism: candidate
@@ -276,8 +278,9 @@ export function pairRound(
   // Complete backtracking matching of one list, fold-preferred. Every candidate
   // is tried before giving up, so it finds a matching iff one exists. The score
   // group pass runs it per group (spec 05 §2.2: "backtracking over transpositions
-  // within score groups"); when the groups cannot pair a remainder it runs once
-  // over the whole remainder, which is what makes a refusal a proof (P-A6).
+  // within score groups"); when the groups cannot pair a remainder within their
+  // share of the search budget it runs once over the whole remainder, which is
+  // what makes a refusal a proof (P-A6).
   // `memoFail` prunes dead subsets within one run.
   // Shared search budget across the whole call (`budget`, default
   // SWISS_SEARCH_BUDGET): every bye candidate, group pass, floater choice, whole-
@@ -320,8 +323,8 @@ export function pairRound(
   // Score-group pairing top-down. Each group is paired internally (with the
   // carried downfloaters from stronger groups sitting on top); whoever can't be
   // paired here floats to the next group. Fewest floaters first, and among equal
-  // counts the lowest-ranked / least-recently-floated go down (spec 05 §2.2
-  // float tracking). Bounded: at most parity + 4 floaters per group; who floats
+  // counts the least-floated go down, the lowest-ranked among them (spec 05 §2.2
+  // float tracking; FIDE C.04.3 ranks avoiding a repeat float above rank). Bounded: at most parity + 4 floaters per group; who floats
   // ranges over the whole group, each choice read costs a node, and the pass as a
   // whole may spend only GROUP_PASS_SHARE of the budget left when it starts.
   const floatCountOf = (id: EntrantId): number => history.floats?.get(id) ?? 0;
@@ -352,9 +355,9 @@ export function pairRound(
     return null;
   };
 
-  // One bye candidate's remainder: the score-group pass first (P-Q1), within its share of the budget left, and only when
-  // the groups cannot pair it, the complete search over the whole remainder (P-A6). Floats are read off the boards
-  // either way (below).
+  // One bye candidate's remainder: the score-group pass first (P-Q1), and only when the groups cannot pair it within
+  // their share of the search budget, the complete search over the whole remainder (P-A6). Floats are read off the
+  // boards either way (below).
   const pairRemainder = (remainder: SwissStanding[]): [SwissStanding, SwissStanding][] | null => {
     cap = Math.min(budget, nodes + Math.floor((budget - nodes) * GROUP_PASS_SHARE));
     const viaGroups = pairFrom(groupByScore(remainder), 0, []);

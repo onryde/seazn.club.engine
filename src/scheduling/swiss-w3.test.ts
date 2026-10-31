@@ -164,7 +164,7 @@ describe("X-SW-3 no legal pairing is a named refusal, never an empty success (ru
   });
 });
 
-describe("X-SW-2 score groups first, bounded floats, a whole-field search only when the groups cannot (RB3-1, P-Q1/P-Q2)", () => {
+describe("X-SW-2 score groups first, bounded floats, a whole-field search only when the groups cannot within their budget share (RB3-1, P-Q1/P-Q2)", () => {
   it("X-SW-2 bye retried: the lowest eligible's removal leaves a rematch, so the next one up takes the bye (P-Q2; SW-L3)", () => {
     const r = pairRound(st(["p0", "p1", "p2"]), { played: new Set([pairKey("p0", "p1")]) });
     expect(r).toEqual({ ok: true, pairings: [{ home: "p0", away: "p2" }], bye: "p1", floated: [] }); // differential: today rematch (bye p2 only)
@@ -210,26 +210,50 @@ describe("X-SW-2 score groups first, bounded floats, a whole-field search only w
     expect(r.ok && [...r.floated].sort()).toEqual([...ps].sort()); // every p played down a score group
   });
   it("X-SW-2 the score-group pass keeps to its share of the budget: one that could spend it all still leaves the whole-field search enough to pair the round (P-A6)", () => {
-    // score 2: t0..t3 (fresh); score 1: u0..u9 have all met each other; score 0: l0..l9 (fresh). Every u must play an l, so
-    // the score-group pass (at most 4 floats per group) is dead under every one of the top group's choices, and walking
-    // them all costs more than this budget; the whole-field search seats u v l at once
-    const ts = ["t0", "t1", "t2", "t3"];
-    const us = Array.from({ length: 10 }, (_, i) => `u${i}`), ls = Array.from({ length: 10 }, (_, i) => `l${i}`);
-    const played = new Set(us.flatMap((x, i) => us.slice(i + 1).map((y) => pairKey(x, y))));
-    const field: SwissStanding[] = [
-      ...ts.map((id, i) => ({ entrantId: id, score: 2, rank: i + 1 })),
-      ...us.map((id, i) => ({ entrantId: id, score: 1, rank: 5 + i })),
-      ...ls.map((id, i) => ({ entrantId: id, score: 0, rank: 15 + i })),
-    ];
-    for (const chess of [false, true]) {
-      const r = pairRound(field, { played }, { chess }, 5_000); // differential: today search_limit (the group pass spends all 5,000)
-      expect(r.ok && r.pairings).toHaveLength(12); // ⌊24/2⌋ boards (P-A3)
-      if (!r.ok) continue;
-      const boards = r.pairings.map((p) => [p.home, p.away].sort().join(" v "));
-      expect(boards.filter((b) => /^l\d v u\d$/.test(b))).toHaveLength(10); // every u v an l
-      expect(boards.filter((b) => /^t\d v t\d$/.test(b))).toHaveLength(2); // the top group pairs within itself
-      expect([...r.floated].sort()).toEqual([...us].sort());
+    // score 2: t0..t3 (fresh); score 1: u0..u(k−1) have all met each other; score 0: l0..l(k−1) (fresh). Every u must play
+    // an l, so the score-group pass (at most 4 floats per group) is dead under every one of the top group's choices, and
+    // walking them all costs more than this budget; the whole-field search seats u v l at once. k = 16 also pins that the
+    // pass stops at its share: a node it is refused still counts, so a walk that went on past its share would carry the
+    // count past the budget before the whole-field search began
+    let checked = 0;
+    for (const k of [10, 16]) {
+      const ts = ["t0", "t1", "t2", "t3"];
+      const us = Array.from({ length: k }, (_, i) => `u${i}`), ls = Array.from({ length: k }, (_, i) => `l${i}`);
+      const played = new Set(us.flatMap((x, i) => us.slice(i + 1).map((y) => pairKey(x, y))));
+      const field: SwissStanding[] = [
+        ...ts.map((id, i) => ({ entrantId: id, score: 2, rank: i + 1 })),
+        ...us.map((id, i) => ({ entrantId: id, score: 1, rank: 5 + i })),
+        ...ls.map((id, i) => ({ entrantId: id, score: 0, rank: 5 + k + i })),
+      ];
+      for (const chess of [false, true]) {
+        const r = pairRound(field, { played }, { chess }, 5_000); // differential: today search_limit (the group pass spends all 5,000)
+        expect(r.ok && r.pairings).toHaveLength(2 + k); // ⌊(4 + 2k)/2⌋ boards (P-A3)
+        if (!r.ok) continue;
+        const boards = r.pairings.map((p) => [p.home, p.away].sort().join(" v "));
+        expect(boards.filter((b) => /^l\d+ v u\d+$/.test(b))).toHaveLength(k); // every u v an l
+        expect(boards.filter((b) => /^t\d v t\d$/.test(b))).toHaveLength(2); // the top group pairs within itself
+        expect([...r.floated].sort()).toEqual([...us].sort());
+        checked++;
+      }
     }
+    expect(checked).toBe(4); // anti-vacuity: 2 field sizes × chess off and on, each paired
+  });
+  it("X-SW-2 the floater is the lowest-ranked among the LEAST-FLOATED: the top seed floats when everyone below it floated last round (P-Q1)", () => {
+    // FIDE C.04.3 ranks avoiding a repeat float above rank (controller ruling). Score 1: p0..p4 (odd, one must float);
+    // score 0: q0..q2. p1..p4 floated last round, p0 did not.
+    const field: SwissStanding[] = [
+      ...["p0", "p1", "p2", "p3", "p4"].map((id, i) => ({ entrantId: id, score: 1, rank: i + 1 })),
+      ...["q0", "q1", "q2"].map((id, i) => ({ entrantId: id, score: 0, rank: 6 + i })),
+    ];
+    const floats = new Map([["p1", 1], ["p2", 1], ["p3", 1], ["p4", 1]]);
+    for (const chess of [false, true]) {
+      const r = pairRound(field, { played: new Set(), floats }, { chess });
+      expect(r.ok && r.floated).toEqual(["p0"]); // differential: today ["p4"] (p0 sat outside the bottom window)
+      expect(r.ok && r.pairings.some((p) => pairKey(p.home, p.away) === pairKey("p0", "q0"))).toBe(true);
+    }
+    // the other direction: with no float history the group's lowest-ranked floats, as before
+    const fresh = pairRound(field, { played: new Set() });
+    expect(fresh.ok && fresh.floated).toEqual(["p4"]);
   });
   it("X-SW-2 after a withdrawal (one entrant leaves the standings) the next round still seats everyone once", () => {
     const r = pairRound(st(["a", "b", "c", "d", "e"]).filter((s) => s.entrantId !== "c"), { played: new Set([pairKey("a", "b")]) });
