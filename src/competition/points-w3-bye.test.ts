@@ -21,7 +21,6 @@ import { defaultLineupPair } from "../testkit/helpers.ts";
 import { decidedInFor } from "./decided-in.ts";
 import { PointsRule, payout, setsToWinOf } from "./points.ts";
 import type { FixtureResult } from "./standings.ts";
-import { AGAINST_KEYS, DIFF_KEYS, FOR_KEYS } from "./tiebreakers.ts";
 
 const WINNER = "W";
 /** awardByeDelta's phantom seat (`BYE_PHANTOM`). */
@@ -64,15 +63,14 @@ function winPoints(rule: PointsRule, setsToWin: number | undefined): number {
   return pair[0];
 }
 
-/** The rule row's "no set, game, point, goal or run for or against": every for/against/difference alias a table reads
- *  (`FOR_KEYS`, `AGAINST_KEYS`, `DIFF_KEYS`: goals, runs, the generic score) and the won/lost counts of sets, games,
- *  rally points and carrom boards. */
-const SCORE_KEYS: readonly string[] = [
-  ...FOR_KEYS,
-  ...AGAINST_KEYS,
-  ...DIFF_KEYS,
-  ...["sets", "games", "points", "boards"].flatMap((k) => [`${k}_won`, `${k}_lost`]),
-];
+/** The rule row's "records no set, game, point, goal or run for or against", read off each sport's OWN declaration: every
+ *  ledger field the module declares (`metrics`: the score, NRR's ball counts, the goal sub-tallies, the discipline and
+ *  colour counts) and every further key its bye ledger carries, each read as the tables read it (absent ⇒ 0, display.ts
+ *  `metric`, tiebreakers.ts `ledgerOf`). Nothing was played, so each reads 0. No declaration marks a field that counts the
+ *  RESULT rather than a score, so the one such field is typed here and pinned against the modules (some sport declares
+ *  it, a bye meets it, and there it reads exactly the win the bye is booked). */
+const RESULT_TALLIES: ReadonlySet<string> = new Set(["wins"]); // boardgame's wins, the W column's twin (BG tie-break)
+const declaredKeys = (m: AnySportModule): string[] => m.metrics.map((s) => s.key);
 
 /** A whole-points rule (no set-score map) a custom stage could hold: win 3, loss 0, and every level result priced. */
 const custom = (extra: Record<string, unknown> = {}): PointsRule =>
@@ -125,10 +123,11 @@ describe("X-SW-5 a bye pays the stage's win points: never the forfeit row, never
     expect(checked).toBeGreaterThanOrEqual(SEATS.length);
   });
 
-  it("X-SW-5 every sport: a bye pays the declared win points (clean sweep under a set-score map) and credits no for/against (counted)", () => {
+  it("X-SW-5 every sport: a bye pays the declared win points (clean sweep under a set-score map) and records no score: every field the sport declares or its ledger carries reads 0 but the win itself (counted per sport)", () => {
     const perSport = new Map<string, number>();
+    const fieldsPerSport = new Map<string, number>();
     let setMaps = 0;
-    let scoreKeys = 0;
+    let tallies = 0;
     const { sports, byes } = everyBye((m, name, cfg, seat) => {
       const where = `${m.key}/${name}/${seat}`;
       const rule = m.tablePointsRule(m.configSchema.parse(cfg), "swiss");
@@ -142,10 +141,15 @@ describe("X-SW-5 a bye pays the stage's win points: never the forfeit row, never
       expect(paid.points, where).toBe(winPoints(rule, setsToWin));
       expect([paid.played, paid.won, paid.drawn, paid.lost], `${where}: booked a win`).toEqual([1, 1, 0, 0]);
       expect(paid.metrics, `${where}: the ledger as the module wrote it`).toEqual(raw.find((d) => d.entrantId === WINNER)!.metrics);
-      for (const k of SCORE_KEYS) {
-        if (!Object.hasOwn(paid.metrics, k)) continue;
-        expect(paid.metrics[k], `${where}: ${k}`).toBe(0);
-        scoreKeys++;
+      for (const k of new Set([...declaredKeys(m), ...Object.keys(paid.metrics)])) {
+        const value = paid.metrics[k] ?? 0;
+        if (RESULT_TALLIES.has(k)) {
+          expect(value, `${where}: ${k} counts the result`).toBe(paid.won);
+          tallies++;
+          continue;
+        }
+        expect(value, `${where}: ${k}`).toBe(0);
+        fieldsPerSport.set(m.key, (fieldsPerSport.get(m.key) ?? 0) + 1);
       }
       perSport.set(m.key, (perSport.get(m.key) ?? 0) + 1);
     });
@@ -153,7 +157,11 @@ describe("X-SW-5 a bye pays the stage's win points: never the forfeit row, never
     expect(perSport.size, "every sport checked").toBe(sports);
     expect(byes).toBeGreaterThanOrEqual(sports * SEATS.length);
     expect(setMaps, "a set-score map was met").toBeGreaterThan(0);
-    expect(scoreKeys, "a score key was read").toBeGreaterThan(0);
+    // per sport, not summed: every sport's byes read at least one field the sport records
+    for (const m of builtinModules) expect(fieldsPerSport.get(m.key) ?? 0, `${m.key}: fields read`).toBeGreaterThan(0);
+    // the typed exception is pinned against the modules: some sport declares each tally, and a bye met it
+    for (const k of RESULT_TALLIES) expect(builtinModules.some((m) => declaredKeys(m).includes(k)), `${k} is declared`).toBe(true);
+    expect(tallies, "a result tally was met").toBeGreaterThan(0);
   });
 
   it("X-SW-5 a custom rule's forfeit row {winnerPoints: 5} does not pay a bye: the win (3) does — and never its awarded score (every sport, counted)", () => {

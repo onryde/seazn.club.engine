@@ -311,6 +311,9 @@ function checkEvent(sim: SimEvent, n: number, asked: number, chess: boolean, t: 
 // finalRound (X-SW-11, T4c): the same probe at 10× RUNS, three runs of 30,000 cases (2026-10-31, load average 7–17): p99 the
 // largest run's, max the slowest case of any. Fix round 1 (the I1 assignment order, the bye check, two more buckets)
 // re-measured it: four more runs of 30,000 (load average 5–7); each constant is the larger of the two measurements.
+// lookAheadWitness (X-SW-10's seeded witness, T5 fix round 1): a probe copy of this file timed every case of the corpus's
+// own sequence at 100× RUNS (200,000 cases, the first 2,000 being the witness), three runs (2026-10-31, load average 3–19):
+// p99 the largest run's, max the slowest case of any. A case is skewed: p50 0.08 ms, a whole 2,000-case run 0.68–0.75 s.
 // LOAD_SLACK: the review run at load average 114 took 9–14× the unloaded time; runs × p99 already sits well above each
 // property's mean-cost total, so × 5 covers it.
 const FLOOR_MS = 5_000; // vitest's default: no property gets less than any other test
@@ -325,10 +328,16 @@ const CASE_MS = {
   byeMinimality: { p99: 2.44, max: 59.6 },
   byeMinimalityLookAhead: { p99: 4.76, max: 38.2 },
   finalRound: { p99: 5.87, max: 111 },
+  lookAheadWitness: { p99: 6.2, max: 207.3 },
 } as const;
 const budgetMs = (runs: number, cost: { p99: number; max: number }): number =>
   Math.max(FLOOR_MS, Math.ceil((runs * cost.p99 + cost.max) * LOAD_SLACK));
-const RUNS = { invariant: 200, rankAdjacent: 200, chess: 100, lookAhead: 100, freshRounds: 100, historyRounds: 200, existence: 1000, byeMinimality: 500, finalRound: 3000 } as const;
+const RUNS = { invariant: 200, rankAdjacent: 200, chess: 100, lookAhead: 100, freshRounds: 100, historyRounds: 200, existence: 1000, byeMinimality: 500, finalRound: 3000, lookAheadWitness: 2000 } as const;
+// The witness's floor, from the measured rate: over the corpus's own sequence (200,000 cases, the probe above) the
+// look-ahead moved boards in 1,078 (0.54%; the T5 review measured 0.53% on R1's property), and the 100 windows of 2,000
+// held 4–20 moves (mean 10.8). The witness's own window holds 9 (4 chess off, 5 on). A change that keeps the rate but
+// moves different cases is a count about Poisson(10.8), below 3 with P ≈ 0.14%; a look-ahead that never moves holds 0.
+const WITNESS_MOVED_FLOOR = 3;
 
 // The properties below pair as the app does (appLookAhead, above simulate): with the look-ahead on for every round but the
 // last of an event that plays more rounds than ⌊n/2⌋. Each counts the rounds it paired that way.
@@ -645,24 +654,27 @@ function randomRound(n: number, chess: boolean, seed: number): RoundCase {
   };
 }
 
+/** The odd fields the oracle can judge, as k in n = 2k + 1: 3..11. */
+const ODD_ORACLE_FIELDS = Math.floor((ORACLE_MAX_FIELD - 1) / 2);
+
 // Rulebook §2.3 item 4 (P-Q2's hard core; A3 [C5] outranks every other quality criterion): on every paired odd round, no
 // eligible entrant with a strictly LOWER score than the bye leaves a pairable remainder. `extra` is the stage's other
 // constraints: ruling R1 binds the look-ahead (X-SW-10) to this too. With `lookAhead` on, each case is also paired without
-// it, and R1 is read directly: the same answer and the same bye; `moved` counts the cases where the look-ahead moved boards.
+// it, and R1 is read directly: the same answer and the same bye. Whether the look-ahead moves boards at all is the fixed
+// corpus's question (`lookAheadWitness`, below): at ~0.5% of these cases, an unseeded 500-run count of it was a flake.
 function byeMinimality(
   extra: SwissConstraints,
   runs: number,
-): { byeCases: number; chessByes: number; openByes: number; climbed: number; lowerChecked: number; refused: number; moved: number } {
-  const t = { byeCases: 0, chessByes: 0, openByes: 0, climbed: 0, lowerChecked: 0, refused: 0, moved: 0 };
+): { byeCases: number; chessByes: number; openByes: number; climbed: number; lowerChecked: number; refused: number } {
+  const t = { byeCases: 0, chessByes: 0, openByes: 0, climbed: 0, lowerChecked: 0, refused: 0 };
   fc.assert(
-    fc.property(fc.integer({ min: 1, max: Math.floor((ORACLE_MAX_FIELD - 1) / 2) }), fc.boolean(), fc.integer(), (k, chess, seed) => {
+    fc.property(fc.integer({ min: 1, max: ODD_ORACLE_FIELDS }), fc.boolean(), fc.integer(), (k, chess, seed) => {
       const n = 2 * k + 1; // odd: 3..11
       const c = randomRound(n, chess, seed);
       const r = pairRound(c.standings, c.history, { ...extra, chess });
       if (extra.lookAhead === true) {
         const plain = pairRound(c.standings, c.history, { chess });
         expect({ seed, n, chess, ok: r.ok, bye: r.ok ? r.bye : undefined }).toEqual({ seed, n, chess, ok: plain.ok, bye: plain.ok ? plain.bye : undefined });
-        if (r.ok && plain.ok && JSON.stringify(r.pairings) !== JSON.stringify(plain.pairings)) t.moved++;
       }
       if (!r.ok) {
         t.refused++; // whether it should have paired is the existence property's question
@@ -682,6 +694,28 @@ function byeMinimality(
     }),
     { numRuns: runs },
   );
+  return t;
+}
+
+// X-SW-10's liveness witness: does the look-ahead MOVE boards at all? Kept apart from ruling R1's property, which explores
+// fresh cases each run (T5 review, coordinator ruling). The corpus is FIXED: R1's odd fields 3..11 in turn, chess off then
+// on, `randomRound` at seeds WITNESS_SEED + i. So the count is the same on every run, and only a change to swiss.ts moves
+// it. No oracle: minimality is the property's question. Each case also reads R1 directly: the same answer, the same bye.
+const WITNESS_SEED = 20_261_031;
+function lookAheadWitness(cases: number): { cases: number; paired: number; moved: number; chessMoved: number } {
+  const t = { cases: 0, paired: 0, moved: 0, chessMoved: 0 };
+  for (let i = 0; i < cases; i++) {
+    const n = 2 * (1 + (i % ODD_ORACLE_FIELDS)) + 1;
+    const chess = Math.floor(i / ODD_ORACLE_FIELDS) % 2 === 1;
+    const c = randomRound(n, chess, WITNESS_SEED + i);
+    const ahead = pairRound(c.standings, c.history, { lookAhead: true, chess });
+    const plain = pairRound(c.standings, c.history, { chess });
+    expect({ i, n, chess, ok: ahead.ok, bye: ahead.ok ? ahead.bye : undefined }).toEqual({ i, n, chess, ok: plain.ok, bye: plain.ok ? plain.bye : undefined });
+    t.cases++;
+    if (!ahead.ok || !plain.ok) continue;
+    t.paired++;
+    if (JSON.stringify(ahead.pairings) !== JSON.stringify(plain.pairings)) t[chess ? "chessMoved" : "moved"]++;
+  }
   return t;
 }
 
@@ -736,7 +770,7 @@ describe("X-SW-1 existence and bye minimality against an independent brute-force
   }, budgetMs(RUNS.byeMinimality, CASE_MS.byeMinimality));
 
   // Ruling R1: the look-ahead ranks completions only WITHIN the bye candidate the property above pins; it never moves the bye.
-  it("X-SW-1 X-SW-10 bye minimality holds with lookAhead on (ruling R1): the same bye as without it, minimal, while the look-ahead moves boards (n ≤ 12, counted)", () => {
+  it("X-SW-1 X-SW-10 bye minimality holds with lookAhead on (ruling R1): the same bye as without it, minimal (n ≤ 12, counted)", () => {
     const t = byeMinimality({ lookAhead: true }, RUNS.byeMinimality);
     expect(t.byeCases).toBeGreaterThan(0);
     expect(t.chessByes).toBeGreaterThan(0);
@@ -744,8 +778,14 @@ describe("X-SW-1 existence and bye minimality against an independent brute-force
     expect(t.refused).toBeGreaterThan(0);
     expect(t.climbed).toBeGreaterThan(0);
     expect(t.lowerChecked).toBeGreaterThan(0);
-    expect(t.moved).toBeGreaterThan(0); // the look-ahead was live: it moved boards, and never the bye
   }, budgetMs(RUNS.byeMinimality, CASE_MS.byeMinimalityLookAhead));
+
+  it("X-SW-10 the look-ahead is live: on a fixed corpus it moves boards, and never the bye (ruling R1; seeded witness, counted)", () => {
+    const t = lookAheadWitness(RUNS.lookAheadWitness);
+    expect(t.cases).toBe(RUNS.lookAheadWitness);
+    expect(t.paired).toBeGreaterThan(0);
+    expect(t.moved + t.chessMoved, `moved ${t.moved} + chess ${t.chessMoved} of ${t.paired} paired`).toBeGreaterThanOrEqual(WITNESS_MOVED_FLOOR);
+  }, budgetMs(RUNS.lookAheadWitness, CASE_MS.lookAheadWitness));
 
   it("X-SW-1 the oracle is independent: src/testkit/swiss-oracle.ts imports nothing from scheduling or competition", () => {
     const source = readFileSync(fileURLToPath(new URL("../testkit/swiss-oracle.ts", import.meta.url)), "utf8");
@@ -928,7 +968,7 @@ describe("X-SW-1 the brute-force oracle answers hand-worked cases from the ruleb
     expect(seatedRoundViolations({ field: at({ a: 0, b: 0 }), played: [], colours: new Map([["a", [W, W]]]) }, { pairings: [{ home: "a", away: "b" }] })).toEqual(["P-A5 a may not take W"]);
   });
 
-  it("X-SW-11 oracle final round (C.04.3 Art. 1.8, [C3] Art. 2.1.3): a topscorer has over half the maximum; a pair with one may meet whatever the colours; the non-topscorer on its board keeps its limit; the round after is judged under the full limits; a maximum that is not positive is refused (assumption → guard)", () => {
+  it("X-SW-11 oracle final round (C.04.3 Art. 1.8 topscorers, [C3] Art. 2.1.3; rulebook RB3-10, not FIDE, for the non-topscorer keeping its limit): a topscorer has over half the maximum; a pair with one may meet whatever the colours; the non-topscorer on its board keeps its limit; the round after is judged under the full limits; a maximum that is not positive is refused (assumption → guard)", () => {
     const at = (scores: Record<string, number>): OracleRound["field"] => Object.entries(scores).map(([id, score]) => ({ id, score }));
     const ww = new Map([["a", [W, W]], ["b", [W, W]]]); // both White twice running: an absolute preference for Black each
     // over half, never half: of 4, 3 is a topscorer and 2 is not; no maximum, no final round, nobody
