@@ -5,7 +5,7 @@ import { availableParallelism, totalmem } from "node:os";
 import process from "node:process";
 import { parseMutateRanges } from "./scripts/stryker-changed.mjs";
 import { resolveGroup } from "./scripts/stryker-cuts.mjs";
-import { STRYKER_GROUPS, STRYKER_VITEST_WORKERS, strykerConcurrency } from "./stryker.groups.mjs";
+import { STRYKER_GROUPS, STRYKER_HEAP_MB_BY_LEG, STRYKER_VITEST_WORKERS, strykerConcurrency } from "./stryker.groups.mjs";
 
 /** @type {Record<string, string[] | undefined>} */
 const groups = STRYKER_GROUPS;
@@ -20,6 +20,10 @@ const DRY_RUN_FLOOR_SECONDS = 344;
 /** How many times slower than that floor a CI run can be while it is still sound: the review's figure, CI about 8 times slower
  *  than a local run, with the vitest runner forcing ONE worker per sandbox. */
 const CI_SLOWDOWN = 8;
+/** The runner child's heap cap in MB for every leg not in STRYKER_HEAP_MB_BY_LEG: the note above `testRunnerNodeArgs` says why. */
+const DEFAULT_HEAP_MB = 2560;
+/** @type {Record<string, number>} */
+const heapByLeg = STRYKER_HEAP_MB_BY_LEG;
 
 export default {
   // The vitest runner behind a decorator (scripts/stryker-vitest-runner.mjs, engine mutation-debt P0): a test file that fails as
@@ -67,6 +71,7 @@ export default {
   // taken on a low-mutant case and is stale. 2560 leaves about 40% over the 1792 pass, and 3 children at it are 7.5 GB, under
   // half of a 16 GB runner. The heap is also what kills a runaway loop, so a larger cap is a slower kill: a runaway allocating
   // loop in a worker thread died in 13.9 s at 1024 MB and 42.3 s at 4096; 2560 lies between, about 28 s if the rise is linear
-  // (an interpolation, not a measurement).
-  testRunnerNodeArgs: ["--max-old-space-size=2560"],
+  // (an interpolation, not a measurement). That is every leg's cap but one: a leg named in STRYKER_HEAP_MB_BY_LEG
+  // (stryker.groups.mjs) gets its own, and only core-2 is (888 mutants by now, out of memory at 2560 and 2730 MB, 4096 there).
+  testRunnerNodeArgs: [`--max-old-space-size=${group !== undefined && Object.hasOwn(heapByLeg, group) ? heapByLeg[group] : DEFAULT_HEAP_MB}`],
 };

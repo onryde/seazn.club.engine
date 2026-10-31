@@ -352,7 +352,7 @@ describe("stryker.groups.d.mts declares exactly what stryker.groups.mjs exports 
   const dts = readFileSync(join(ENGINE, "stryker.groups.d.mts"), "utf8");
   it("the exports, no more and no fewer", () => {
     const declared = [...dts.matchAll(/^export (?:declare )?(?:const|function) (\w+)/gm)].map((m) => m[1]).sort();
-    expect(declared).toEqual(["STRYKER_EXCLUDED", "STRYKER_FAMILIES", "STRYKER_GROUPS", "STRYKER_PLACEMENT_OUT_OF_SCOPE", "STRYKER_SPLITS", "STRYKER_VITEST_WORKERS", "strykerConcurrency"]);
+    expect(declared).toEqual(["STRYKER_EXCLUDED", "STRYKER_FAMILIES", "STRYKER_GROUPS", "STRYKER_HEAP_MB_BY_LEG", "STRYKER_PLACEMENT_OUT_OF_SCOPE", "STRYKER_SPLITS", "STRYKER_VITEST_WORKERS", "strykerConcurrency"]);
     expect(Object.keys(groupsModule).sort()).toEqual(declared);
   });
   it("the group-name union in the declaration is STRYKER_GROUPS's keys, in order", () => {
