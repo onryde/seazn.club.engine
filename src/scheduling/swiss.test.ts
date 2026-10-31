@@ -177,8 +177,26 @@ interface EventTally {
   byes: number;
   refused: number;
   refusalsProved: number;
+  withinSafeMax: number; // refusals at or before the safe maximum ⌊n/2⌋: only chess may have one (the Dirac clause below)
 }
-const newTally = (): EventTally => ({ events: 0, rounds: 0, boards: 0, byes: 0, refused: 0, refusalsProved: 0 });
+const newTally = (): EventTally => ({ events: 0, rounds: 0, boards: 0, byes: 0, refused: 0, refusalsProved: 0, withinSafeMax: 0 });
+
+// An event built from boards already played (White first) with the engine's real answer for the next round, for a case the
+// simulation's own events do not reach. Even fields only (no byes); every score is 0, which existence does not read.
+function eventFrom(n: number, boards: readonly (readonly (readonly [string, string])[])[]): SimEvent {
+  const colours = new Map<string, Colour[]>(field(n).map((id) => [id, []]));
+  const played = new Set<string>();
+  const rounds: SimRound[] = boards.map((round) => ({
+    pairings: round.map(([home, away]) => {
+      (colours.get(home) as Colour[]).push("W");
+      (colours.get(away) as Colour[]).push("B");
+      played.add(pairKey(home, away));
+      return { home, away };
+    }),
+  }));
+  const next = pairRound(field(n).map((id, i) => ({ entrantId: id, score: 0, rank: i + 1 })), { played, colours, byes: new Set() }, { chess: true });
+  return { rounds, refusals: next.ok ? [] : [next], colours, played, byes: new Set() };
+}
 
 function checkEvent(sim: SimEvent, n: number, asked: number, chess: boolean, t: EventTally): void {
   t.events++;
@@ -218,6 +236,7 @@ function checkEvent(sim: SimEvent, n: number, asked: number, chess: boolean, t: 
   // Rulebook §3.1: up to the safe maximum ⌊n/2⌋ a rematch-free round exists whatever was paired before (Dirac), with a bye
   // candidate to spare, so only the chess colour limits can refuse a round there
   if (roundNo <= Math.floor(n / 2)) {
+    t.withinSafeMax++;
     expect({ roundNo, n, chess }).toEqual({ roundNo, n, chess: true });
     expect(refusal.reason).toBe("colour");
   }
@@ -235,9 +254,22 @@ function checkEvent(sim: SimEvent, n: number, asked: number, chess: boolean, t: 
   }
 }
 
+// Per-test time budgets, SIZED from measured cost (controller ruling, T3 fix round 1: a derived budget is sizing, not
+// masking; only the --testTimeout flag is banned). budget = max(FLOOR_MS, runs × P999_CASE_MS × LOAD_SLACK).
+// P999_CASE_MS: the p99.9 cost of ONE case of each property, timed inside this harness with its assertions (a probe copy
+// of this file at 10× the runs, 1,000–10,000 cases each, 2026-10-31, load average ~7; task-3-report.md, fix round 1).
+// LOAD_SLACK: the review run at load average 114 took 9–14× the unloaded time, and runs × p99.9 already sits ≥ 5× above
+// each property's mean-cost total, so × 5 covers it. Tightest: the invariant, 5.5 s against 0.5–1.2 s in the scoped gate
+// and 2.3 s in the review run.
+const FLOOR_MS = 5_000; // vitest's default: no property gets less than any other test
+const LOAD_SLACK = 5;
+const P999_CASE_MS = { invariant: 5.5, rankAdjacent: 4.6, chess: 235, determinism: 11.5, existence: 6.8, byeMinimality: 6.2 } as const;
+const budgetMs = (runs: number, p999CaseMs: number): number => Math.max(FLOOR_MS, Math.ceil(runs * p999CaseMs * LOAD_SLACK));
+const RUNS = { invariant: 200, rankAdjacent: 200, chess: 100, freshRounds: 100, historyRounds: 200, existence: 1000, byeMinimality: 500 } as const;
+
 describe("X-SW-1 every paired round seats each active entrant exactly once, with no rematch and no second bye (spec 05 §6; rulebook §2.1)", () => {
   it("X-SW-1 every paired round seats each active entrant exactly once: ⌊n/2⌋ boards, one bye iff n odd, no rematch, no second bye (n 2–64, counted)", () => {
-    const RUNS = 200;
+    const runs = RUNS.invariant;
     const t = newTally();
     fc.assert(
       fc.property(
@@ -247,40 +279,45 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
         fc.integer(),
         (n, r, seed) => checkEvent(simulate(n, r, { seed }), n, r, false, t),
       ),
-      { numRuns: RUNS },
+      { numRuns: runs },
     );
-    expect(t.events).toBe(RUNS); // anti-vacuity: every event ran, every round counted, and both endings were reached
+    expect(t.events).toBe(runs); // anti-vacuity: every event ran, every round counted, and both endings were reached
     expect(t.rounds).toBeGreaterThan(0);
     expect(t.boards).toBeGreaterThan(0);
     expect(t.byes).toBeGreaterThan(0);
     expect(t.refused).toBeGreaterThan(0);
     expect(t.refusalsProved).toBeGreaterThan(0);
-  });
+  }, budgetMs(RUNS.invariant, P999_CASE_MS.invariant));
 
   it("X-SW-1 another sport's shape: rank_adjacent pairing keeps the same invariant (counted)", () => {
     // the swiss_playoff / swiss_knockout templates pair rank-adjacent from round 2 (rulebook P-Q4, RB3-12)
-    const RUNS = 200;
+    const runs = RUNS.rankAdjacent;
     const t = newTally();
+    let differsFromFold = 0; // the shape reached the engine: the same seed paired by fold gives other boards
     fc.assert(
-      fc.property(fc.integer({ min: 2, max: 20 }), fc.integer({ min: 1, max: 6 }), fc.integer(), (n, r, seed) =>
-        checkEvent(simulate(n, r, { seed, pairing: "rank_adjacent" }), n, r, false, t),
-      ),
-      { numRuns: RUNS },
+      fc.property(fc.integer({ min: 2, max: 20 }), fc.integer({ min: 1, max: 6 }), fc.integer(), (n, r, seed) => {
+        const adjacent = simulate(n, r, { seed, pairing: "rank_adjacent" });
+        checkEvent(adjacent, n, r, false, t);
+        if (JSON.stringify(adjacent.rounds) !== JSON.stringify(simulate(n, r, { seed }).rounds)) differsFromFold++;
+      }),
+      { numRuns: runs },
     );
-    expect(t.events).toBe(RUNS);
+    expect(t.events).toBe(runs);
     expect(t.rounds).toBeGreaterThan(0);
     expect(t.boards).toBeGreaterThan(0);
     expect(t.byes).toBeGreaterThan(0);
     expect(t.refused).toBeGreaterThan(0);
     expect(t.refusalsProved).toBeGreaterThan(0);
-  });
+    expect(differsFromFold).toBeGreaterThan(0);
+  }, budgetMs(RUNS.rankAdjacent, P999_CASE_MS.rankAdjacent));
 
-  it("X-SW-1 chess on: every paired round seats each entrant once, and the colour bounds hold: |W−B| ≤ 2, never three in a row (n 2–64, counted)", () => {
-    const RUNS = 100;
+  it("X-SW-1 chess on: every paired round seats each entrant once, and the colour bounds hold: |W−B| ≤ 2, never three in a row; refusals counted, the colour refusal at the safe maximum witnessed (n 2–64, counted)", () => {
+    const runs = RUNS.chess;
     const t = newTally();
     let sequences = 0;
     fc.assert(
-      fc.property(fc.integer({ min: 2, max: 64 }), fc.integer({ min: 1, max: 7 }), fc.integer(), (n, rounds, seed) => {
+      // half the events at n ≤ 12, where refusals come (past the safe maximum) and the oracle proves them
+      fc.property(fc.oneof(fc.integer({ min: 2, max: ORACLE_MAX_FIELD }), fc.integer({ min: 2, max: 64 })), fc.integer({ min: 1, max: 7 }), fc.integer(), (n, rounds, seed) => {
         const sim = simulate(n, rounds, { chess: true, seed });
         checkEvent(sim, n, rounds, true, t);
         for (const [, seq] of sim.colours) {
@@ -293,12 +330,30 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
           }
         }
       }),
-      { numRuns: RUNS },
+      { numRuns: runs },
     );
-    expect(t.events).toBe(RUNS);
+    expect(t.events).toBe(runs);
     expect(t.rounds).toBeGreaterThan(0);
     expect(sequences).toBeGreaterThan(0); // anti-vacuity: colour sequences were read
-  });
+    expect(t.refused).toBeGreaterThan(0); // the refusal half of checkEvent ran for chess…
+    expect(t.refusalsProved).toBeGreaterThan(0); // …and the oracle proved some
+    // The chess half of the Dirac clause, witnessed. The simulation's own events reached no refusal at or before ⌊n/2⌋ in
+    // 15,000 chess events (2026-10-31): the engine's colour allocation steers clear of it. So this event is fixed: a legal
+    // 8-entrant history found by a search over random legal matchings. After rounds 1–3, p0, p2 and p3 must have White (…BB)
+    // and p4, p5 and p7 must have Black (…WW). p3, p5 and p7 can then each meet only p1 or p6, so round 4 = ⌊8/2⌋ has no
+    // colour-legal pairing, although a rematch-free one exists (Dirac).
+    const before = t.withinSafeMax;
+    const witness = eventFrom(8, [
+      [["p0", "p7"], ["p3", "p5"], ["p1", "p4"], ["p2", "p6"]],
+      [["p1", "p0"], ["p7", "p3"], ["p4", "p6"], ["p5", "p2"]],
+      [["p6", "p1"], ["p7", "p2"], ["p5", "p0"], ["p4", "p3"]],
+    ]);
+    expect(witness.refusals.map((r) => r.reason)).toEqual(["colour"]);
+    const played = witness.rounds.flatMap((r) => r.pairings.map((p): [string, string] => [p.home, p.away]));
+    expect(judgeRound({ field: field(8).map((id) => ({ id, score: 0 })), played, byeIneligible: new Set() }).exists).toBe(true); // colours lifted: Dirac
+    checkEvent(witness, 8, 4, true, t);
+    expect(t.withinSafeMax).toBe(before + 1);
+  }, budgetMs(RUNS.chess, P999_CASE_MS.chess));
 
   it("X-SW-1 is deterministic: identical inputs yield identical results, a refusal included (counted)", () => {
     let fresh = 0;
@@ -314,9 +369,9 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
         expect(a).toEqual(b);
         fresh++;
       }),
-      { numRuns: 100 },
+      { numRuns: RUNS.freshRounds },
     );
-    expect(fresh).toBe(100);
+    expect(fresh).toBe(RUNS.freshRounds);
     // with a history (n ≤ 12): the second call agrees whether the round pairs or is refused
     const seenOutcome = { paired: 0, refused: 0 };
     fc.assert(
@@ -326,11 +381,12 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
         expect(pairRound(c.standings, c.history, { chess })).toEqual(a);
         seenOutcome[a.ok ? "paired" : "refused"]++;
       }),
-      { numRuns: 200 },
+      { numRuns: RUNS.historyRounds },
     );
+    expect(seenOutcome.paired + seenOutcome.refused).toBe(RUNS.historyRounds);
     expect(seenOutcome.paired).toBeGreaterThan(0);
     expect(seenOutcome.refused).toBeGreaterThan(0);
-  });
+  }, budgetMs(RUNS.freshRounds + RUNS.historyRounds, P999_CASE_MS.determinism));
 });
 
 // ---------------------------------------------------------------------------
@@ -416,8 +472,11 @@ function randomRound(n: number, chess: boolean, seed: number): RoundCase {
 // Rulebook §2.3 item 4 (P-Q2's hard core; A3 [C5] outranks every other quality criterion): on every paired odd round, no
 // eligible entrant with a strictly LOWER score than the bye leaves a pairable remainder. `extra` is the stage's other
 // constraints: ruling R1 binds the look-ahead to this too, and T4b runs it with `{ lookAhead: true }`.
-function byeMinimality(extra: SwissConstraints, runs: number): { byeCases: number; climbed: number; lowerChecked: number; refused: number } {
-  const t = { byeCases: 0, climbed: 0, lowerChecked: 0, refused: 0 };
+function byeMinimality(
+  extra: SwissConstraints,
+  runs: number,
+): { byeCases: number; chessByes: number; openByes: number; climbed: number; lowerChecked: number; refused: number } {
+  const t = { byeCases: 0, chessByes: 0, openByes: 0, climbed: 0, lowerChecked: 0, refused: 0 };
   fc.assert(
     fc.property(fc.integer({ min: 1, max: Math.floor((ORACLE_MAX_FIELD - 1) / 2) }), fc.boolean(), fc.integer(), (k, chess, seed) => {
       const n = 2 * k + 1; // odd: 3..11
@@ -435,6 +494,7 @@ function byeMinimality(extra: SwissConstraints, runs: number): { byeCases: numbe
       const score = new Map(c.standings.map((s) => [s.entrantId, s.score]));
       const lower = v.eligible.filter((id) => (score.get(id) as number) < (score.get(bye) as number));
       t.byeCases++;
+      t[chess ? "chessByes" : "openByes"]++;
       t.lowerChecked += lower.length;
       if (lower.length > 0) t.climbed++; // the bye climbed past lower-scored candidates, each proved unpairable
     }),
@@ -445,8 +505,8 @@ function byeMinimality(extra: SwissConstraints, runs: number): { byeCases: numbe
 
 describe("X-SW-1 existence and bye minimality against an independent brute-force oracle (rulebook §2.3 items 3–4; RB3-24, n ≤ 12)", () => {
   it("X-SW-1 (P-A6) pairs whenever a legal pairing exists and refuses only when none does — odd and even, several score groups, chess on and off (brute force n ≤ 12, counted)", () => {
-    const RUNS = 1000; // a colour refusal is ~1.8% of cases: 1000 leave P(none) ≈ 1e-8
-    const t = { cases: 0, paired: 0, refused: 0, rematch: 0, colour: 0, noBye: 0, chessPaired: 0, multiGroupPaired: 0, multiGroupRefused: 0, matchings: 0 };
+    const runs = RUNS.existence; // a colour refusal is ~1.8% of cases: 1000 leave P(none) ≈ 1e-8
+    const t = { cases: 0, paired: 0, refused: 0, rematch: 0, colour: 0, noBye: 0, evenPaired: 0, oddPaired: 0, chessPaired: 0, openPaired: 0, multiGroupPaired: 0, multiGroupRefused: 0, matchings: 0 };
     fc.assert(
       fc.property(fc.integer({ min: 2, max: ORACLE_MAX_FIELD }), fc.boolean(), fc.integer(), (n, chess, seed) => {
         const c = randomRound(n, chess, seed);
@@ -459,7 +519,8 @@ describe("X-SW-1 existence and bye minimality against an independent brute-force
         if (r.ok) {
           expect(seatedRoundViolations(c.judged, r)).toEqual([]); // P-A1, P-A3, P-A4, P-A5 as seated
           t.paired++;
-          if (chess) t.chessPaired++;
+          t[n % 2 === 0 ? "evenPaired" : "oddPaired"]++;
+          t[chess ? "chessPaired" : "openPaired"]++;
           if (multiGroup) t.multiGroupPaired++;
           return;
         }
@@ -473,23 +534,27 @@ describe("X-SW-1 existence and bye minimality against an independent brute-force
         if (r.reason === "no_bye_candidate") t.noBye++;
         if (multiGroup) t.multiGroupRefused++;
       }),
-      { numRuns: RUNS },
+      { numRuns: runs },
     );
-    // anti-vacuity: every case ran, both outcomes and every refusal reason were reached, and the oracle answered matchings
-    expect(t.cases).toBe(RUNS);
-    expect(t.paired + t.refused).toBe(RUNS);
+    // anti-vacuity: every case ran; both outcomes, every refusal reason, odd and even, chess on and off and several score
+    // groups were reached; and the oracle answered matchings
+    expect(t.cases).toBe(runs);
+    expect(t.paired + t.refused).toBe(runs);
     for (const [k, v] of Object.entries(t)) expect([k, v > 0]).toEqual([k, true]);
-  });
+  }, budgetMs(RUNS.existence, P999_CASE_MS.existence));
 
   it("X-SW-1 bye minimality: no eligible entrant with a strictly lower score leaves a pairable remainder (rulebook §2.3 item 4, n ≤ 12, counted)", () => {
-    const t = byeMinimality({}, 500); // a climbed bye is ~4% of cases: 500 leave P(none) ≈ 1e-9
+    const t = byeMinimality({}, RUNS.byeMinimality); // a climbed bye is ~4% of cases: 500 leave P(none) ≈ 1e-9
     expect(t.byeCases).toBeGreaterThan(0);
+    expect(t.chessByes).toBeGreaterThan(0); // chess on…
+    expect(t.openByes).toBeGreaterThan(0); // …and off
+    expect(t.refused).toBeGreaterThan(0); // refusals reached too (their existence is the property above's)
     expect(t.climbed).toBeGreaterThan(0); // the check met lower-scored candidates and proved each one unpairable
     expect(t.lowerChecked).toBeGreaterThan(0);
-  });
+  }, budgetMs(RUNS.byeMinimality, P999_CASE_MS.byeMinimality));
 
   // Ruling R1: the look-ahead (T4b) ranks completions only WITHIN the bye candidate this property pins; it never moves the bye up.
-  it.todo("X-SW-1 bye minimality holds with lookAhead on (ruling R1): T4b runs byeMinimality({ lookAhead: true }, 500) with the counts above");
+  it.todo("X-SW-1 bye minimality holds with lookAhead on (ruling R1): T4b runs byeMinimality({ lookAhead: true }, RUNS.byeMinimality) with the counts and budget above");
 
   it("X-SW-1 the oracle is independent: src/testkit/swiss-oracle.ts imports nothing from scheduling or competition", () => {
     const source = readFileSync(fileURLToPath(new URL("../testkit/swiss-oracle.ts", import.meta.url)), "utf8");
