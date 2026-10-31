@@ -37,7 +37,7 @@ export interface SwissGame {
   // forfeits, absences) use a FIDE virtual opponent for Buchholz/SB.
   opponent: EntrantId | null;
   result: GameResult;
-  scored: number; // half-points earned in this game (win 2 / draw 1 / loss 0 / byeScore)
+  scored: number; // half-points earned in this game (win 2 / draw 1 / loss 0; a bye is the win, X-SW-5)
   color?: Color | null; // colour held; null/absent ⇒ excluded from colour history
   unplayed?: boolean;
 }

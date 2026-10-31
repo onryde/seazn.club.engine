@@ -59,7 +59,6 @@ export interface SwissHistory {
 
 export interface SwissConstraints {
   chess?: boolean; // enforce colour rules and read home/away as White/Black
-  byeScore?: number; // documented for the caller; pairRound only names the bye entrant
   /** Hammes preset (Jul3/08 §7, 20 Jan): pair ADJACENT ranks (1v2, 3v4, …)
    *  instead of folding top-vs-bottom; the no-rematch backtracking is shared. */
   pairing?: "fold" | "rank_adjacent";

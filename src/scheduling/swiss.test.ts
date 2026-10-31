@@ -110,7 +110,7 @@ function simulate(
       rank: rank.get(id) as number,
     }));
     const history: SwissHistory = { played, colours, byes };
-    const constraints: SwissConstraints = { chess: opts.chess === true, byeScore: 1 };
+    const constraints: SwissConstraints = { chess: opts.chess === true };
     if (opts.pairing !== undefined) constraints.pairing = opts.pairing;
     if (opts.lookAhead === true || (opts.lookAhead === "app" && appLookAhead(n, rounds, r + 1))) constraints.lookAhead = true;
     const round = pairRound(standings, history, constraints);
