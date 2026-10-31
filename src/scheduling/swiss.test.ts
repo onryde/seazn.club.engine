@@ -27,6 +27,7 @@ import {
   roundAfter,
   ruleSides,
   seatedRoundViolations,
+  topscorers,
   type OracleRound,
 } from "../testkit/swiss-oracle.ts";
 
@@ -190,6 +191,22 @@ describe("pairRound — bye selection (spec 05 §2.2)", () => {
   });
 });
 
+describe("pairRound — chess colour allocation by preference (FIDE C.04.3 A.6 colour preferences, art. 5.2)", () => {
+  // The expected sides are the rulebook's, not the engine's (P-Q5; A3): a colour difference of −1 is a STRONG preference for
+  // White (+1 for Black), and a difference of 0 a MILD one, to alternate from the last game (A.6). When both sides ask the
+  // same colour, the stronger preference is granted (art. 5.2). Every history here leaves both assignments within P-A5, so
+  // the preferences alone decide.
+  it("chess: the colour difference sets an entrant's preference before its last game does, and the stronger preference wins the colour both ask for", () => {
+    const two: SwissStanding[] = [{ entrantId: "p0", score: 0, rank: 1 }, { entrantId: "p1", score: 0, rank: 2 }];
+    const seat = (p0: Colour[], p1: Colour[]): SwissPairResult => pairRound(two, { played: new Set(), colours: new Map([["p0", p0], ["p1", p1]]) }, { chess: true });
+    // p1 (lower board) BBW: difference −1, a strong preference for White although its last game was White. p0 WB: difference
+    // 0, a mild preference for White (alternating from Black). Both ask White: p1's stronger preference is granted
+    expect(seat(["W", "B"], ["B", "B", "W"])).toMatchObject({ ok: true, pairings: [{ home: "p1", away: "p0" }] });
+    // the mirror, the strong preference on the upper board: p0 BBW gets White
+    expect(seat(["B", "B", "W"], ["W", "B"])).toMatchObject({ ok: true, pairings: [{ home: "p0", away: "p1" }] });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // X-SW-1 — the invariants every simulated event owes (spec 05 §6; rulebook-W3 §2.1, §3.1)
 // ---------------------------------------------------------------------------
@@ -290,6 +307,8 @@ function checkEvent(sim: SimEvent, n: number, asked: number, chess: boolean, t: 
 // and re-measured those four the same way, six more runs: each constant is the larger of the two measurements. The chess
 // max is T1's big-field search (n 37–64, the look-ahead off there), not the look-ahead: the look-ahead's own calls in that
 // property cost ≤ 2.7 ms.
+// finalRound (X-SW-11, T4c): the same probe at 10× RUNS, three runs of 30,000 cases (2026-10-31, load average 7–17): p99 the
+// largest run's, max the slowest case of any.
 // LOAD_SLACK: the review run at load average 114 took 9–14× the unloaded time; runs × p99 already sits well above each
 // property's mean-cost total, so × 5 covers it.
 const FLOOR_MS = 5_000; // vitest's default: no property gets less than any other test
@@ -303,10 +322,11 @@ const CASE_MS = {
   existence: { p99: 2.44, max: 81.1 },
   byeMinimality: { p99: 2.44, max: 59.6 },
   byeMinimalityLookAhead: { p99: 4.76, max: 38.2 },
+  finalRound: { p99: 5.43, max: 57.9 },
 } as const;
 const budgetMs = (runs: number, cost: { p99: number; max: number }): number =>
   Math.max(FLOOR_MS, Math.ceil((runs * cost.p99 + cost.max) * LOAD_SLACK));
-const RUNS = { invariant: 200, rankAdjacent: 200, chess: 100, lookAhead: 100, freshRounds: 100, historyRounds: 200, existence: 1000, byeMinimality: 500 } as const;
+const RUNS = { invariant: 200, rankAdjacent: 200, chess: 100, lookAhead: 100, freshRounds: 100, historyRounds: 200, existence: 1000, byeMinimality: 500, finalRound: 3000 } as const;
 
 // The properties below pair as the app does (appLookAhead, above simulate): with the look-ahead on for every round but the
 // last of an event that plays more rounds than ⌊n/2⌋. Each counts the rounds it paired that way.
@@ -464,15 +484,20 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
             const recordOf = (id: string): readonly Colour[] => history.colours?.get(id) ?? [];
             const rest = round.field.map((e) => e.id).filter((id) => id !== result.bye);
             let seatings = 0;
+            const boardSet = (pairs: readonly (readonly [string, string])[]): string => pairs.map(([a, b]) => oraclePairKey(a, b)).sort().join(",");
+            const seatedBoards = boardSet(result.pairings.map((p): [string, string] => [p.home, p.away]));
+            let seatedJudged = 0;
             for (const boards of perfectMatchings(rest, new Set(round.played.map(([a, b]) => oraclePairKey(a, b))))) {
               const sides = boards.map(([x, y]) => (above(x, y) ? ruleSides(x, y, recordOf, chess) : ruleSides(y, x, recordOf, chess)));
               const pairings = sides.filter((p) => p !== undefined);
               if (pairings.length < sides.length) continue;
+              if (boardSet(boards) === seatedBoards) seatedJudged++;
               const seatedHere = { pairings, ...(result.bye === undefined ? {} : { bye: result.bye }) };
               expect({ seed, n, chess, boards, next: judgeRound(roundAfter(round, seatedHere)).exists }).toEqual({ seed, n, chess, boards, next: false });
               seatings++;
             }
-            expect(seatings).toBeGreaterThan(0); // the seated round is one of them
+            expect(seatedJudged).toBe(1); // the seated round is one of them, judged once
+            expect(seatings).toBeGreaterThan(0);
             v.seatingsJudged += seatings;
             v[chess ? "chessNoCompletionKeeps" : "noCompletionKeeps"]++;
           },
@@ -740,6 +765,85 @@ describe("X-SW-1 existence and bye minimality against an independent brute-force
   });
 });
 
+// ---------------------------------------------------------------------------
+// X-SW-11 — the final round's topscorer exception against the same oracle (RB3-10; C.04.3 A.6, [C3]; n ≤ 12)
+// ---------------------------------------------------------------------------
+
+describe("X-SW-11 the final round against the independent brute-force oracle (RB3-10; C.04.3 A.6, [C3]; n ≤ 12)", () => {
+  it("X-SW-11 final round, chess on: pairs whenever a legal round exists once every board with a topscorer is exempt from the colour limits, refuses only when none does, and seats each board as the rule's sides; chess off, nothing changes (brute force n ≤ 12, counted)", () => {
+    const runs = RUNS.finalRound; // a round only the exception pairs is ~0.67% of cases (100,000 probed): 3000 leave P(none) ≈ 2e-9
+    const t = { cases: 0, chessCases: 0, openCases: 0, noTopscorer: 0, paired: 0, refused: 0, colourRefused: 0, unlocked: 0,
+      boards: 0, topBoards: 0, mixedBoards: 0, bothTop: 0, keptLimit: 0, limitWaived: 0, matchings: 0 };
+    fc.assert(
+      // finalRoundMaxScore 1..5 over scores 0..2: topscorers are those on 1 or 2 (max 1), on 2 (max 2 or 3), or nobody (4, 5)
+      fc.property(fc.integer({ min: 2, max: ORACLE_MAX_FIELD }), fc.boolean(), fc.integer({ min: 1, max: 5 }), fc.integer(), (n, chess, finalRoundMaxScore, seed) => {
+        const c = randomRound(n, chess, seed);
+        const r = pairRound(c.standings, c.history, { chess, finalRoundMaxScore });
+        expect(pairRound(c.standings, c.history, { chess, finalRoundMaxScore })).toEqual(r); // the second call
+        t.cases++;
+        if (!chess) {
+          // no hard colour limit to relax: the same round as without the final round's maximum
+          expect({ seed, n, r }).toEqual({ seed, n, r: pairRound(c.standings, c.history, { chess }) });
+          t.openCases++;
+          return;
+        }
+        t.chessCases++;
+        const judged: OracleRound = { ...c.judged, finalRoundMaxScore };
+        const top = topscorers(judged);
+        const v = judgeRound(judged);
+        t.matchings += v.matchingsChecked;
+        expect({ seed, n, finalRoundMaxScore, ok: r.ok }).toEqual({ seed, n, finalRoundMaxScore, ok: v.exists });
+        if (top.size === 0) {
+          // the empty case: nobody is a topscorer, so nothing is exempt and the round is the one any other round would be
+          expect({ seed, n, r }).toEqual({ seed, n, r: pairRound(c.standings, c.history, { chess }) });
+          t.noTopscorer++;
+        }
+        if (v.exists && !judgeRound(c.judged).exists) t.unlocked++; // the exception pairs a round the colour limits refuse
+        if (!r.ok) {
+          expect(r).toEqual({ ok: false, code: SWISS_NO_LEGAL_PAIRING, reason: v.reason, field: n });
+          t.refused++;
+          if (r.reason === "colour") t.colourRefused++;
+          return;
+        }
+        t.paired++;
+        expect(seatedRoundViolations(judged, r)).toEqual([]); // P-A1, P-A3, P-A4, and P-A5 for every non-topscorer
+        // each board's sides are the rule's (the oracle's ruleSides, the topscorers free of their own limits), upper side first
+        const of = new Map(c.standings.map((s) => [s.entrantId, s]));
+        const above = (x: string, y: string): boolean => {
+          const [a, b] = [of.get(x) as SwissStanding, of.get(y) as SwissStanding];
+          return a.score !== b.score ? a.score > b.score : a.rank < b.rank;
+        };
+        const recordOf = (id: string): readonly Colour[] => c.judged.colours?.get(id) ?? [];
+        const isTop = (id: string): boolean => top.has(id);
+        for (const p of r.pairings) {
+          const [upper, lower] = above(p.home, p.away) ? [p.home, p.away] : [p.away, p.home];
+          const want = ruleSides(upper, lower, recordOf, true, isTop);
+          expect({ seed, n, finalRoundMaxScore, board: p }).toEqual({ seed, n, finalRoundMaxScore, board: want });
+          t.boards++;
+          const tops = [upper, lower].filter(isTop).length;
+          if (tops > 0) t.topBoards++;
+          if (tops === 2) t.bothTop++;
+          if (tops === 1) {
+            t.mixedBoards++;
+            // the non-topscorer's limit decided the colour: the preferences alone would have seated the board the other way
+            if (JSON.stringify(want) !== JSON.stringify(ruleSides(upper, lower, recordOf, true, () => true))) t.keptLimit++;
+          }
+          // a topscorer seated outside its own limits: the exception was used, not merely available
+          if ((isTop(p.home) && !mayTake(recordOf(p.home), "W")) || (isTop(p.away) && !mayTake(recordOf(p.away), "B"))) t.limitWaived++;
+        }
+      }),
+      { numRuns: runs },
+    );
+    // anti-vacuity: every case ran, chess on and off; both outcomes and the colour refusal; the empty case (no topscorer);
+    // rounds only the exception pairs; boards with one and with two topscorers judged; a non-topscorer's limit deciding a
+    // mixed board; a topscorer seated outside its limits; and the oracle answered matchings
+    expect(t.cases).toBe(runs);
+    expect(t.chessCases + t.openCases).toBe(runs);
+    expect(t.paired + t.refused).toBe(t.chessCases);
+    for (const [k, x] of Object.entries(t)) expect([k, x > 0]).toEqual([k, true]);
+  }, budgetMs(RUNS.finalRound, CASE_MS.finalRound));
+});
+
 describe("X-SW-1 the brute-force oracle answers hand-worked cases from the rulebook (RB3-24, the n ≤ 12 half)", () => {
   const W = "W" as const;
   const B = "B" as const;
@@ -809,6 +913,42 @@ describe("X-SW-1 the brute-force oracle answers hand-worked cases from the ruleb
     expect(seatedRoundViolations({ ...blocked, byeIneligible: new Set(["z"]) }, { pairings: [{ home: "y", away: "x" }], bye: "z" })).toEqual(["P-A4 z may not take the bye"]);
     expect(seatedRoundViolations(blocked, { pairings: [{ home: "y", away: "x" }] })).toEqual(["P-A3 z is seated 0 times", "P-A3 a bye is owed exactly when the field is odd"]);
     expect(seatedRoundViolations({ field: at({ a: 0, b: 0 }), played: [], colours: new Map([["a", [W, W]]]) }, { pairings: [{ home: "a", away: "b" }] })).toEqual(["P-A5 a may not take W"]);
+  });
+
+  it("X-SW-11 oracle final round (C.04.3 A.6, [C3]): a topscorer has over half the maximum; a pair with one may meet whatever the colours; the non-topscorer on its board keeps its limit; the round after is judged under the full limits; a maximum that is not positive is refused (assumption → guard)", () => {
+    const at = (scores: Record<string, number>): OracleRound["field"] => Object.entries(scores).map(([id, score]) => ({ id, score }));
+    const ww = new Map([["a", [W, W]], ["b", [W, W]]]); // both White twice running: an absolute preference for Black each
+    // over half, never half: of 4, 3 is a topscorer and 2 is not; no maximum, no final round, nobody
+    expect([...topscorers({ field: at({ a: 3, b: 2, c: 0 }), played: [], finalRoundMaxScore: 4 })]).toEqual(["a"]);
+    expect([...topscorers({ field: at({ a: 3, b: 2, c: 0 }), played: [], finalRoundMaxScore: 3.5 })]).toEqual(["a", "b"]);
+    expect(topscorers({ field: at({ a: 3, b: 2 }), played: [] }).size).toBe(0);
+    // two topscorers may meet; two non-topscorers may not ([C3], the reason is the colours'); one of each may
+    expect(judgeRound({ field: at({ a: 3, b: 3 }), played: [], colours: ww, finalRoundMaxScore: 4 }).exists).toBe(true);
+    expect(judgeRound({ field: at({ a: 2, b: 2 }), played: [], colours: ww, finalRoundMaxScore: 4 })).toMatchObject({ exists: false, reason: "colour" });
+    expect(judgeRound({ field: at({ a: 3, b: 1 }), played: [], colours: ww, finalRoundMaxScore: 4 }).exists).toBe(true);
+    // a rematch stays a rematch: the exception is the colour limits', never P-A1's
+    expect(judgeRound({ field: at({ a: 3, b: 3 }), played: [["a", "b"]], colours: ww, finalRoundMaxScore: 4 })).toMatchObject({ exists: false, reason: "rematch" });
+    // as seated: the topscorer's third White is no violation, the non-topscorer's would be
+    const mixed: OracleRound = { field: at({ a: 3, b: 1 }), played: [], colours: ww, finalRoundMaxScore: 4 };
+    expect(seatedRoundViolations(mixed, { pairings: [{ home: "a", away: "b" }] })).toEqual([]);
+    expect(seatedRoundViolations(mixed, { pairings: [{ home: "b", away: "a" }] })).toEqual(["P-A5 b may not take W"]);
+    // the sides: the non-topscorer's limit forces the colour; with two topscorers the preferences decide, and with equal
+    // claims the upper board's is granted; with neither, the two may not meet
+    const rec = (id: string): readonly Colour[] => ww.get(id) ?? [];
+    expect(ruleSides("a", "b", rec, true, (id) => id === "a")).toEqual({ home: "a", away: "b" });
+    expect(ruleSides("a", "b", rec, true, (id) => id === "b")).toEqual({ home: "b", away: "a" });
+    expect(ruleSides("a", "b", rec, true, () => true)).toEqual({ home: "b", away: "a" });
+    expect(ruleSides("a", "b", rec, true)).toBeUndefined();
+    // the round after a final round carries no maximum: the look-ahead judges it under the full limits (controller ruling)
+    expect("finalRoundMaxScore" in roundAfter(mixed, { pairings: [{ home: "a", away: "b" }] })).toBe(false);
+    // a maximum with no half to be over is refused by name, colours on or off
+    let refused = 0;
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => judgeRound({ field: at({ a: 3, b: 3 }), played: [], colours: ww, finalRoundMaxScore: bad })).toThrow(/finalRoundMaxScore/);
+      expect(() => judgeRound({ field: at({ a: 3, b: 3 }), played: [], finalRoundMaxScore: bad })).toThrow(/finalRoundMaxScore/);
+      refused++;
+    }
+    expect(refused).toBe(4);
   });
 
   it("X-SW-1 oracle guards: a field outside 2 ≤ n ≤ 12, a duplicated or unkeyable entrant, a foreign pair key, an unknown bye or a colour history no legal event produces is refused by name (assumptions → guards)", () => {

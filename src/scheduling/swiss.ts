@@ -29,6 +29,10 @@
 // `nextRound: "unpairable"` (or "unknown" when the shared budget ran out first)
 // so the organiser can be told, never a refusal (rulebook-W3 §3.3, RB3-4).
 //
+// With `finalRoundMaxScore` (W3 X-SW-11; the app sets it on a stage's last round only) and chess colours on, a board with a
+// topscorer is exempt from the colour limits; two non-topscorers with the same absolute preference still never meet
+// (FIDE C.04.3 [C3]). The look-ahead's next-round check never applies it.
+//
 // When it fails, pairRound returns a named refusal (SWISS_NO_LEGAL_PAIRING with
 // its reason) that writes nothing, not even the bye — never an empty or partial
 // round reported as success (W3 X-SW-3; rulebook-W3 §3.3, P-A6; FIDE C.04.3 [C4]).
@@ -63,8 +67,18 @@ export interface SwissConstraints {
    *  round but the last of a stage that plays more rounds than the safe maximum ⌊n/2⌋; never on the last, which has no next
    *  round to protect (set there, it would move boards and warn for a round that never comes). The search then prefers,
    *  among the legal pairings of the bye it would choose anyway, one after which the next round can still be paired, and
-   *  reports its verdict as `nextRound`. */
+   *  reports its verdict as `nextRound`. It judges the next round under the full colour limits, the final round included:
+   *  who is a topscorer there (X-SW-11) depends on results not yet played, so before the final round it may move a board or
+   *  warn where the topscorer exception would have let that round pair (controller ruling, T4c). `finalRoundMaxScore`, if
+   *  also set, describes THIS round and never enters the next round's check. */
   lookAhead?: boolean;
+  /** The final round's topscorer exception (W3 X-SW-11; rulebook RB3-10; FIDE C.04.3 A.6, [C3]). The app sets it only when
+   *  pairing a stage's last round: the most an entrant could have scored before it, (rounds − 1) × the win, in the pairing
+   *  score's units. With chess colours on, an entrant with OVER half of it is a topscorer, and a board with a topscorer is
+   *  exempt from the colour limits: two non-topscorers with the same absolute preference still never meet, and on a board
+   *  of one of each the non-topscorer keeps its limit where an assignment allows it. Absent: no exception. Not finite, or
+   *  ≤ 0: CONFIG_INVALID. Outside chess there is no limit to lift, so it changes nothing. */
+  finalRoundMaxScore?: number;
 }
 
 /** Whether the round after this one can be paired legally (X-SW-10): `unknown` when the search budget ran out first. */
@@ -224,6 +238,14 @@ export function pairRound(
   if (Number.isNaN(budget) || budget < 0) {
     throw new EngineError("CONFIG_INVALID", `pairRound: the search budget must be a number ≥ 0, got ${budget}`, { budget });
   }
+  // A maximum that is not a positive number makes "over half of it" meaningless: NaN and +∞ exempt nobody, and ≤ 0 nearly
+  // everyone. Each is a caller defect, never a final round to pair.
+  const finalMax = constraints.finalRoundMaxScore;
+  if (finalMax !== undefined && !(Number.isFinite(finalMax) && finalMax > 0)) {
+    throw new EngineError("CONFIG_INVALID", `pairRound: finalRoundMaxScore must be a finite number > 0, got ${finalMax}`, {
+      finalRoundMaxScore: finalMax,
+    });
+  }
   // An entrant listed twice would be seated twice (or paired with itself): a caller defect, never a round to pair.
   const seen = new Set<EntrantId>();
   for (const s of standings) {
@@ -261,10 +283,15 @@ export function pairRound(
     bye === undefined ? ordered : ordered.filter((s) => s !== bye);
 
   const played = history.played;
+  // X-SW-11 (C.04.3 A.6): in the final round, an entrant with over half the most it could have scored is a topscorer, and
+  // its own colour limits do not bind. Read only where the colour limits are (chess).
+  const topscorer = (s: SwissStanding): boolean => finalMax !== undefined && s.score > finalMax / 2;
   // The reason probe (below) re-runs the search with the colour limits lifted, to tell "colour" from "rematch".
   let liftColourLimits = false;
   const colourLegal = (a: SwissStanding, b: SwissStanding): boolean => {
     if (!chess || liftColourLimits) return true;
+    // [C3] keeps apart only two non-topscorers: a board with a topscorer is legal whatever the history (X-SW-11)
+    if (topscorer(a) || topscorer(b)) return true;
     const sa = stateOf(a.entrantId);
     const sb = stateOf(b.entrantId);
     return (canTake(sa, "W") && canTake(sb, "B")) || (canTake(sa, "B") && canTake(sb, "W"));
@@ -429,7 +456,7 @@ export function pairRound(
     for (const [x, y] of boards) {
       const [a, b] = positionOf(x) < positionOf(y) ? [x, y] : [y, x];
       if (a.score !== b.score) floated.push(a.entrantId); // a is the stronger side ⇒ it floated down
-      pairings.push(assignColours(a, b, chess, stateOf));
+      pairings.push(assignColours(a, b, chess, stateOf, topscorer));
     }
     return { pairings, floated };
   };
@@ -564,18 +591,22 @@ export function pairRound(
 // hard rules first, then colour preferences. Outside chess the same preferences
 // alternate home and away, softly (W3 X-SW-4; rulebook RB3-11, P-Q6): the side
 // that was home more often (or last) plays away, and there is no hard limit to
-// satisfy. Either way, neutral ⇒ the upper board is home (round-1 S1 = White).
+// satisfy. Either way, neutral ⇒ the upper board is home (round-1 S1 = White). In the final round a topscorer (`exempt`,
+// X-SW-11) has no limit of its own: on a board of one of each, an assignment that alone keeps the non-topscorer within its
+// limits is used; with two topscorers, or when both keep it, the preferences decide.
 function assignColours(
   a: SwissStanding,
   b: SwissStanding,
   chess: boolean,
   stateOf: (id: EntrantId) => ColourState,
+  exempt: (s: SwissStanding) => boolean,
 ): SwissPairing {
   const sa = stateOf(a.entrantId);
   const sb = stateOf(b.entrantId);
+  const may = (s: SwissStanding, state: ColourState, c: Colour): boolean => exempt(s) || canTake(state, c);
   // Outside chess both assignments are open: home/away is never a reason to refuse or to override a preference.
-  const aW = !chess || (canTake(sa, "W") && canTake(sb, "B"));
-  const aB = !chess || (canTake(sa, "B") && canTake(sb, "W"));
+  const aW = !chess || (may(a, sa, "W") && may(b, sb, "B"));
+  const aB = !chess || (may(a, sa, "B") && may(b, sb, "W"));
 
   let aColour: Colour;
   if (aW && !aB) aColour = "W";

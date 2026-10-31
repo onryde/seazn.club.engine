@@ -863,3 +863,116 @@ describe("X-SW-10 above the safe maximum, a round is paired so that the next rou
     expect(seen.search_limit + seen.unknown + seen.pairable).toBe(5_001);
   });
 });
+
+// ---------------------------------------------------------------------------
+// X-SW-11 — the topscorer colour exception in the final round (RB3-10; FIDE C.04.3 A.6, [C3])
+// ---------------------------------------------------------------------------
+
+describe("X-SW-11 in the final round a board with a topscorer is exempt from the colour limits; two non-topscorers still are not (RB3-10, C.04.3 [C3])", () => {
+  // Chess on throughout but where a case says otherwise. a and b each played White twice running, so both have an absolute
+  // preference for Black (C.04.3 A.6): under the colour limits they may not meet (never three of one colour running, P-A5).
+  // finalRoundMaxScore 4 is the most either could have scored before the final round; a topscorer has over half of it.
+  const ww = new Map([["a", ["W", "W"] as Colour[]], ["b", ["W", "W"] as Colour[]]]);
+  const at = (sa: number, sb: number): SwissStanding[] => [{ entrantId: "a", score: sa, rank: 1 }, { entrantId: "b", score: sb, rank: 2 }];
+
+  it("X-SW-11 empty case first: no finalRoundMaxScore → the colour limits bind as before (refused 'colour')", () => {
+    expect(pairRound(at(3, 3), { played: new Set(), colours: ww }, { chess: true })).toMatchObject({ ok: false, reason: "colour" });
+  });
+
+  it("X-SW-11 two topscorers (3 > ½·4) may meet in the final round despite the same absolute preference (C.04.3 [C3])", () => {
+    const r = pairRound(at(3, 3), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 4 });
+    expect(r).toMatchObject({ ok: true }); // differential: today refused
+    // their sides: neither has a limit left to keep, so the preferences decide. Both ask Black with the same colour
+    // difference (+2), so the higher-ranked a gets its preference (C.04.3 art. 5.2: the wider difference, then the rank)
+    expect(r.ok && r.pairings).toEqual([{ home: "b", away: "a" }]);
+  });
+
+  it("X-SW-11 two non-topscorers (1, 1) stay refused in the final round", () => {
+    expect(pairRound(at(1, 1), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 4 })).toMatchObject({ ok: false, reason: "colour" });
+  });
+
+  it("X-SW-11 exactly half is not a topscorer (A.6 'over 50%'): 2 and 2 of 4 are refused", () => {
+    expect(pairRound(at(2, 2), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 4 })).toMatchObject({ ok: false, reason: "colour" });
+    // and just over half is: 2 of 3.5 makes both topscorers, so they meet
+    expect(pairRound(at(2, 2), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 3.5 })).toMatchObject({ ok: true });
+  });
+
+  it("X-SW-11 a topscorer v a non-topscorer: the non-topscorer keeps its limit (b, score 1, gets Black; a takes a third White)", () => {
+    const r = pairRound(at(3, 1), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 4 });
+    expect(r.ok && r.pairings).toEqual([{ home: "a", away: "b" }]);
+    // the mirror, the topscorer on the lower board: a (score 1) keeps its limit and gets Black, b takes a third White
+    const mirror = pairRound(at(1, 3), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 4 });
+    expect(mirror.ok && mirror.pairings).toEqual([{ home: "b", away: "a" }]);
+  });
+
+  it("X-SW-11 non-chess is unaffected (no hard colour limit to relax); a second call is identical", () => {
+    let checked = 0;
+    for (const [sa, sb] of [[3, 3], [3, 1], [1, 1], [2, 2]] as const) {
+      const plain = pairRound(at(sa, sb), { played: new Set(), colours: ww });
+      const final = pairRound(at(sa, sb), { played: new Set(), colours: ww }, { finalRoundMaxScore: 4 });
+      expect({ sa, sb, final }).toEqual({ sa, sb, final: plain });
+      expect(pairRound(at(sa, sb), { played: new Set(), colours: ww }, { finalRoundMaxScore: 4 })).toEqual(final); // the second call
+      checked++;
+    }
+    expect(checked).toBe(4);
+    // outside chess both ask away with equal claims, so the upper board a plays away (X-SW-4): paired, never refused
+    expect(pairRound(at(3, 3), { played: new Set(), colours: ww }, { finalRoundMaxScore: 4 })).toMatchObject({ ok: true, pairings: [{ home: "b", away: "a" }] });
+    // chess on, a second call is identical too
+    const chess = pairRound(at(3, 3), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 4 });
+    expect(pairRound(at(3, 3), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 4 })).toEqual(chess);
+  });
+
+  it("X-SW-11 a non-finite or non-positive finalRoundMaxScore is CONFIG_INVALID", () => {
+    let checked = 0;
+    for (const chess of [true, false]) {
+      for (const finalRoundMaxScore of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1]) {
+        expect(() => pairRound(at(3, 3), { played: new Set(), colours: ww }, { chess, finalRoundMaxScore }))
+          .toThrowError(expect.objectContaining({ code: "CONFIG_INVALID" }));
+        checked++;
+      }
+    }
+    expect(checked).toBe(10);
+    // a positive maximum below one point is a maximum, not a defect
+    expect(pairRound(at(3, 3), { played: new Set(), colours: ww }, { chess: true, finalRoundMaxScore: 0.5 })).toMatchObject({ ok: true });
+  });
+
+  it("X-SW-11 X-SW-10 both flags in one call: the look-ahead judges the next round under the full colour limits, never under this round's topscorer exception, so it moves a board the exception would have kept (controller ruling)", () => {
+    // Six entrants, White first: R1 {p3-p1, p4-p0, p2-p5}, R2 {p0-p5, p1-p2, p4-p3}, R3 {p5-p1, p3-p0, p2-p4} (found by a search
+    // over legal events). Scores p0 3, p1 3, p2 0, p3 0, p4 2, p5 2, with finalRoundMaxScore 3: p0, p1, p4 and p5 have over
+    // half (1.5), so they are this round's topscorers. Round 4 can be seated two rematch-free ways.
+    const rounds: [string, string][][] = [
+      [["p3", "p1"], ["p4", "p0"], ["p2", "p5"]],
+      [["p0", "p5"], ["p1", "p2"], ["p4", "p3"]],
+      [["p5", "p1"], ["p3", "p0"], ["p2", "p4"]],
+    ];
+    const colours = new Map<string, Colour[]>(S6_IDS.map((id) => [id, []]));
+    for (const round of rounds) {
+      for (const [w, b] of round) {
+        (colours.get(w) as Colour[]).push("W");
+        (colours.get(b) as Colour[]).push("B");
+      }
+    }
+    const scores: Record<string, number> = { p0: 3, p1: 3, p2: 0, p3: 0, p4: 2, p5: 2 };
+    const field: SwissStanding[] = S6_IDS.map((id, i) => ({ entrantId: id, score: scores[id] as number, rank: i + 1 }));
+    const played = rounds.flat();
+    const round: OracleRound = { field: field.map((s) => ({ id: s.entrantId, score: s.score })), played, colours };
+    const history = { played: new Set(played.map(([x, y]) => pairKey(x, y))), colours };
+    const both = { chess: true, lookAhead: true, finalRoundMaxScore: 3 } as const;
+    expect(perfectMatchings(S6_IDS, new Set(played.map(([x, y]) => oraclePairKey(x, y)))).map(keysOf).sort())
+      .toEqual([keysOf([["p0", "p1"], ["p2", "p3"], ["p4", "p5"]]), keysOf([["p0", "p2"], ["p1", "p4"], ["p3", "p5"]])].sort());
+    // without the look-ahead: p0 v p1, p2 v p3, p4 v p5. After it, round 5 has only the other seating left, and under the
+    // full colour limits a pair of it may not meet; read with this round's topscorers exempt (the next round's are not known
+    // yet), it would pair
+    const plain = pairRound(field, history, { chess: true, finalRoundMaxScore: 3 });
+    expect(boardsOf(plain)).toEqual(keysOf([["p0", "p1"], ["p2", "p3"], ["p4", "p5"]]));
+    expect(nextPairs(round, plain)).toBe(false);
+    expect(judgeRound({ ...roundAfter(round, seated(plain)), finalRoundMaxScore: 3 }).exists).toBe(true); // differential
+    // with both flags the look-ahead takes the full limits' answer: it moves to the other seating, after which round 5 pairs
+    const r = pairRound(field, history, both);
+    expect(r.ok && r.nextRound).toBe("pairable");
+    expect(boardsOf(r)).toEqual(keysOf([["p0", "p2"], ["p1", "p4"], ["p3", "p5"]]));
+    expect(seatedRoundViolations({ ...round, finalRoundMaxScore: 3 }, seated(r))).toEqual([]); // a legal final round
+    expect(nextPairs(round, r)).toBe(true);
+    expect(pairRound(field, history, both)).toEqual(r); // the second call
+  });
+});

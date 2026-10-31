@@ -8,6 +8,7 @@
 //   - the round after a seated one, and every way to seat a remainder, for the one-round look-ahead (X-SW-10; §3.3 prevention).
 //   - the sides of one board: home and away by the record outside chess (X-SW-4), and with chess colours on, a colour P-A5
 //     forces first.
+//   - in a final round (X-SW-11; C.04.3 A.6, [C3]), all of the above with every topscorer free of its own colour limits.
 //
 // It is written from the rulebook and FIDE C.04.1 r.2–7 / C.04.3 [C1]–[C3] alone, and it imports nothing — above all not the
 // pairing engine (review M5): an oracle that reuses the code it checks agrees with that code's bugs. Its matching is a plain
@@ -141,6 +142,20 @@ export interface OracleRound {
   byeIneligible?: ReadonlySet<string>;
   /** Chess colours on: each entrant's colours over its PLAYED games (P-A5); an entrant with none may be left out. Absent = off. */
   colours?: ReadonlyMap<string, readonly OracleColour[]>;
+  /** The final round (X-SW-11; C.04.3 A.6, [C3]), read only with colours on: the most an entrant could have scored before it.
+   *  An entrant with OVER half of it is a topscorer and has no colour limit of its own this round, so a pair with a topscorer
+   *  may meet whatever the colours; two non-topscorers keep P-A5. Absent = not the final round. */
+  finalRoundMaxScore?: number;
+}
+
+/** The topscorers of a final round (X-SW-11; C.04.3 A.6: over 50% of the maximum score when pairing the final round), from
+ *  the round's own field and maximum. Empty when the round is not a final one. A maximum that is not a positive number has no
+ *  half to be over: refused by name. */
+export function topscorers(round: OracleRound): Set<string> {
+  const max = round.finalRoundMaxScore;
+  if (max === undefined) return new Set();
+  if (!Number.isFinite(max) || max <= 0) throw new Error(`swiss-oracle: finalRoundMaxScore ${max} is not a positive number`);
+  return new Set(round.field.filter((e) => e.score * 2 > max).map((e) => e.id));
 }
 
 export type OracleReason = "no_bye_candidate" | "rematch" | "colour";
@@ -177,14 +192,17 @@ export function judgeRound(round: OracleRound): OracleVerdict {
       }
     }
   }
-  // The pairs the round may not seat: a rematch (P-A1), and with colours on, a pair no assignment suits (P-A5).
+  // The pairs the round may not seat: a rematch (P-A1), and with colours on, a pair no assignment suits (P-A5). In the final
+  // round a pair with a topscorer is never barred by colour: [C3] keeps apart only two non-topscorers (X-SW-11).
   const met = new Set(round.played.map(([a, b]) => oraclePairKey(a, b)));
   const barred = new Set(met);
+  const top = topscorers(round); // read with colours on only, but a maximum that is no maximum is refused either way
   if (chess) {
     for (let i = 0; i < ids.length; i++) {
       for (let j = i + 1; j < ids.length; j++) {
         const a = ids[i] as string;
         const b = ids[j] as string;
+        if (top.has(a) || top.has(b)) continue;
         if (!colourCompatible(colourOf(round, a), colourOf(round, b))) barred.add(oraclePairKey(a, b));
       }
     }
@@ -211,7 +229,7 @@ export function judgeRound(round: OracleRound): OracleVerdict {
 
 /** What a seated round breaks, rule by rule (rulebook §2.3 items 1–2): every field entrant seated exactly once (P-A3), a bye
  *  exactly when the field is odd (P-A3), no rematch (P-A1), no ineligible bye (P-A4), and with colours on, each board's White
- *  and Black within their limits as seated (P-A5). Empty means legal. */
+ *  and Black within their limits as seated (P-A5), a final round's topscorers excepted (X-SW-11). Empty means legal. */
 export function seatedRoundViolations(
   round: OracleRound,
   seated: { pairings: readonly { home: string; away: string }[]; bye?: string },
@@ -234,9 +252,10 @@ export function seatedRoundViolations(
   for (const p of seated.pairings) if (met.has(oraclePairKey(p.home, p.away))) out.push(`P-A1 ${p.home} v ${p.away} have met`);
   if (seated.bye !== undefined && round.byeIneligible?.has(seated.bye) === true) out.push(`P-A4 ${seated.bye} may not take the bye`);
   if (round.colours !== undefined) {
+    const top = topscorers(round);
     for (const p of seated.pairings) {
-      if (!mayTake(colourOf(round, p.home), "W")) out.push(`P-A5 ${p.home} may not take W`);
-      if (!mayTake(colourOf(round, p.away), "B")) out.push(`P-A5 ${p.away} may not take B`);
+      if (!top.has(p.home) && !mayTake(colourOf(round, p.home), "W")) out.push(`P-A5 ${p.home} may not take W`);
+      if (!top.has(p.away) && !mayTake(colourOf(round, p.away), "B")) out.push(`P-A5 ${p.away} may not take B`);
     }
   }
   return out;
@@ -244,7 +263,9 @@ export function seatedRoundViolations(
 
 /** The round after a seated one (X-SW-10's "next round"; rulebook §3.3 prevention): the same field, the seated boards added to
  *  the pairs that have met (P-A1), the bye added to the bye-ineligible (P-A4), and with colours on, each board's White (home) and
- *  Black (away) appended to its two sides' sequences (P-A5). Scores are carried as they are: existence does not read them. */
+ *  Black (away) appended to its two sides' sequences (P-A5). Scores are carried as they are: existence does not read them. It is
+ *  never a final round (no `finalRoundMaxScore`): the look-ahead judges the next round under the full colour limits, since
+ *  its topscorers depend on results not yet played (X-SW-11; controller ruling, T4c). */
 export function roundAfter(
   round: OracleRound,
   seated: { pairings: readonly { home: string; away: string }[]; bye?: string },
@@ -310,16 +331,20 @@ export function rulebookSides(
 }
 
 /** The rule's sides with chess colours on (`chess`): a colour only one assignment allows is forced (P-A5), else rulebookSides
- *  decides. Undefined when neither assignment suits both: the two may not meet (C.04.3 [C3]). Outside chess, rulebookSides. */
+ *  decides. Undefined when neither assignment suits both: the two may not meet (C.04.3 [C3]). Outside chess, rulebookSides.
+ *  `topscorer` (X-SW-11, a final round's topscorers) names the sides with no limit of their own: on a board of one of each the
+ *  non-topscorer's limits alone force a colour; with two, the preferences decide. */
 export function ruleSides(
   upper: string,
   lower: string,
   recordOf: (id: string) => readonly OracleColour[],
   chess: boolean,
+  topscorer: (id: string) => boolean = () => false,
 ): { home: string; away: string } | undefined {
   if (chess) {
-    const upperWhite = mayTake(recordOf(upper), "W") && mayTake(recordOf(lower), "B");
-    const upperBlack = mayTake(recordOf(upper), "B") && mayTake(recordOf(lower), "W");
+    const allowed = (id: string, c: OracleColour): boolean => topscorer(id) || mayTake(recordOf(id), c);
+    const upperWhite = allowed(upper, "W") && allowed(lower, "B");
+    const upperBlack = allowed(upper, "B") && allowed(lower, "W");
     if (!upperWhite && !upperBlack) return undefined;
     if (upperWhite !== upperBlack) return upperWhite ? { home: upper, away: lower } : { home: lower, away: upper };
   }
