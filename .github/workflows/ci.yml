@@ -326,11 +326,13 @@ jobs:
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
     steps:
+      # Full history: the app's tools/matrix rebase-map test proves the ancestry of the SHAs it maps, and refuses a shallow clone.
       - uses: actions/checkout@v5
         with:
           repository: onryde/seazn.club
           ref: main
           path: app
+          fetch-depth: 0
           persist-credentials: false
       # registry-url + scope write an .npmrc (NPM_CONFIG_USERCONFIG) sending @onryde/* to GitHub Packages with NODE_AUTH_TOKEN.
       - uses: actions/setup-node@v5
@@ -383,16 +385,43 @@ jobs:
         run: |
           set -euo pipefail
           cd app
-          for f in $(git grep -l 'npm:@onryde/seazn-engine@' -- '*package.json'); do
-            sed -i -E "s#\"npm:@onryde/seazn-engine@[^\"]*\"#\"npm:@onryde/seazn-engine@$V\"#g" "$f"
-            echo "$f: $(grep -c "npm:@onryde/seazn-engine@$V\"" "$f") consumer line(s) on the snapshot"
-          done
+          # The manifests keep their own range (`npm:@onryde/seazn-engine@^1.0.0`): the app's tests pin it (workspace-wiring, toolchain,
+          # engine-package-identity, registry-install). A pnpm override moves every consumer instead. pnpm matches an override on the
+          # dependency's KEY and every consumer aliases the engine as `@seazn/engine`, so the override is keyed on the alias: one keyed
+          # `@onryde/seazn-engine` matches no consumer and leaves them all on the range.
+          consumers="$(git grep -l 'npm:@onryde/seazn-engine@' -- '*package.json')"
+          entry="  \"@seazn/engine\": \"npm:@onryde/seazn-engine@$V\""
+          # into the workspace's own `overrides:` map (a second `overrides:` key is a YAML error), or a new map when it has none
+          if grep -qx 'overrides:' pnpm-workspace.yaml; then
+            awk -v e="$entry" '{ print } $0 == "overrides:" { print e }' pnpm-workspace.yaml > "$RUNNER_TEMP/pnpm-workspace.yaml"
+            mv "$RUNNER_TEMP/pnpm-workspace.yaml" pnpm-workspace.yaml
+          else
+            printf '\noverrides:\n%s\n' "$entry" >> pnpm-workspace.yaml
+          fi
+          echo "pnpm-workspace.yaml overrides:$entry"
           pnpm install --no-frozen-lockfile
+          if ! git diff --quiet -- '*package.json'; then
+            git diff --stat -- '*package.json'
+            echo "::error::the install changed a manifest: the snapshot goes through the override, and every manifest keeps its own range"
+            exit 1
+          fi
           # a glob, not `ls | grep -q`: grep -q stops at the first match and, under pipefail, the SIGPIPE-d ls reads as a failure
           if ! compgen -G "node_modules/.pnpm/@onryde+seazn-engine@${V}*" > /dev/null; then
             echo "::error::the install did not resolve @onryde/seazn-engine@$V"
             exit 1
           fi
+          # and every consumer links it: an override that missed one leaves it on the range, beside a resolved snapshot
+          n=0
+          for f in $consumers; do
+            d="$(dirname "$f")"
+            to="$(readlink -f "$d/node_modules/@seazn/engine" || true)"
+            case "$to" in
+              */node_modules/.pnpm/@onryde+seazn-engine@"$V"[_/]*) n=$((n + 1)); echo "$d: @seazn/engine -> @onryde/seazn-engine@$V" ;;
+              *) echo "::error::$d: @seazn/engine resolves to '${to}', not the snapshot @onryde/seazn-engine@$V"; exit 1 ;;
+            esac
+          done
+          if [ "$n" -eq 0 ]; then echo "::error::no consumer of @onryde/seazn-engine was checked"; exit 1; fi
+          echo "$n consumer(s) on the snapshot, every manifest unchanged"
       # One judge for both test steps: red on zero tests, on any failed suite (a file that fails to COLLECT counts only there), on passed
       # != total (a skip or todo included), on a file outside the step's directory, and on fewer files than the step named.
       - name: Write the vitest report judge
