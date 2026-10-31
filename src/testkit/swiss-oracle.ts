@@ -6,6 +6,8 @@
 //   - whether a seated round keeps P-A1, P-A3, P-A4 and, with chess colours on, P-A5;
 //   - whether a bye is minimal: no eligible entrant with a strictly lower score leaves a pairable remainder (§2.3 item 4);
 //   - the round after a seated one, and every way to seat a remainder, for the one-round look-ahead (X-SW-10; §3.3 prevention).
+//   - the sides of one board: home and away by the record outside chess (X-SW-4), and with chess colours on, a colour P-A5
+//     forces first.
 //
 // It is written from the rulebook and FIDE C.04.1 r.2–7 / C.04.3 [C1]–[C3] alone, and it imports nothing — above all not the
 // pairing engine (review M5): an oracle that reuses the code it checks agrees with that code's bugs. Its matching is a plain
@@ -266,4 +268,61 @@ export function lowerScoredPairableByes(round: OracleRound, verdict: OracleVerdi
   const own = score.get(bye);
   if (own === undefined) throw new Error(`swiss-oracle: the bye "${bye}" is not in the field`);
   return verdict.pairableByes.filter((id) => (score.get(id) as number) < own);
+}
+
+// ---------------------------------------------------------------------------
+// The sides of one board (X-SW-4: rulebook RB3-11, P-Q6; with chess colours on, P-A5 first)
+// ---------------------------------------------------------------------------
+
+// The rule, read from the rulebook and never from the engine: an entrant's home/away record (home = "W", as the app stores
+// it for every sport) asks for a side. More homes than aways asks away and more aways asks home; a level record asks the
+// side it did not have last; no record asks nothing. On a board both asks are granted when they differ; the same ask goes
+// to the larger imbalance, then to the upper board; a lone ask is granted; with none, the upper board is home (an
+// approximation of FIDE C.04.3 art. 5.2's colour allocation order, applied as a soft preference: nothing here is ever a
+// reason to refuse a pairing). `upper` is the board's upper side: above the other in the pairing order (score, then rank).
+export type OracleSide = "home" | "away";
+export type OracleSidesWhy = "neutral" | "both" | "imbalance" | "upperBoard" | "upperOnly" | "lowerOnly";
+const asks = (record: readonly OracleColour[]): { side: OracleSide | null; imbalance: number } => {
+  const homes = record.filter((c) => c === "W").length;
+  const lean = homes - (record.length - homes);
+  if (lean !== 0) return { side: lean > 0 ? "away" : "home", imbalance: Math.abs(lean) };
+  const last = record.at(-1);
+  return { side: last === undefined ? null : last === "W" ? "away" : "home", imbalance: 0 };
+};
+export function rulebookSides(
+  upper: string,
+  lower: string,
+  recordOf: (id: string) => readonly OracleColour[],
+): { home: string; away: string; why: OracleSidesWhy } {
+  const u = asks(recordOf(upper));
+  const l = asks(recordOf(lower));
+  const seat = (upperSide: OracleSide, why: OracleSidesWhy) =>
+    upperSide === "home" ? { home: upper, away: lower, why } : { home: lower, away: upper, why };
+  const flip = (side: OracleSide): OracleSide => (side === "home" ? "away" : "home");
+  if (u.side !== null && l.side !== null) {
+    if (u.side !== l.side) return seat(u.side, "both");
+    if (u.imbalance !== l.imbalance) return seat(u.imbalance > l.imbalance ? u.side : flip(u.side), "imbalance");
+    return seat(u.side, "upperBoard");
+  }
+  if (u.side !== null) return seat(u.side, "upperOnly");
+  if (l.side !== null) return seat(flip(l.side), "lowerOnly");
+  return seat("home", "neutral");
+}
+
+/** The rule's sides with chess colours on (`chess`): a colour only one assignment allows is forced (P-A5), else rulebookSides
+ *  decides. Undefined when neither assignment suits both: the two may not meet (C.04.3 [C3]). Outside chess, rulebookSides. */
+export function ruleSides(
+  upper: string,
+  lower: string,
+  recordOf: (id: string) => readonly OracleColour[],
+  chess: boolean,
+): { home: string; away: string } | undefined {
+  if (chess) {
+    const upperWhite = mayTake(recordOf(upper), "W") && mayTake(recordOf(lower), "B");
+    const upperBlack = mayTake(recordOf(upper), "B") && mayTake(recordOf(lower), "W");
+    if (!upperWhite && !upperBlack) return undefined;
+    if (upperWhite !== upperBlack) return upperWhite ? { home: upper, away: lower } : { home: lower, away: upper };
+  }
+  const { home, away } = rulebookSides(upper, lower, recordOf);
+  return { home, away };
 }

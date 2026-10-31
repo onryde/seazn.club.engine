@@ -25,6 +25,7 @@ import {
   perfectMatchingExists,
   perfectMatchings,
   roundAfter,
+  ruleSides,
   seatedRoundViolations,
   type OracleRound,
 } from "../testkit/swiss-oracle.ts";
@@ -61,13 +62,19 @@ interface SimEvent {
   played: Set<string>;
   byes: Set<string>;
 }
-// `lookAhead` sets the stage's one-round look-ahead (X-SW-10) on every round; `onRound` sees each round as it is paired,
-// with the standings and the history it was paired from, before the round's results move them.
+// `lookAhead` sets the stage's one-round look-ahead (X-SW-10): `true` on every round, the last included (to read the last
+// round's own verdict); "app" as the app sets it, by appLookAhead. `onRound` sees each round as it is paired, with the
+// standings and the history it was paired from, before the round's results move them.
 interface PairedRoundSeen {
   standings: SwissStanding[];
   history: SwissHistory;
   constraints: SwissConstraints;
   result: SwissPairResult;
+}
+// The app's rule (X-SW-10; P13): the one-round look-ahead is on for every round but the last of a stage that plays more
+// rounds than the safe maximum ⌊n/2⌋. The last round has no next round to protect.
+function appLookAhead(n: number, rounds: number, round: number): boolean {
+  return rounds > Math.floor(n / 2) && round < rounds;
 }
 function simulate(
   n: number,
@@ -76,7 +83,7 @@ function simulate(
     chess?: boolean;
     seed?: number;
     pairing?: SwissConstraints["pairing"];
-    lookAhead?: boolean;
+    lookAhead?: boolean | "app";
     onRound?: (seen: PairedRoundSeen) => void;
   } = {},
 ): SimEvent {
@@ -103,7 +110,7 @@ function simulate(
     const history: SwissHistory = { played, colours, byes };
     const constraints: SwissConstraints = { chess: opts.chess === true, byeScore: 1 };
     if (opts.pairing !== undefined) constraints.pairing = opts.pairing;
-    if (opts.lookAhead === true) constraints.lookAhead = true;
+    if (opts.lookAhead === true || (opts.lookAhead === "app" && appLookAhead(n, rounds, r + 1))) constraints.lookAhead = true;
     const round = pairRound(standings, history, constraints);
     opts.onRound?.({ standings, history, constraints, result: round });
     if (!round.ok) return { rounds: out, refusals: [round], colours, played, byes };
@@ -278,15 +285,18 @@ function checkEvent(sim: SimEvent, n: number, asked: number, chess: boolean, t: 
 // typical cost at its 99th-percentile case, plus room for the one slowest case it may draw, under load.
 // CASE_MS: the cost of ONE case of each property, timed inside this harness with its assertions: a probe copy of this file
 // that timed every fc.property case at 10× RUNS, run six times on the T4b tree (2026-10-31, load average 4–8; task-4b-report.md).
-// p99 is over all six runs' cases; max is the slowest single case seen in any of them. The chess max is T1's big-field search
-// (n 37–64, the look-ahead off there), not the look-ahead: the look-ahead's own calls in that property cost ≤ 2.7 ms.
+// p99 is over all six runs' cases; max is the slowest single case seen in any of them. Fix round 1 changed the invariant,
+// rank_adjacent, chess and look-ahead properties (the look-ahead now off on an event's last round; two more oracle checks)
+// and re-measured those four the same way, six more runs: each constant is the larger of the two measurements. The chess
+// max is T1's big-field search (n 37–64, the look-ahead off there), not the look-ahead: the look-ahead's own calls in that
+// property cost ≤ 2.7 ms.
 // LOAD_SLACK: the review run at load average 114 took 9–14× the unloaded time; runs × p99 already sits well above each
 // property's mean-cost total, so × 5 covers it.
 const FLOOR_MS = 5_000; // vitest's default: no property gets less than any other test
 const LOAD_SLACK = 5;
 const CASE_MS = {
-  invariant: { p99: 4.76, max: 11.6 },
-  rankAdjacent: { p99: 2.85, max: 12.5 },
+  invariant: { p99: 4.76, max: 35.0 },
+  rankAdjacent: { p99: 2.85, max: 25.4 },
   chess: { p99: 12.98, max: 2338.3 },
   lookAhead: { p99: 15.8, max: 96.6 },
   determinism: { p99: 2.89, max: 36.7 },
@@ -298,30 +308,29 @@ const budgetMs = (runs: number, cost: { p99: number; max: number }): number =>
   Math.max(FLOOR_MS, Math.ceil((runs * cost.p99 + cost.max) * LOAD_SLACK));
 const RUNS = { invariant: 200, rankAdjacent: 200, chess: 100, lookAhead: 100, freshRounds: 100, historyRounds: 200, existence: 1000, byeMinimality: 500 } as const;
 
-// The app sets the one-round look-ahead (X-SW-10) on a stage that plays more rounds than the safe maximum ⌊n/2⌋; the
-// simulated events below do the same, so every property runs the pairer as production does.
-const appLookAhead = (n: number, rounds: number): boolean => rounds > Math.floor(n / 2);
+// The properties below pair as the app does (appLookAhead, above simulate): with the look-ahead on for every round but the
+// last of an event that plays more rounds than ⌊n/2⌋. Each counts the rounds it paired that way.
+const countLookAhead = (count: { rounds: number }) => ({ constraints }: PairedRoundSeen): void => {
+  if (constraints.lookAhead === true) count.rounds++;
+};
 
 describe("X-SW-1 every paired round seats each active entrant exactly once, with no rematch and no second bye (spec 05 §6; rulebook §2.1)", () => {
   it("X-SW-1 every paired round seats each active entrant exactly once: ⌊n/2⌋ boards, one bye iff n odd, no rematch, no second bye (n 2–64, counted)", () => {
     const runs = RUNS.invariant;
     const t = newTally();
-    let lookAheadEvents = 0;
+    const lookAheadRounds = { rounds: 0 };
     fc.assert(
       fc.property(
         // half the events at n ≤ 12, where the rounds asked for pass the safe maximum and the oracle proves the refusal
         fc.oneof(fc.integer({ min: 2, max: ORACLE_MAX_FIELD }), fc.integer({ min: 2, max: 64 })),
         fc.integer({ min: 1, max: 6 }),
         fc.integer(),
-        (n, r, seed) => {
-          if (appLookAhead(n, r)) lookAheadEvents++;
-          checkEvent(simulate(n, r, { seed, lookAhead: appLookAhead(n, r) }), n, r, false, t);
-        },
+        (n, r, seed) => checkEvent(simulate(n, r, { seed, lookAhead: "app", onRound: countLookAhead(lookAheadRounds) }), n, r, false, t),
       ),
       { numRuns: runs },
     );
     expect(t.events).toBe(runs); // anti-vacuity: every event ran, every round counted, and both endings were reached
-    expect(lookAheadEvents).toBeGreaterThan(0); // some events past the safe maximum, paired with the look-ahead on
+    expect(lookAheadRounds.rounds).toBeGreaterThan(0); // some rounds past the safe maximum, paired with the look-ahead on
     expect(t.rounds).toBeGreaterThan(0);
     expect(t.boards).toBeGreaterThan(0);
     expect(t.byes).toBeGreaterThan(0);
@@ -334,12 +343,12 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
     const runs = RUNS.rankAdjacent;
     const t = newTally();
     let differsFromFold = 0; // the shape reached the engine: the same seed paired by fold gives other boards
+    const lookAheadRounds = { rounds: 0 };
     fc.assert(
       fc.property(fc.integer({ min: 2, max: 20 }), fc.integer({ min: 1, max: 6 }), fc.integer(), (n, r, seed) => {
-        const lookAhead = appLookAhead(n, r);
-        const adjacent = simulate(n, r, { seed, pairing: "rank_adjacent", lookAhead });
+        const adjacent = simulate(n, r, { seed, pairing: "rank_adjacent", lookAhead: "app", onRound: countLookAhead(lookAheadRounds) });
         checkEvent(adjacent, n, r, false, t);
-        if (JSON.stringify(adjacent.rounds) !== JSON.stringify(simulate(n, r, { seed, lookAhead }).rounds)) differsFromFold++;
+        if (JSON.stringify(adjacent.rounds) !== JSON.stringify(simulate(n, r, { seed, lookAhead: "app" }).rounds)) differsFromFold++;
       }),
       { numRuns: runs },
     );
@@ -350,18 +359,18 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
     expect(t.refused).toBeGreaterThan(0);
     expect(t.refusalsProved).toBeGreaterThan(0);
     expect(differsFromFold).toBeGreaterThan(0);
+    expect(lookAheadRounds.rounds).toBeGreaterThan(0); // some rounds paired with the look-ahead on, as the app would
   }, budgetMs(RUNS.rankAdjacent, CASE_MS.rankAdjacent));
 
   it("X-SW-1 chess on: every paired round seats each entrant once, and the colour bounds hold: |W−B| ≤ 2, never three in a row; refusals counted, the colour refusal at the safe maximum witnessed (n 2–64, counted)", () => {
     const runs = RUNS.chess;
     const t = newTally();
     let sequences = 0;
-    let lookAheadEvents = 0;
+    const lookAheadRounds = { rounds: 0 };
     fc.assert(
       // half the events at n ≤ 12, where refusals come (past the safe maximum) and the oracle proves them
       fc.property(fc.oneof(fc.integer({ min: 2, max: ORACLE_MAX_FIELD }), fc.integer({ min: 2, max: 64 })), fc.integer({ min: 1, max: 7 }), fc.integer(), (n, rounds, seed) => {
-        if (appLookAhead(n, rounds)) lookAheadEvents++;
-        const sim = simulate(n, rounds, { chess: true, seed, lookAhead: appLookAhead(n, rounds) });
+        const sim = simulate(n, rounds, { chess: true, seed, lookAhead: "app", onRound: countLookAhead(lookAheadRounds) });
         checkEvent(sim, n, rounds, true, t);
         for (const [, seq] of sim.colours) {
           sequences++;
@@ -378,7 +387,7 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
     expect(t.events).toBe(runs);
     expect(t.rounds).toBeGreaterThan(0);
     expect(sequences).toBeGreaterThan(0); // anti-vacuity: colour sequences were read
-    expect(lookAheadEvents).toBeGreaterThan(0); // and some events ran past the safe maximum with the look-ahead on
+    expect(lookAheadRounds.rounds).toBeGreaterThan(0); // and some rounds past the safe maximum ran with the look-ahead on
     expect(t.refused).toBeGreaterThan(0); // the refusal half of checkEvent ran for chess…
     expect(t.refusalsProved).toBeGreaterThan(0); // …and the oracle proved some
     // The chess half of the Dirac clause, witnessed. The simulation's own events reached no refusal at or before ⌊n/2⌋ in
@@ -399,10 +408,11 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
     expect(t.withinSafeMax).toBe(before + 1);
   }, budgetMs(RUNS.chess, CASE_MS.chess));
 
-  it("X-SW-1 X-SW-10 with lookAhead on every round keeps the invariant, and each round's nextRound is the next round's own outcome: 'pairable' is followed by a paired round, 'unpairable' by a refusal, as the oracle judges (n 6–12, 5 rounds up to past the hard maximum, chess on and off, counted)", () => {
+  it("X-SW-1 X-SW-10 with lookAhead on every round keeps the invariant, and each round's nextRound is the next round's own outcome: 'pairable' is followed by a paired round, 'unpairable' by a refusal, as the oracle judges; boards move only when the plain seating dead-ends the next round (n 6–12, 5 rounds up to past the hard maximum, chess on and off, counted)", () => {
     const runs = RUNS.lookAhead;
     const t = newTally();
-    const v = { verdicts: 0, pairable: 0, unpairable: 0, followedPaired: 0, followedRefused: 0, lastRound: 0, oracleAgreed: 0, noCompletionKeeps: 0, chessUnpairable: 0, moved: 0, chessMoved: 0 };
+    const v = { verdicts: 0, pairable: 0, unpairable: 0, followedPaired: 0, followedRefused: 0, lastRound: 0, oracleAgreed: 0,
+      noCompletionKeeps: 0, chessNoCompletionKeeps: 0, seatingsJudged: 0, keptFirst: 0, firstDeadEnds: 0, moved: 0, chessMoved: 0 };
     fc.assert(
       // 5 rounds at least; up to n + 1, past every field's hard maximum (rulebook §3.1), so the rounds where the next one
       // cannot pair, and the refusal that follows, are reached as well
@@ -434,18 +444,37 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
             const plain = pairRound(standings, history, { ...constraints, lookAhead: false });
             expect({ ok: plain.ok, bye: plain.ok ? plain.bye : undefined }).toEqual({ ok: true, bye: result.bye });
             if (plain.ok && JSON.stringify(plain.pairings) !== JSON.stringify(result.pairings)) v[chess ? "chessMoved" : "moved"]++;
+            // boards move only when they must: when the plain seating already leaves a legal next round (the oracle's
+            // reading), the look-ahead keeps it, boards and sides
+            if (plain.ok && judgeRound(roundAfter(round, plain)).exists) {
+              expect({ seed, n, chess, result }).toEqual({ seed, n, chess, result: { ...plain, nextRound: "pairable" } });
+              v.keptFirst++;
+            } else {
+              v.firstDeadEnds++;
+            }
             if (result.nextRound !== "unpairable") return;
-            if (chess) {
-              v.chessUnpairable++; // the colours of another seating are the engine's choice, so only the seated one is judged
-              return;
-            }
-            // "unpairable" means no seating of this bye's remainder keeps the next round pairable: every one, judged
+            // "unpairable" means no seating of this bye's remainder keeps the next round pairable: every one, judged. A
+            // seating's sides are the rule's (the oracle's ruleSides: with chess, a colour P-A5 forces, else the record's
+            // preferences), each board turned upper side first; with chess a pair that may not meet is no seating (P-A5)
+            const of = new Map(standings.map((s) => [s.entrantId, s]));
+            const above = (x: string, y: string): boolean => {
+              const [a, b] = [of.get(x) as SwissStanding, of.get(y) as SwissStanding];
+              return a.score !== b.score ? a.score > b.score : a.rank < b.rank;
+            };
+            const recordOf = (id: string): readonly Colour[] => history.colours?.get(id) ?? [];
             const rest = round.field.map((e) => e.id).filter((id) => id !== result.bye);
+            let seatings = 0;
             for (const boards of perfectMatchings(rest, new Set(round.played.map(([a, b]) => oraclePairKey(a, b))))) {
-              const seatedHere = { pairings: boards.map(([home, away]) => ({ home, away })), ...(result.bye === undefined ? {} : { bye: result.bye }) };
-              expect(judgeRound(roundAfter(round, seatedHere)).exists).toBe(false);
+              const sides = boards.map(([x, y]) => (above(x, y) ? ruleSides(x, y, recordOf, chess) : ruleSides(y, x, recordOf, chess)));
+              const pairings = sides.filter((p) => p !== undefined);
+              if (pairings.length < sides.length) continue;
+              const seatedHere = { pairings, ...(result.bye === undefined ? {} : { bye: result.bye }) };
+              expect({ seed, n, chess, boards, next: judgeRound(roundAfter(round, seatedHere)).exists }).toEqual({ seed, n, chess, boards, next: false });
+              seatings++;
             }
-            v.noCompletionKeeps++;
+            expect(seatings).toBeGreaterThan(0); // the seated round is one of them
+            v.seatingsJudged += seatings;
+            v[chess ? "chessNoCompletionKeeps" : "noCompletionKeeps"]++;
           },
         });
         checkEvent(sim, n, asked, chess, t);

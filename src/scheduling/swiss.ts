@@ -19,8 +19,9 @@
 // order is fixed (fold distance, then global rank order), so the same inputs
 // always yield the same pairing.
 //
-// With `lookAhead` (W3 X-SW-10; the app sets it when a stage plays more rounds
-// than the safe maximum ⌊n/2⌋), each complete pairing the search reaches, in the
+// With `lookAhead` (W3 X-SW-10; the app sets it on every round but the last of
+// a stage that plays more rounds than the safe maximum ⌊n/2⌋: the last has no
+// next round to protect), each complete pairing the search reaches, in the
 // same order, is kept only if the next round could still be paired; the search
 // goes on past one that dead-ends, but only among the completions of the bye
 // candidate it already chose (bye minimality outranks it). When none keeps the
@@ -58,9 +59,11 @@ export interface SwissConstraints {
   /** Hammes preset (Jul3/08 §7, 20 Jan): pair ADJACENT ranks (1v2, 3v4, …)
    *  instead of folding top-vs-bottom; the no-rematch backtracking is shared. */
   pairing?: "fold" | "rank_adjacent";
-  /** One-round look-ahead (W3 X-SW-10; rulebook-W3 §3.3 prevention, RB3-4; not a FIDE criterion). The app sets it on a stage
-   *  that plays more rounds than the safe maximum ⌊n/2⌋. The search then prefers, among the legal pairings of the bye it
-   *  would choose anyway, one after which the next round can still be paired, and reports its verdict as `nextRound`. */
+  /** One-round look-ahead (W3 X-SW-10; rulebook-W3 §3.3 prevention, RB3-4; not a FIDE criterion). The app sets it on every
+   *  round but the last of a stage that plays more rounds than the safe maximum ⌊n/2⌋; never on the last, which has no next
+   *  round to protect (set there, it would move boards and warn for a round that never comes). The search then prefers,
+   *  among the legal pairings of the bye it would choose anyway, one after which the next round can still be paired, and
+   *  reports its verdict as `nextRound`. */
   lookAhead?: boolean;
 }
 
@@ -412,12 +415,19 @@ export function pairRound(
   // place in the pairing order) before either is read. The search does not promise that order: carried floaters arrive
   // bottom first, and the look-ahead reaches pairings in which two of them meet. Read as reached, such a board would name
   // the lower side as the one that floated, and give the upper board's colour claim to the lower one.
-  const position = new Map(ordered.map((s, i) => [s, i]));
+  // Keyed by id: every seated entrant comes from `ordered` (the candidate lists below are all taken from it, and a duplicated
+  // id is refused above), so a missing one is a defect in this file, refused loudly rather than read as "upside down".
+  const position = new Map(ordered.map((s, i) => [s.entrantId, i]));
+  const positionOf = (s: SwissStanding): number => {
+    const at = position.get(s.entrantId);
+    if (at === undefined) throw new Error(`pairRound: "${s.entrantId}" was seated but is not in the pairing order`);
+    return at;
+  };
   const seat = (boards: Boards): { pairings: SwissPairing[]; floated: EntrantId[] } => {
     const pairings: SwissPairing[] = [];
     const floated: EntrantId[] = [];
     for (const [x, y] of boards) {
-      const [a, b] = (position.get(x) as number) < (position.get(y) as number) ? [x, y] : [y, x];
+      const [a, b] = positionOf(x) < positionOf(y) ? [x, y] : [y, x];
       if (a.score !== b.score) floated.push(a.entrantId); // a is the stronger side ⇒ it floated down
       pairings.push(assignColours(a, b, chess, stateOf));
     }
@@ -448,7 +458,7 @@ export function pairRound(
     const legal = (i: number, j: number): boolean => {
       if (j === byeSeat) {
         const s = field[i] as SwissStanding;
-        return s !== bye && history.byes?.has(s.entrantId) !== true;
+        return s.entrantId !== bye?.entrantId && history.byes?.has(s.entrantId) !== true;
       }
       const x = (field[i] as SwissStanding).entrantId;
       const y = (field[j] as SwissStanding).entrantId;
