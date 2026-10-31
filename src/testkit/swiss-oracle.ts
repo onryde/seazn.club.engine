@@ -350,8 +350,9 @@ function absolutePreference(seq: readonly OracleColour[]): OracleColour | null {
  *  - the absolute preferences (Art. 1.7.1) are the strongest (5.2.2), so every one is granted where one assignment grants
  *    them all;
  *  - two equal absolute preferences cannot both be granted. Two non-topscorers may not meet ([C3], Art. 2.1.3): undefined. In
- *    a final round (`topscorer`, X-SW-11; Art. 1.8) a topscorer's yields to a non-topscorer's (the non-topscorer keeps its
- *    limit), and between two topscorers the preferences decide (5.2.2: the wider colour difference, then the upper board);
+ *    a final round (`topscorer`: Art. 1.8 defines topscorers, X-SW-11) a topscorer's yields to a non-topscorer's, which
+ *    keeps its limit. That is the W3 ruling (rulebook RB3-10), not FIDE: under 5.2.2 the wider colour difference would get
+ *    the colour. Between two topscorers the preferences decide (5.2.2: the wider colour difference, then the upper board);
  *  - otherwise rulebookSides, the softer preferences (an approximation of 5.2).
  *  Outside chess, rulebookSides. With chess on, a history P-A5 did not hold after every round is refused by name: on it an
  *  absolute preference and the limits part ways. */

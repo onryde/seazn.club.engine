@@ -128,11 +128,12 @@ describe("X-PT-1 a forfeit is an award with nothing played, whatever its reason"
     expect([h.metrics.for, a.metrics.against]).toEqual([AWARDED[0], AWARDED[0]]);
   });
 
-  it("a bye keeps the forfeit row's points but NEVER the awarded score, played or not", () => {
+  it("a bye pays the win, never the forfeit row's points (ruling 251, X-SW-5), and NEVER the awarded score, played or not", () => {
     let checked = 0;
     for (const played of [false, true]) {
       const [h] = apply(award("bye"), pair(0, 0), played);
-      expect(h.points, `played=${played}`).toBe(FORFEIT.winnerPoints);
+      // differential: before ruling 251 the bye was paid the forfeit row's 2
+      expect(h.points, `played=${played}`).toBe(rule.win.regulation);
       expect(h.metrics, `played=${played}`).toEqual({ for: 0, against: 0, diff: 0 });
       expect(isUnplayedForfeit(award("bye"), played), `played=${played}`).toBe(false);
       checked++;
@@ -182,7 +183,7 @@ describe("X-PT-1 a forfeit is an award with nothing played, whatever its reason"
     }
   });
 
-  it("bonuses follow the same split: after play the real score earns its margin bonus and no forfeit bonus; nothing played the reverse; a bye keeps its forfeit bonus", () => {
+  it("bonuses follow the same split: after play the real score earns its margin bonus and no forfeit bonus; nothing played the reverse; a bye earns none (ruling 251, X-SW-5)", () => {
     // Every bonus pays a different power of two, so the sum names exactly which fired.
     const bonused = legacyPointsRule({
       base: { win: 3, draw: 1, loss: 0 },
@@ -203,7 +204,8 @@ describe("X-PT-1 a forfeit is an award with nothing played, whatever its reason"
       checked++;
     }
     const [bye] = apply(award("bye"), pair(0, 0), false, bonused);
-    expect(bye.points, "a bye: the forfeit row and the forfeit-win bonus, as before W2c").toBe(bonused.forfeit!.winnerPoints + 4);
+    // differential: before ruling 251 the row's 2 + forfeit_win 4
+    expect(bye.points, "a bye: the win, never the forfeit row or a bonus").toBe(bonused.win.regulation);
     expect(checked).toBe(AFTER_PLAY_REASONS.length);
   });
 

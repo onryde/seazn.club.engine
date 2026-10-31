@@ -168,7 +168,7 @@ export function forfeitShaped(outcome: MatchOutcome): boolean {
  *    it as unplayed too (`forfeitStatsRole`, X-PS-1).
  *  - Any other forfeit — a withdrawal, a disqualification, a retirement, a pre-W2b chess win by forfeit — is one only
  *    while nothing is played (`played` false). After play it is a result (Q9: normal points).
- *  - A bye is never one: nobody forfeited (it keeps the forfeit row's points, `payout`, but no award score).
+ *  - A bye is never one: nobody forfeited. It pays the win, never the forfeit row or a bonus (X-SW-5, `payout`).
  */
 export function isUnplayedForfeit(outcome: MatchOutcome, played: boolean): boolean {
   if (isWalkover(outcome)) return true;
@@ -199,18 +199,18 @@ function scoreOf(delta: StandingsDelta): { for: number; against: number } | null
   return null;
 }
 
-/** `forfeitRow`: the result the rule pays as a forfeit (`payout`) — an unplayed forfeit or a bye. Margin bonuses read a
- *  played score, so they skip it; the forfeit bonuses pay only it. An award AFTER play is not one: its margin bonuses
- *  read the real score the sport credited (owner Q9, "normal win/loss points + bonuses on real score"). `delta` is the
- *  side as the rule BOOKS it (a draw-plus-bonus shoot-out is drawn for both, B2). */
+/** `forfeitRow`: the result the rule pays as a forfeit (`payout`) — an unplayed forfeit, never a bye (X-SW-5). Margin
+ *  bonuses read a played score, so they skip it; the forfeit bonuses pay only it. An award AFTER play is not one: its
+ *  margin bonuses read the real score the sport credited (owner Q9, "normal win/loss points + bonuses on real score").
+ *  `delta` is the side as the rule BOOKS it (a draw-plus-bonus shoot-out is drawn for both, B2). */
 function bonusesFor(
   delta: StandingsDelta,
   outcome: MatchOutcome,
   rule: PointsRule,
   forfeitRow: boolean,
 ): number {
-  // D14 (X-DW-4): a double walkover earns no bonus, `forfeit_loss` included — nobody forfeited TO anyone.
-  if (outcome.kind === "double_walkover") return 0;
+  // D14 (X-DW-4): a double walkover earns no bonus, `forfeit_loss` included — nobody forfeited TO anyone. X-SW-5: nor a bye.
+  if (outcome.kind === "double_walkover" || isBye(outcome)) return 0;
   let extra = 0;
   const margin = marginOf(delta);
   for (const b of rule.bonuses) {
@@ -330,17 +330,17 @@ function setPairOf(map: Readonly<Record<string, readonly [number, number]>>, sco
  *  4. a tie pays `tie` each, a draw (a cricket two-innings draw too, D10(c)) `draw` each — a rule without the field
  *     throws CONFIG_INVALID (`coverage` refuses such a rule at save);
  *  5. an award, and a pre-W2b win by walkover or forfeit (`forfeitShaped`), BEFORE `decidedIn` is read:
- *     - a forfeit with nothing played (`isUnplayedForfeit`) or a bye pays the forfeit row when the rule sets one — the
- *       organiser's more specific row outranks `loss.unplayed` (X-PT-1); only the unplayed forfeit also takes the
- *       row's `awardScore` (a bye never does: nobody forfeited);
+ *     - a forfeit with nothing played (`isUnplayedForfeit`) pays the forfeit row when the rule sets one — the
+ *       organiser's more specific row outranks `loss.unplayed` (X-PT-1) — and takes the row's `awardScore`; a bye takes
+ *       neither (X-SW-5, ruling 251: nobody forfeited);
  *     - otherwise the winner is paid the win of its credited score (ruling 108: `win.regulation`, or its set score's
- *       pair; a bye's clean sweep) and the loser `loss.unplayed` where the rule declares one (amended 108, D6: table
- *       tennis) — never a bye's, which has no loser — else the loss of the credited score;
+ *       pair; a bye's clean sweep, `setsToWin`-0 — X-SW-5) and the loser `loss.unplayed` where the rule declares one
+ *       (amended 108, D6: table tennis) — never a bye's, which has no loser — else the loss of the credited score;
  *  6. a win decided in `decidedIn`: a set sport's `bySetScore` pair (exact "W-L", else "*"; a match ended before its
  *     last set is scored FIVB 6.4.3's way, `setsToWin` to the other side's sets — ruling I2); a shoot-out under
  *     `shootoutAs: "draw_plus_bonus"` (B2) books BOTH sides drawn, pays each `draw` and the shoot-out winner `soBonus`
  *     (absent ⇒ 1) on top — no `wins` for either; otherwise `win`/`loss` by the so → ot → regulation chain;
- *  7. the bonuses, read off the side as the rule booked it (margins through the sport's score aliases, F11).
+ *  7. the bonuses, read off the side as the rule booked it (margins through the sport's score aliases, F11); none for a bye.
  * Only `points` and, under B2, the W/D/L counts change; the ledger is the module's, plus the display metrics `won_ot`,
  * `won_so`, `lost_ot`, `lost_so` (1, written only when 1) on a win decided beyond regulation (spec §5.7), and — on a
  * forfeit with nothing played — the rule's configured award score, which REPLACES `for` / `against` / `diff` and the
@@ -371,10 +371,10 @@ export function payout(
     });
   }
   const d: DecidedIn = decidedIn ?? "regulation";
+  // The rule's forfeit row (and its award score and forfeit bonuses) pays an unplayed forfeit alone: a bye is no forfeit,
+  // and pays the win with no bonus (X-SW-5, ruling 251).
   const forfeit = isUnplayedForfeit(outcome, played);
   const bye = isBye(outcome);
-  // The rule's forfeit row pays an unplayed forfeit and a bye alike; only the award score tells them apart.
-  const forfeitRow = forfeit || bye;
   const award = forfeitShaped(outcome);
   // `d` is "so" only for a win (the guard above); a forfeit-shaped win is an award whatever a caller passes.
   const shootoutDraw = !award && rule.bySetScore === undefined && d === "so" && rule.shootoutAs === "draw_plus_bonus";
@@ -390,7 +390,7 @@ export function payout(
         return levelPayout(rule, levelOutcomeKey(outcome.kind));
       // a win or an award: below
     }
-    if (forfeitRow && rule.forfeit !== undefined) {
+    if (forfeit && rule.forfeit !== undefined) {
       return delta.won === 1 ? rule.forfeit.winnerPoints : rule.forfeit.loserPoints;
     }
     if (award) {
@@ -411,7 +411,7 @@ export function payout(
   const mapped = pair.map((delta) => {
     // B2: a draw-plus-bonus shoot-out is a draw on the table — both sides drawn, neither a win nor a loss.
     const booked: StandingsDelta = shootoutDraw ? { ...delta, won: 0, drawn: 1, lost: 0 } : delta;
-    const points = sidePoints(delta) + bonusesFor(booked, outcome, rule, forfeitRow);
+    const points = sidePoints(delta) + bonusesFor(booked, outcome, rule, forfeit);
     const metrics = { ...delta.metrics };
     if (forfeit && rule.forfeit?.awardScore !== undefined) {
       const [w, l] = rule.forfeit.awardScore;

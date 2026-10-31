@@ -130,7 +130,7 @@ describe("X-DW-4: a double walkover in a table (spec §5.3; plan D14)", () => {
     expect(keysCompared).toBeGreaterThan(0);
   });
 
-  it("D14: a double walkover earns no bonus, forfeit_loss included, and no configured award score; a bye is still a forfeit win at forfeit.winnerPoints — every sport", () => {
+  it("D14: a double walkover earns no bonus, forfeit_loss included, and no configured award score; a bye pays the win and no bonus (ruling 251, X-SW-5) — every sport", () => {
     // Every bonus kind pays, and every one of them is a different amount, so a leak names itself.
     const RULE = legacyPointsRule({
       base: { win: 3, draw: 2, loss: 0 },
@@ -160,7 +160,8 @@ describe("X-DW-4: a double walkover in a table (spec §5.3; plan D14)", () => {
         const pair = m.standingsDelta(bye, cfg, { kind: "swiss" }, state) as FixtureResult;
         // A bye is written with no event (stages.ts), so no ledger: nothing played.
         const winner = payout(bye, decidedInFor(m, bye), pair, false, RULE, m.awardScoreKeys, undefined).find((d) => d.entrantId === X);
-        expect(winner?.points, `${m.key}/${name}: a bye is a forfeit win (winnerPoints 5 + forfeit_win 16)`).toBe(21);
+        // differential: before ruling 251 the row's 5 + forfeit_win 16 = 21; a bonus let in names itself (4 = win_margin_gte)
+        expect(winner?.points, `${m.key}/${name}: a bye pays the win (3), never the forfeit row or a bonus`).toBe(RULE.win.regulation);
         byes++;
       }
     });

@@ -85,8 +85,9 @@ function typedTotal(m: AnySportModule, f: Fixture, played: boolean, rule: Points
   const bye = o.kind === "award" && o.loser === null;
   const awardShaped = o.kind === "award" || o.method === "walkover" || o.method === "forfeit";
   const walkover = reason === "walkover" || (o.kind === "win" && o.method === "walkover");
-  // P-3 "A": a walkover is never played; any other forfeit is one only while nothing is played; a bye keeps the row too.
-  if ((walkover || bye || (awardShaped && !played)) && rule.forfeit !== undefined) {
+  // P-3 "A": a walkover is never played; any other forfeit is one only while nothing is played; a bye is no forfeit and
+  // pays the win (X-SW-5, ruling 251).
+  if ((walkover || (awardShaped && !bye && !played)) && rule.forfeit !== undefined) {
     return ["forfeit_row", rule.forfeit.winnerPoints + rule.forfeit.loserPoints];
   }
   const map = rule.bySetScore;

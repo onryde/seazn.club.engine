@@ -219,7 +219,7 @@ function ruleCorpus(): { outcome: MatchOutcome; pair: FixtureResult }[] {
     { outcome: { kind: "win", winner: "H", loser: "A", method: "walkover" }, pair: [delta("H", 1, 0, 0, 0, 0), delta("A", 0, 0, 1, 0, 0)] },
     { outcome: { kind: "win", winner: "H", loser: "A", method: "forfeit" }, pair: [delta("H", 1, 0, 0, 21, 3), delta("A", 0, 0, 1, 3, 21)] },
     { outcome: { kind: "award", winner: "H", loser: "A", reason: "walkover" }, pair: [delta("H", 1, 0, 0, 0, 0), delta("A", 0, 0, 1, 0, 0)] },
-    // W2c X-PT-1: an award after play is a result (margin bonuses on its real score); a bye pays the forfeit row.
+    // W2c X-PT-1: an award after play is a result (margin bonuses on its real score); a bye pays the win (X-SW-5).
     { outcome: { kind: "award", winner: "H", loser: "A", reason: "withdrew" }, pair: [delta("H", 1, 0, 0, 21, 3), delta("A", 0, 0, 1, 3, 21)] },
     { outcome: { kind: "award", winner: "H", loser: null, reason: "bye" }, pair: [delta("H", 1, 0, 0, 0, 0), blank("__bye__", 0, 0, 1)] },
     { outcome: { kind: "tie" }, pair: [delta("H", 0, 1, 0, 5, 5), delta("A", 0, 1, 0, 5, 5)] },
