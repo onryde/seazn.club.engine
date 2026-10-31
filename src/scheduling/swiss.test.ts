@@ -265,3 +265,100 @@ describe("pairRound — invariants (spec 05 §6)", () => {
     );
   });
 });
+
+// P-A5 (rulebook-W3 §2.1), read pairwise as the reference does (§2.3 item 2): after the round an entrant's colour
+// difference is within [−2, +2] and it has not had the same colour three times running.
+function canPlay(seq: readonly Colour[], c: Colour): boolean {
+  const after = [...seq, c];
+  const white = after.filter((x) => x === "W").length;
+  if (Math.abs(white - (after.length - white)) > 2) return false;
+  const k = after.length;
+  return !(k >= 3 && after[k - 1] === after[k - 2] && after[k - 2] === after[k - 3]);
+}
+
+describe("X-SW-2 bye retry and the whole-field search against a brute-force oracle (P-Q2, P-A6, ruling R2)", () => {
+  it("X-SW-2 several score groups, odd and even, chess on and off: pairs iff a legal round exists, byes the first candidate from the bottom whose removal leaves one, else names the reason", () => {
+    const CASES = 1500;
+    const tally = { paired: 0, retried: 0, noBye: 0, rematch: 0, colour: 0, multiGroupPaired: 0, multiGroupRefused: 0 };
+    for (let seed = 1; seed <= CASES; seed++) {
+      const rng = prng(seed);
+      const n = 2 + Math.floor(rng() * 8); // 2..9
+      const ids = field(n);
+      const chess = seed % 2 === 0;
+      const standings: SwissStanding[] = ids.map((id, i) => ({ entrantId: id, score: Math.floor(rng() * 3), rank: i + 1 }));
+      const density = rng() * 0.6;
+      const byeRate = rng();
+      const played = new Set<string>();
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) if (rng() < density) played.add(pairKey(ids[i] as string, ids[j] as string));
+      }
+      const byes = new Set(ids.filter(() => rng() < byeRate));
+      // a colour history a legal event can produce: every round's colour met P-A5 (a random colour, else the other one,
+      // which a legal prefix always allows)
+      const history = (): Colour[] => {
+        const seq: Colour[] = [];
+        for (let k = Math.floor(rng() * 5); k > 0; k--) {
+          const c: Colour = rng() < 0.5 ? "W" : "B";
+          seq.push(canPlay(seq, c) ? c : c === "W" ? "B" : "W");
+        }
+        return seq;
+      };
+      const colours = new Map(ids.map((id) => [id, history()]));
+      const seq = (id: string): Colour[] => colours.get(id) as Colour[];
+      // every pair the round may not seat: a rematch (P-A1), or (chess) no colour assignment suits both (P-A5)
+      const forbidden = new Set(played);
+      if (chess) {
+        for (let i = 0; i < n; i++) {
+          for (let j = i + 1; j < n; j++) {
+            const a = ids[i] as string, b = ids[j] as string;
+            const ok = (canPlay(seq(a), "W") && canPlay(seq(b), "B")) || (canPlay(seq(a), "B") && canPlay(seq(b), "W"));
+            if (!ok) forbidden.add(pairKey(a, b));
+          }
+        }
+      }
+      // P-Q2's candidates: the eligible entrants (P-A4), lowest score first, then lowest-ranked; an even field has none
+      const bottomUp = [...standings].sort((a, b) => a.score - b.score || b.rank - a.rank);
+      const candidates: (string | undefined)[] =
+        n % 2 === 0 ? [undefined] : bottomUp.filter((s) => !byes.has(s.entrantId)).map((s) => s.entrantId);
+      const without = (id: string | undefined): string[] => ids.filter((x) => x !== id);
+      const multiGroup = new Set(standings.map((s) => s.score)).size > 1;
+
+      // One comparison per case, tagged with its seed: a round is compared through what the rules ask of it.
+      const seen = (r: ReturnType<typeof pairRound>): unknown => {
+        if (!r.ok) return r;
+        const seated = [...r.pairings.flatMap((p) => [p.home, p.away]), ...(r.bye === undefined ? [] : [r.bye])];
+        return {
+          bye: "bye" in r ? r.bye : "(none)",
+          seatsEachOnce: seated.length === n && new Set(seated).size === n && seated.every((id) => ids.includes(id)), // P-A3
+          noRematch: r.pairings.every((p) => !played.has(pairKey(p.home, p.away))), // P-A1
+          coloursLegal: !chess || r.pairings.every((p) => canPlay(seq(p.home), "W") && canPlay(seq(p.away), "B")), // P-A5, as seated
+        };
+      };
+      const r = pairRound(standings, { played, colours, byes }, { chess });
+      let want: unknown;
+      if (candidates.length === 0) {
+        want = { ok: false, code: "SWISS_NO_LEGAL_PAIRING", reason: "no_bye_candidate", field: n };
+        tally.noBye++;
+      } else {
+        const winner = candidates.findIndex((c) => perfectMatchingExists(without(c), forbidden));
+        if (winner >= 0) {
+          // P-Q2: the bye is the first candidate from the bottom whose removal leaves a legal round
+          want = { bye: n % 2 === 1 ? candidates[winner] : "(none)", seatsEachOnce: true, noRematch: true, coloursLegal: true };
+          tally.paired++;
+          if (winner > 0) tally.retried++;
+          if (multiGroup) tally.multiGroupPaired++;
+        } else {
+          // ruling R2: "colour" iff some candidate's remainder pairs once the colour limits are lifted, else "rematch"
+          const reason = chess && candidates.some((c) => perfectMatchingExists(without(c), played)) ? "colour" : "rematch";
+          want = { ok: false, code: "SWISS_NO_LEGAL_PAIRING", reason, field: n };
+          tally[reason]++;
+          if (multiGroup) tally.multiGroupRefused++;
+        }
+      }
+      expect({ seed, round: seen(r) }).toEqual({ seed, round: want });
+    }
+    // anti-vacuity: every case lands in exactly one outcome, and every outcome (and the retry) is reached
+    expect(tally.paired + tally.noBye + tally.rematch + tally.colour).toBe(CASES);
+    for (const [k, v] of Object.entries(tally)) expect([k, v > 0]).toEqual([k, true]);
+  });
+});

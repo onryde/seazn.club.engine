@@ -1,15 +1,21 @@
 // Swiss pairing — spec 05 §2.2. Chess-correct, sport-generic, behind the
-// `pairRound(standings, history, constraints)` interface so the algorithm can be
-// swapped without touching callers (full FIDE Dutch via weighted matching is a
-// later refinement — the spec explicitly defers it).
+// `pairRound(standings, history, constraints, budget)` interface so the algorithm
+// can be swapped without touching callers (full FIDE Dutch via weighted matching
+// is a later refinement — the spec explicitly defers it; W3 X-SW-2 records the
+// deviation, rulebook-W3 RB3-1).
 //
-// Implementation: order by score group then pairing rank, fold top-vs-bottom,
-// and resolve violations by a COMPLETE backtracking matching that prefers the
-// fold but explores every transposition. Completeness is what makes the "a
-// total pairing exists whenever a perfect matching exists" property hold — the
-// search only fails when no rematch-free (and, for chess, colour-legal) perfect
-// matching exists at all. Determinism: candidate order is fixed (fold distance,
-// then global rank order), so the same inputs always yield the same pairing.
+// Implementation, a simplified Dutch: order by score group then pairing rank and
+// pair each score group by fold (or rank-adjacent), floating the fewest and the
+// lowest-ranked down to the next group (P-Q1). An odd field's bye goes to the
+// lowest eligible entrant whose removal leaves a pairable remainder, trying the
+// candidates from the bottom up (P-Q2). When the score groups cannot pair a
+// remainder, a COMPLETE backtracking matching over the whole remainder (fold
+// preferred, every transposition explored) decides it. Completeness is what makes
+// "a round is paired whenever a legal one exists" hold (P-A6): the search fails
+// only when no bye candidate leaves a rematch-free (and, for chess, colour-legal)
+// perfect matching, or the node budget runs out first. Determinism: candidate
+// order is fixed (fold distance, then global rank order), so the same inputs
+// always yield the same pairing.
 //
 // When it fails, pairRound returns a named refusal (SWISS_NO_LEGAL_PAIRING with
 // its reason) that writes nothing, not even the bye — never an empty or partial
@@ -77,6 +83,12 @@ export type SwissPairResult = SwissRound | SwissRefusal;
 // The search nodes one pairRound call may visit (the pairing search and the reason probe together). A call that runs out
 // before it either pairs the round or proves it unpairable is refused `search_limit`, never reported as having no pairing.
 export const SWISS_SEARCH_BUDGET: number = 1_000_000;
+
+// The share of the budget still unspent that one remainder's score-group pass may use. Its whole-group floater choices
+// grow combinatorially, and in a dead subtree (a lower group that no carry can complete) it would spend the whole budget
+// before the complete search below ever ran: a round that search pairs in a few nodes would be refused `search_limit`.
+// The rest stays for the complete search, which decides the round either way.
+const GROUP_PASS_SHARE = 1 / 8;
 
 // Stable, order-independent key for an unordered pair.
 export function pairKey(a: EntrantId, b: EntrantId): string {
@@ -158,24 +170,23 @@ function* combinations<T>(items: readonly T[], k: number): Generator<T[]> {
   }
 }
 
-// Which `fc` entrants of `current` to float down. Prefer the least-floated, then
-// the lowest-ranked (bottom of the group) — "avoid repeat floats" (spec 05
-// §2.2). Only the bottom window is considered, which bounds the combinations.
-function floaterChoices(
+// Which `fc` entrants of `current` to float down, over the WHOLE group: the
+// least-floated first, then the lowest-ranked (bottom of the group) — "avoid
+// repeat floats" (spec 05 §2.2), "floats are few and low" (P-Q1; SW-L4: a blocked
+// top-of-group entrant may be the one that must float). Lazy, because a whole
+// group's choices grow combinatorially: the caller pays a search node for each.
+function* floaterChoices(
   current: readonly SwissStanding[],
   fc: number,
   floatCountOf: (id: EntrantId) => number,
-): SwissStanding[][] {
-  if (fc === 0) return [[]];
-  const windowSize = Math.min(current.length, Math.max(fc + 3, 4));
-  const window = current.slice(current.length - windowSize);
-  const ordered = [...window].sort((a, b) => {
+): Generator<SwissStanding[]> {
+  const ordered = [...current].sort((a, b) => {
     const fa = floatCountOf(a.entrantId);
     const fb = floatCountOf(b.entrantId);
     if (fa !== fb) return fa - fb; // least-floated first
     return current.indexOf(b) - current.indexOf(a); // bottom (lowest-ranked) first
   });
-  return [...combinations(ordered, fc)];
+  yield* combinations(ordered, fc);
 }
 
 export function pairRound(
@@ -184,6 +195,11 @@ export function pairRound(
   constraints: SwissConstraints = {},
   budget: number = SWISS_SEARCH_BUDGET,
 ): SwissPairResult {
+  // NaN would switch the cap off (no node count exceeds it) and a negative budget refuses every round unsearched:
+  // both are caller defects, never a search to run.
+  if (Number.isNaN(budget) || budget < 0) {
+    throw new EngineError("CONFIG_INVALID", `pairRound: the search budget must be a number ≥ 0, got ${budget}`, { budget });
+  }
   // An entrant listed twice would be seated twice (or paired with itself): a caller defect, never a round to pair.
   const seen = new Set<EntrantId>();
   for (const s of standings) {
@@ -208,23 +224,17 @@ export function pairRound(
 
   const ordered = pairingOrder(standings);
 
-  // Bye first (odd field): the lowest-ranked entrant not yet byed (bottom up),
-  // else the absolute lowest if everyone has had one.
-  let bye: EntrantId | undefined;
-  let pool = ordered;
+  // The bye candidates (P-Q2): on an odd field, the eligible entrants (P-A4: not in history.byes) from the bottom of the
+  // pairing order up — lowest score first, then lowest rank. None eligible is a refusal, never a second bye. An even
+  // field has one "candidate", no bye.
+  let candidates: (SwissStanding | undefined)[] = [undefined];
   if (ordered.length % 2 === 1) {
     const byed = history.byes ?? new Set<EntrantId>();
-    let pick = ordered[ordered.length - 1] as SwissStanding;
-    for (let i = ordered.length - 1; i >= 0; i--) {
-      const cand = ordered[i] as SwissStanding;
-      if (!byed.has(cand.entrantId)) {
-        pick = cand;
-        break;
-      }
-    }
-    bye = pick.entrantId;
-    pool = ordered.filter((s) => s.entrantId !== bye);
+    candidates = [...ordered].reverse().filter((s) => !byed.has(s.entrantId));
+    if (candidates.length === 0) return refuse("no_bye_candidate");
   }
+  const remainderOf = (bye: SwissStanding | undefined): SwissStanding[] =>
+    bye === undefined ? ordered : ordered.filter((s) => s !== bye);
 
   const played = history.played;
   // The reason probe (below) re-runs the search with the colour limits lifted, to tell "colour" from "rematch".
@@ -263,30 +273,34 @@ export function pairRound(
     });
   };
 
-  // Complete backtracking matching of one (small) list, fold-preferred. Every
-  // candidate is tried before giving up, so within a group it finds a matching
-  // iff one exists — this is what gives the totality property (a single score
-  // group ⇒ this searches the whole field). Backtracking is confined to the
-  // group, keeping it polynomial across many groups (spec 05 §2.2: "backtracking
-  // over transpositions within score groups is sufficient"). `memoFail` prunes
-  // dead subsets within the call.
+  // Complete backtracking matching of one list, fold-preferred. Every candidate
+  // is tried before giving up, so it finds a matching iff one exists. The score
+  // group pass runs it per group (spec 05 §2.2: "backtracking over transpositions
+  // within score groups"); when the groups cannot pair a remainder it runs once
+  // over the whole remainder, which is what makes a refusal a proof (P-A6).
+  // `memoFail` prunes dead subsets within one run.
   // Shared search budget across the whole call (`budget`, default
-  // SWISS_SEARCH_BUDGET): hard colour limits can make a pathological field's
-  // infeasibility proof exponential, so we cap total work. The cap is far above
-  // any feasible small case (a single group of ≤14 explores < 2^14 nodes), so it
-  // never truncates a case the totality property covers. Once it runs out every
-  // further node fails, so the round cannot be paired AND nothing was proved:
-  // `exhausted` makes that a `search_limit` refusal, never a claimed rematch.
+  // SWISS_SEARCH_BUDGET): every bye candidate, group pass, floater choice, whole-
+  // remainder search and the reason probe draw on it. Hard colour limits can make
+  // a pathological field's infeasibility proof exponential, so we cap total work.
+  // Once it runs out every further node fails, so the round cannot be paired AND
+  // nothing was proved: `exhausted` makes that a `search_limit` refusal, never a
+  // claimed rematch.
   let nodes = 0;
   let exhausted = false;
+  let cap = budget; // lowered to the group pass's share while it runs; running out of a share is not running out
+  const spend = (): boolean => {
+    if (++nodes > cap) {
+      if (cap >= budget) exhausted = true;
+      return false;
+    }
+    return true;
+  };
   const matchWithin = (list: SwissStanding[]): [SwissStanding, SwissStanding][] | null => {
     const memoFail = new Set<string>();
     const rec = (remaining: SwissStanding[]): [SwissStanding, SwissStanding][] | null => {
       if (remaining.length === 0) return [];
-      if (++nodes > budget) {
-        exhausted = true;
-        return null;
-      }
+      if (!spend()) return null;
       const key = remaining.map((s) => s.entrantId).join(",");
       if (memoFail.has(key)) return null;
       const a = remaining[0] as SwissStanding;
@@ -307,54 +321,74 @@ export function pairRound(
   // carried downfloaters from stronger groups sitting on top); whoever can't be
   // paired here floats to the next group. Fewest floaters first, and among equal
   // counts the lowest-ranked / least-recently-floated go down (spec 05 §2.2
-  // float tracking). Bounded: at most a few extra floaters per group.
-  const groups = groupByScore(pool);
+  // float tracking). Bounded: at most parity + 4 floaters per group; who floats
+  // ranges over the whole group, each choice read costs a node, and the pass as a
+  // whole may spend only GROUP_PASS_SHARE of the budget left when it starts.
   const floatCountOf = (id: EntrantId): number => history.floats?.get(id) ?? 0;
 
-  const pairFrom = (gi: number, carry: SwissStanding[]): [SwissStanding, SwissStanding][] | null => {
+  const pairFrom = (
+    groups: readonly SwissStanding[][],
+    gi: number,
+    carry: SwissStanding[],
+  ): [SwissStanding, SwissStanding][] | null => {
     if (gi >= groups.length) return carry.length === 0 ? [] : null;
     const current = [...carry, ...(groups[gi] as SwissStanding[])];
     const isLast = gi === groups.length - 1;
     const parity = current.length % 2;
-    const maxFloat = isLast ? 0 : parity + 4; // cap extra floats — keeps it polynomial
+    const maxFloat = isLast ? 0 : parity + 4; // cap extra floats per group (the pass's cost is held by GROUP_PASS_SHARE)
 
     for (let fc = parity; fc <= maxFloat; fc += 2) {
       if (isLast && fc !== 0) break;
       for (const floaters of floaterChoices(current, fc, floatCountOf)) {
+        if (!spend()) return null;
         const set = new Set(floaters.map((f) => f.entrantId));
         const rest = current.filter((c) => !set.has(c.entrantId));
         const here = matchWithin(rest);
         if (here === null) continue;
-        const sub = pairFrom(gi + 1, floaters);
+        const sub = pairFrom(groups, gi + 1, floaters);
         if (sub !== null) return [...here, ...sub];
       }
     }
     return null;
   };
 
-  const matched = pairFrom(0, []);
-  if (matched === null) {
-    // No rematch-free (colour-legal) perfect matching was found: refuse, and write nothing, not even the bye (§3.3).
-    // The reason, per the bye candidate the search ran with (controller ruling R2: with several candidates, "colour" if
-    // ANY candidate's remainder matches with the colour limits lifted, else "rematch"): run out of budget anywhere ⇒
-    // "search_limit"; chess, and the remainder pairs once the colour limits are lifted ⇒ "colour"; else "rematch".
+  // One bye candidate's remainder: the score-group pass first (P-Q1), within its share of the budget left, and only when
+  // the groups cannot pair it, the complete search over the whole remainder (P-A6). Floats are read off the boards
+  // either way (below).
+  const pairRemainder = (remainder: SwissStanding[]): [SwissStanding, SwissStanding][] | null => {
+    cap = Math.min(budget, nodes + Math.floor((budget - nodes) * GROUP_PASS_SHARE));
+    const viaGroups = pairFrom(groupByScore(remainder), 0, []);
+    cap = budget;
+    if (viaGroups !== null || exhausted) return viaGroups;
+    return matchWithin(remainder);
+  };
+
+  for (const bye of candidates) {
+    const matched = pairRemainder(remainderOf(bye));
+    if (matched !== null) {
+      // Assign colours (chess) / home-away, and record downfloats.
+      const pairings: SwissPairing[] = [];
+      const floated: EntrantId[] = [];
+      for (const [a, b] of matched) {
+        if (a.score !== b.score) floated.push(a.entrantId); // a is the stronger side ⇒ it floated down
+        pairings.push(assignColours(a, b, chess, stateOf));
+      }
+      return { ok: true, pairings, floated, ...(bye === undefined ? {} : { bye: bye.entrantId }) };
+    }
     if (exhausted) return refuse("search_limit");
-    if (!chess) return refuse("rematch");
-    liftColourLimits = true;
-    const rematchFree = pairFrom(0, []);
-    if (exhausted) return refuse("search_limit");
-    return refuse(rematchFree === null ? "rematch" : "colour");
   }
 
-  // Assign colours (chess) / home-away, and record downfloats.
-  const pairings: SwissPairing[] = [];
-  const floated: EntrantId[] = [];
-  for (const [a, b] of matched) {
-    if (a.score !== b.score) floated.push(a.entrantId); // a is the stronger side ⇒ it floated down
-    pairings.push(assignColours(a, b, chess, stateOf));
+  // No bye candidate leaves a rematch-free (colour-legal) perfect matching: refuse, and write nothing, not even the bye
+  // (§3.3). The reason (controller ruling R2): run out of budget anywhere ⇒ "search_limit"; chess, and ANY candidate's
+  // remainder pairs once the colour limits are lifted ⇒ "colour"; else "rematch". The probe needs only existence, so it
+  // runs the complete search alone.
+  if (!chess) return refuse("rematch");
+  liftColourLimits = true;
+  for (const bye of candidates) {
+    if (matchWithin(remainderOf(bye)) !== null) return refuse("colour");
+    if (exhausted) return refuse("search_limit");
   }
-
-  return { ok: true, pairings, floated, ...(bye === undefined ? {} : { bye }) };
+  return refuse("rematch");
 }
 
 // Decide who is home (White in chess). Non-chess: the stronger side (a, already
