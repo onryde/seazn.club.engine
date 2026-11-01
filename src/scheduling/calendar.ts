@@ -180,8 +180,11 @@ export interface Assignment {
    *  exactly at that end is legal). The start floor still applies too.
    *
    *  Per row, constant per sequence: a sequence whose rows disagree is
-   *  CONFIG_INVALID (`roundBarrierBySequence`), checked by the placer, the
-   *  verifier and the build alike. Read only beside `roundNo`: a row with no
+   *  CONFIG_INVALID (`roundBarrierBySequence`), checked by the placer (over
+   *  its fixtures), the verifier and the build alike. The placer's `existing`
+   *  rows are the one exception: they join a sequence by its key and their
+   *  own flag is never read, so a played round handed over as obstacles binds
+   *  the barrier however it is flagged. Read only beside `roundNo`: a row with no
    *  round is in no sequence. Carried through by `slotFixtures`' `commit` and
    *  `build.ts`'s `assignmentOf` for the same reason `roundNo` is — a board
    *  that lost it would re-verify as a start floor. Every caller that builds
@@ -872,23 +875,33 @@ export function slotFixtures(input: SlotInput): SlotResult {
   // X-SW-31 (W3 T10b). The Swiss end barrier, as two bounds on a movable card
   // of an `"end"` sequence: it starts no earlier than every board of an
   // earlier round of its sequence has ENDED, and it ends no later than any
-  // board of a later round starts. Placed in round order, the second bound
-  // comes from a PIN (or from a later round a feed dependency pulled ahead in
-  // the order below). Both read `placed` (this run's own pins and placements)
-  // and never `existing`: `roundOrderConflicts` scans the board it is handed
-  // and nothing else, so a placer that read further would hold a card for a
-  // breach nobody reports. A pin is never placed here, so pin-pin pairs stay
-  // exempt on this side as on the verifier's. A card that cannot meet the
-  // upper bound is refused (`no_slot`), never placed into a breach. Undefined
-  // for every sequence that is not "end", so a start-floor board is placed
-  // exactly as before. A mixed sequence throws CONFIG_INVALID here, before
-  // anything is placed.
+  // board of a later round starts. Both read this run's own pins and
+  // placements (`placed`) AND the same-sequence rows of `existing`: the app
+  // hands a played or decided round over as an obstacle in `existing`, never
+  // as a pin, and its apply gate re-runs `roundOrderConflicts` over the board
+  // widened with exactly those siblings (T10b fix round 1, I1). A placer that
+  // read `placed` alone would put round r+1 beside a played round r and have
+  // the apply refuse it. Placed in round order, the upper bound comes from a
+  // pin or an `existing` row of a later round (or a later round a feed
+  // dependency pulled ahead in the order below). A pin is never placed here,
+  // so pin-pin pairs stay exempt on this side as on the verifier's. A card that
+  // cannot meet the upper bound is refused (`no_slot_round_barrier`), never
+  // placed into a breach. Undefined for every sequence that is not "end", so a
+  // start-floor board is placed exactly as before.
+  //
+  // The flag is read off `input.fixtures` only: a mixed sequence there throws
+  // CONFIG_INVALID before anything is placed, and an `existing` row joins a
+  // sequence by its KEY, its own flag never read — an older or unflagged
+  // sibling must never turn a build into a refusal.
   const barrierBySequence = roundBarrierBySequence(input.fixtures);
   const endSequenceOf = (f: SchedulableFixture): { key: string; round: number } | undefined => {
     if (f.roundNo === undefined) return undefined;
     const key = roundSequenceKey(f);
     return barrierBySequence.get(key) === "end" ? { key, round: f.roundNo } : undefined;
   };
+  const barrierExisting = (input.existing ?? []).filter(
+    (a) => a.roundNo !== undefined && barrierBySequence.get(roundSequenceKey(a)) === "end",
+  );
 
   const ordered = [...input.fixtures].sort((a, b) => {
     const ra = a.roundNo ?? 0;
@@ -1056,17 +1069,23 @@ export function slotFixtures(input: SlotInput): SlotResult {
     // legal both ways: start AT an earlier round's last end, end AT a later
     // round's first start.
     let roundDeadline = Infinity;
+    /** The later-round board that set `roundDeadline`, named by a refusal. */
+    let deadlineBy: Assignment | undefined;
     const endSequence = endSequenceOf(f);
     if (endSequence !== undefined) {
-      for (const p of placed) {
+      for (const p of [...placed, ...barrierExisting]) {
         if (p.roundNo === undefined || roundSequenceKey(p) !== endSequence.key) continue;
         if (p.roundNo < endSequence.round) ready = Math.max(ready, p.endAt);
-        else if (p.roundNo > endSequence.round) roundDeadline = Math.min(roundDeadline, p.startAt);
+        else if (p.roundNo > endSequence.round && p.startAt < roundDeadline) {
+          roundDeadline = p.startAt;
+          deadlineBy = p;
+        }
       }
     }
 
     let best: { court: string; start: number } | null = null;
     let windowBound = false;
+    let barrierBound = false;
     // The last person this fixture was pushed off, if any. Kept so an
     // UNPLACEABLE card can still name the human who made it unplaceable: before
     // person avoidance became unconditional, a `warn` board always placed and
@@ -1122,7 +1141,10 @@ export function slotFixtures(input: SlotInput): SlotResult {
       // X-SW-31: `start` is this court's earliest, and a later one only ends
       // later, so a card that would overrun a later round's start cannot use
       // this court at all.
-      if (start + durMs > roundDeadline) continue;
+      if (start + durMs > roundDeadline) {
+        barrierBound = true;
+        continue;
+      }
       if (best === null || start < best.start) best = { court, start };
       else if (start === best.start && c?.fieldFairness !== undefined && c.fieldFairness !== "off") {
         // soft objective (Jul3/04 §3): among equal-time candidates prefer the
@@ -1150,18 +1172,31 @@ export function slotFixtures(input: SlotInput): SlotResult {
       // apply. The person travels in `details`, which `conflictKey` folds in
       // (via `canonConflictDetail`), and so already distinguishes this from an
       // ordinary exhausted horizon.
+      //
+      // `no_slot_round_barrier` (X-SW-31, T10b fix round 1, m2) the same way:
+      // a court whose earliest start would run past a later round's board is
+      // the barrier binding, and the board that set the deadline is the fact
+      // the organiser has to move. Never set for a start-floor sequence
+      // (`roundDeadline` stays `Infinity`), so those refusals read as before.
       conflicts.push({
         fixtureId: f.id,
         reason: windowBound ? "start_window" : "no_slot",
         details: windowBound
           ? { kind: "no_slot_start_window" }
-          : personBound !== null
+          : barrierBound && deadlineBy !== undefined && f.roundNo !== undefined
             ? {
-                kind: "no_slot_person_bound",
-                personIds: [personBound.person],
-                otherFixtureId: personBound.other,
+                kind: "no_slot_round_barrier",
+                roundNo: f.roundNo,
+                otherRoundNo: deadlineBy.roundNo,
+                otherFixtureId: deadlineBy.fixtureId,
               }
-            : { kind: "no_slot_horizon" },
+            : personBound !== null
+              ? {
+                  kind: "no_slot_person_bound",
+                  personIds: [personBound.person],
+                  otherFixtureId: personBound.other,
+                }
+              : { kind: "no_slot_horizon" },
       });
       continue;
     }
@@ -2253,7 +2288,12 @@ export function roundOrderConflicts(
  * floor's pin-pin exemption, which is per PAIR, lifted to the max). A start
  * exactly at that end is legal. One row per (b, earlier round), blamed on b,
  * the later round: `reason: "order"`, `direct: true`, so it blocks the way the
- * start floor's rows do. `otherEndAt` is the instant b had to wait for.
+ * start floor's rows do. The details carry the two rounds only; how far b
+ * starts too early is MEASURED and rides in `shortfallMinutes`, outside
+ * `conflictKey`, exactly as feed order's does (T10b fix round 1, m1): moving
+ * round r's last board earlier without clearing the breach is a repair the
+ * delta gate must let through, and moving b earlier still is a worsening it
+ * must refuse.
  */
 function roundEndConflicts(group: readonly Assignment[]): Conflict[] {
   const endAll = new Map<number, number>();
@@ -2275,8 +2315,11 @@ function roundEndConflicts(group: readonly Assignment[]): Conflict[] {
       out.push({
         fixtureId: b.fixtureId,
         reason: "order",
-        details: { kind: "round_order_end", roundNo: b.roundNo, otherRoundNo: round, otherEndAt },
+        details: { kind: "round_order_end", roundNo: b.roundNo, otherRoundNo: round },
         direct: true,
+        // Rounded UP: a board that starts any part of a minute early is at
+        // least a minute short, never "0 minutes".
+        shortfallMinutes: Math.ceil((otherEndAt - b.startAt) / MS_PER_MIN),
       });
     }
   }

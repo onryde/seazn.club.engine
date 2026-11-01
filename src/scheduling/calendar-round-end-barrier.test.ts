@@ -13,6 +13,7 @@
 // the code under test. T0 = 2026-08-08 09:00Z (10:00 in Europe/London); every case sits on that one local day.
 import { describe, expect, it } from "vitest";
 import {
+  deltaConflicts,
   isBlockingConflict,
   roundOrderConflicts,
   slotFixtures,
@@ -168,7 +169,9 @@ describe("X-SW-31 a Swiss round starts only after the previous round ends", () =
         reason: "order",
         direct: true,
         rule: "H6",
-        details: { kind: "round_order_end", roundNo: 2, otherRoundNo: 1, otherEndAt: T0 + 90 * MIN },
+        // The two rounds only: the measured size (b1 starts 30 minutes before a2 ends) rides outside the identity.
+        details: { kind: "round_order_end", roundNo: 2, otherRoundNo: 1 },
+        shortfallMinutes: 30,
       },
     ]);
     // Blocking, so the apply gate and the build gate refuse to introduce one.
@@ -182,8 +185,8 @@ describe("X-SW-31 a Swiss round starts only after the previous round ends", () =
     const tie = [row("a", 1, "C1", 0, 30, END), row("b", 2, "C2", 30, 60, END)];
     expect(orderRows(tie, cfg())).toEqual([]);
     const early = [row("a", 1, "C1", 0, 30, END), row("b", 2, "C2", 29, 59, END)];
-    expect(orderRows(early, cfg()).map((c) => c.details)).toEqual([
-      { kind: "round_order_end", roundNo: 2, otherRoundNo: 1, otherEndAt: T0 + 30 * MIN },
+    expect(orderRows(early, cfg()).map((c) => [c.details, c.shortfallMinutes])).toEqual([
+      [{ kind: "round_order_end", roundNo: 2, otherRoundNo: 1 }, 1],
     ]);
 
     // Placer, the upper side of the same tie: round 2 is pinned at C1@+30, so the movable round-1 board must END by
@@ -203,18 +206,20 @@ describe("X-SW-31 a Swiss round starts only after the previous round ends", () =
     const pinPin = [row("a", 1, "C1", 0, 30, { ...END, movable: false }), row("b", 2, "C2", 10, 40, { ...END, movable: false })];
     expect(orderRows(pinPin, config)).toEqual([]);
     // Either side movable: enforced, and still blamed on the later round (here the pinned one, when it is b).
-    const endAt30 = { kind: "round_order_end", roundNo: 2, otherRoundNo: 1, otherEndAt: T0 + 30 * MIN };
+    // b starts at +10, a ends at +30: 20 minutes short.
+    const short20 = ["b", { kind: "round_order_end", roundNo: 2, otherRoundNo: 1 }, 20];
     const bMovable = [row("a", 1, "C1", 0, 30, { ...END, movable: false }), row("b", 2, "C2", 10, 40, END)];
-    expect(orderRows(bMovable, config).map((c) => [c.fixtureId, c.details])).toEqual([["b", endAt30]]);
+    expect(orderRows(bMovable, config).map((c) => [c.fixtureId, c.details, c.shortfallMinutes])).toEqual([short20]);
     const aMovable = [row("a", 1, "C1", 0, 30, END), row("b", 2, "C2", 10, 40, { ...END, movable: false })];
-    expect(orderRows(aMovable, config).map((c) => [c.fixtureId, c.details])).toEqual([["b", endAt30]]);
+    expect(orderRows(aMovable, config).map((c) => [c.fixtureId, c.details, c.shortfallMinutes])).toEqual([short20]);
     // The exemption is per PAIR, so it reaches the max: round 1 holds a pinned long board (+0..+90) and a movable short
     // one (+0..+30). A PINNED round-2 board at +60 is exempt from the pinned long board and clear of the short one;
     // a MOVABLE round-2 board at +60 answers to both, so to +90.
     const round1 = [row("long", 1, "C1", 0, 90, { ...END, movable: false }), row("short", 1, "C2", 0, 30, END)];
     expect(orderRows([...round1, row("b", 2, "C3", 60, 90, { ...END, movable: false })], config)).toEqual([]);
-    expect(orderRows([...round1, row("b", 2, "C3", 60, 90, END)], config).map((c) => c.details)).toEqual([
-      { kind: "round_order_end", roundNo: 2, otherRoundNo: 1, otherEndAt: T0 + 90 * MIN },
+    // 30 minutes short of the long board's +90 (against the short one alone it would be clear: +60 >= +30).
+    expect(orderRows([...round1, row("b", 2, "C3", 60, 90, END)], config).map((c) => [c.details, c.shortfallMinutes])).toEqual([
+      [{ kind: "round_order_end", roundNo: 2, otherRoundNo: 1 }, 30],
     ]);
 
     // Placer, lower side: round 1 has a board pinned at C1@+60 (ending +90) and a movable shell m1a; round 2 has m2a.
@@ -228,11 +233,14 @@ describe("X-SW-31 a Swiss round starts only after the previous round ends", () =
     expect(orderRows(lower.assignments, two)).toEqual([]);
 
     // Placer, upper side: round 2 pinned at C1@+20, so the movable round-1 board must end by +20 — a 30-minute board
-    // starting no earlier than +0 cannot. It is refused (no_slot), never placed into a breach.
+    // starting no earlier than +0 cannot. It is refused, never placed into a breach, and the refusal names the pin
+    // that set the deadline (`no_slot_round_barrier`), not a bare exhausted horizon.
     const upperFixtures = [shell("p2", 2, { ...END, locked: { court: "C1", startAt: T0 + 20 * MIN } }), shell("m1", 1, END)];
     const upper = slotFixtures({ fixtures: upperFixtures, config: two });
     expect(slots(upper.assignments)).toEqual({ p2: "C1@+20" });
-    expect(upper.conflicts.filter((c) => c.fixtureId === "m1").map((c) => c.reason)).toEqual(["no_slot"]);
+    expect(upper.conflicts.filter((c) => c.fixtureId === "m1").map((c) => [c.reason, c.details])).toEqual([
+      ["no_slot", { kind: "no_slot_round_barrier", roundNo: 1, otherRoundNo: 2, otherFixtureId: "p2" }],
+    ]);
     expect(orderRows(upper.assignments, two)).toEqual([]);
     // The differential: as a start-floor sequence m1 is placed (C1 is busy +20..+50 → C2@+0), start +0 <= +20.
     const upperStart = slotFixtures({ fixtures: upperFixtures.map(({ roundBarrier: _drop, ...f }) => f), config: two });
@@ -277,8 +285,9 @@ describe("X-SW-31 a Swiss round starts only after the previous round ends", () =
       row("s2-r2", 2, "C3", 30, 60, { ...END, stageId: "S2" }),
       row("s1-r2", 2, "C4", 30, 60, END),
     ];
-    expect(orderRows(board, cfg()).map((c) => [c.fixtureId, c.details])).toEqual([
-      ["s1-r2", { kind: "round_order_end", roundNo: 2, otherRoundNo: 1, otherEndAt: T0 + 90 * MIN }],
+    expect(orderRows(board, cfg()).map((c) => [c.fixtureId, c.details, c.shortfallMinutes])).toEqual([
+      // s1-r2 starts at +30, S1's round 1 ends at +90: 60 minutes short.
+      ["s1-r2", { kind: "round_order_end", roundNo: 2, otherRoundNo: 1 }, 60],
     ]);
   });
 
@@ -355,8 +364,9 @@ describe("X-SW-31 a Swiss round starts only after the previous round ends", () =
     expect(second.moved).toBe(0);
     expect(second.lost).toBe(0);
 
-    // The Swiss shape: round 1 is played and pinned where the first build put it, rounds 2-3 are re-scheduled. The
-    // barrier now reads round 1's end off the PINS and lands every later round where it was.
+    // Round 1 PINNED where the first build put it (an organiser lock), rounds 2-3 re-scheduled: the barrier reads
+    // round 1's end off the pins and lands every later round where it was. A PLAYED round does not reach the placer
+    // this way — the app hands it over as obstacles in `existing`; the next test covers that shape.
     const pinnedRoundOne = fixtures.map((f) => {
       const at = first.assignments.find((a) => a.fixtureId === f.id)!;
       return f.roundNo === 1 ? { ...f, locked: { court: at.court, startAt: at.startAt } } : f;
@@ -367,12 +377,98 @@ describe("X-SW-31 a Swiss round starts only after the previous round ends", () =
     expect(third.conflicts.filter((c) => c.reason === "order")).toEqual([]);
   });
 
+  it("X-SW-31 a played round arrives as obstacles in `existing`: the barrier reads it there, judged on the app's widened set", async () => {
+    // Round 1 is played, so the app hands its three boards over as `existing` (C1-C3, +0..+30), never as pins.
+    // Round 2's two shells are the movable set, four courts.
+    //   Read off `existing`: ready = max(round 1 end) = +30 → r2-a C1@+30 (C1 is the first court free at +30), then
+    //   r2-b C2@+30. Not read: r2-a would take the free C4@+0, beside a round still being played.
+    const played = [row("r1-a", 1, "C1", 0, 30, END), row("r1-b", 1, "C2", 0, 30, END), row("r1-c", 1, "C3", 0, 30, END)];
+    const roundTwo = [shell("r2-a", 2, END), shell("r2-b", 2, END)];
+    const config = cfg();
+    const expected = { "r2-a": "C1@+30", "r2-b": "C2@+30" };
+    const placer = slotFixtures({ fixtures: roundTwo, config, existing: played });
+    expect(slots(placer.assignments)).toEqual(expected);
+    // The app's apply gate re-runs round order over the board widened with its same-sequence siblings: clean.
+    expect(roundOrderConflicts([...placer.assignments, ...played], TZ)).toEqual([]);
+    // The production road, `buildSchedule` with no solver (Swiss shells always land there).
+    const built = await buildSchedule({ fixtures: roundTwo, config, existing: played, solve: unavailableSolver, log: silentLogger });
+    expect(built.engine).toBe("greedy");
+    expect(slots(built.assignments)).toEqual(expected);
+    expect(roundOrderConflicts([...built.assignments, ...played], TZ)).toEqual([]);
+
+    // The differential: as a start-floor sequence r2-a takes the spare C4@+0 (a start tie, legal there) and r2-b the
+    // first court free after it, C1@+30.
+    const unflagged = <T extends { roundBarrier?: unknown }>(xs: readonly T[]) => xs.map(({ roundBarrier: _drop, ...x }) => x);
+    expect(slots(slotFixtures({ fixtures: unflagged(roundTwo), config, existing: unflagged(played) }).assignments)).toEqual({
+      "r2-a": "C4@+0",
+      "r2-b": "C1@+30",
+    });
+    // Keyed by sequence: the same boards played in another stage hold nothing back.
+    const otherStage = played.map((a) => ({ ...a, stageId: "S2" }));
+    expect(slots(slotFixtures({ fixtures: roundTwo, config, existing: otherStage }).assignments)).toEqual({
+      "r2-a": "C4@+0",
+      "r2-b": "C1@+30",
+    });
+    // The flag is read off the FIXTURES only. An `existing` row joins a sequence by its key, so a sibling that is
+    // unflagged, or says "start", neither turns the build into CONFIG_INVALID nor unbinds the barrier.
+    let siblingShapes = 0;
+    for (const flag of [{}, { roundBarrier: "start" as const }]) {
+      const siblings = unflagged(played).map((a) => ({ ...a, ...flag }));
+      expect(slots(slotFixtures({ fixtures: roundTwo, config, existing: siblings }).assignments)).toEqual(expected);
+      const again = await buildSchedule({ fixtures: roundTwo, config, existing: siblings, solve: unavailableSolver, log: silentLogger });
+      expect(slots(again.assignments)).toEqual(expected);
+      siblingShapes++;
+    }
+    expect(siblingShapes).toBe(2);
+
+    // The upper bound reads `existing` too. Round 1 played on C1 (+0..+30), a round-4 board on C3 at +100 and a
+    // round-3 board on C2 at +40: round 2's card may start no earlier than +30 and must end by +40 (the EARLIEST later
+    // start, not the first one listed), which a 30-minute board cannot. It is refused, never placed into a breach, and
+    // the refusal names the round-3 board that set the deadline.
+    const squeezed = slotFixtures({
+      fixtures: [shell("r2-a", 2, END)],
+      config,
+      existing: [row("r1-a", 1, "C1", 0, 30, END), row("r4-a", 4, "C3", 100, 130, END), row("r3-a", 3, "C2", 40, 70, END)],
+    });
+    expect(squeezed.assignments).toEqual([]);
+    expect(squeezed.conflicts.map((c) => [c.fixtureId, c.reason, c.details])).toEqual([
+      ["r2-a", "no_slot", { kind: "no_slot_round_barrier", roundNo: 2, otherRoundNo: 3, otherFixtureId: "r3-a" }],
+    ]);
+  });
+
+  it("X-SW-31 the delta gate: a repair that shrinks a breach passes, one that grows it is refused (shortfallMinutes, outside the identity)", () => {
+    // The verifier case's board: round 1 a1 C1 +0..+30 and a2 C2 +0..+90; round 2's b1 C3 +60..+90.
+    const config = cfg();
+    const refused = (before: Assignment[], after: Assignment[]) =>
+      deltaConflicts(validateAssignments(before, config), validateAssignments(after, config)).filter(isBlockingConflict);
+    const a1 = row("a1", 1, "C1", 0, 30, END);
+    const before = [a1, row("a2", 1, "C2", 0, 90, END), row("b1", 2, "C3", 60, 90, END)];
+    // Premise: the stored board carries the breach, b1 30 minutes short of a2's +90.
+    expect(orderRows(before, config).map((c) => [c.fixtureId, c.shortfallMinutes])).toEqual([["b1", 30]]);
+    // (a) The organiser pulls round 1's last board earlier: a2 now ends at +75, so b1 is 15 minutes short. Still a
+    //     breach, but a smaller one: a repair, never refused. A measured value inside the identity would re-key the
+    //     row and refuse exactly this move.
+    const improved = [a1, row("a2", 1, "C2", 0, 75, END), row("b1", 2, "C3", 60, 90, END)];
+    expect(orderRows(improved, config).map((c) => [c.fixtureId, c.shortfallMinutes])).toEqual([["b1", 15]]);
+    expect(refused(before, improved)).toEqual([]);
+    // (b) b1 dragged EARLIER, to +45: 45 minutes short. Same identity, bigger shortfall: refused.
+    const worse = [a1, row("a2", 1, "C2", 0, 90, END), row("b1", 2, "C3", 45, 75, END)];
+    expect(refused(before, worse).map((c) => [c.fixtureId, c.details, c.shortfallMinutes])).toEqual([
+      ["b1", { kind: "round_order_end", roundNo: 2, otherRoundNo: 1 }, 45],
+    ]);
+    // (c) Nothing about the breach changes: nothing to refuse. A NEW breach on a clean board is refused outright.
+    expect(refused(before, before)).toEqual([]);
+    const clean = [a1, row("b1", 2, "C3", 30, 60, END)];
+    const broken = [a1, row("b1", 2, "C3", 20, 50, END)];
+    expect(refused(clean, broken).map((c) => [c.fixtureId, c.shortfallMinutes])).toEqual([["b1", 10]]);
+  });
+
   it("X-SW-31 the end barrier needs no zone: it compares instants, not days", () => {
     // The start floor's day/same-day rows need a zone and are skipped without one; the end barrier compares two
     // instants, so it holds with or without `tz`. Same board as the verifier case: b1 starts at +60, round 1 ends +90.
     const board = [row("a1", 1, "C1", 0, 30, END), row("a2", 1, "C2", 0, 90, END), row("b1", 2, "C3", 60, 90, END)];
-    expect(orderRows(board, cfg({ tz: undefined })).map((c) => c.details)).toEqual([
-      { kind: "round_order_end", roundNo: 2, otherRoundNo: 1, otherEndAt: T0 + 90 * MIN },
+    expect(orderRows(board, cfg({ tz: undefined })).map((c) => [c.details, c.shortfallMinutes])).toEqual([
+      [{ kind: "round_order_end", roundNo: 2, otherRoundNo: 1 }, 30],
     ]);
     // And the placer, the plain five shells: round 2 at +30 with no zone, exactly as with one.
     const fixtures = ROUND_TWO_OVER_ONE.map((id) => shell(id, Number(id[1]), END));
@@ -459,11 +555,20 @@ describe("X-SW-31 a Swiss round starts only after the previous round ends", () =
     let pairs = 0;
     let bites = 0;
     let refused = 0;
+    let refusalsNamed = 0;
+    let barrierNamed = 0;
+    let existingCases = 0;
+    let existingRows = 0;
+    let crossPairs = 0;
+    let existingBites = 0;
     let startEqualsAbsent = 0;
     for (let seed = 1; seed <= CORPUS_SIZE; seed++) {
       const { fixtures, config } = corpusCase(seed);
-      const { assignments } = slotFixtures({ fixtures, config });
+      const { assignments, conflicts } = slotFixtures({ fixtures, config });
       placed += assignments.length;
+      // No silent drop: every fixture this run left off the board has its refusal row in this run's own conflicts.
+      refusalsNamed += refusalsAccountedFor(fixtures, assignments, conflicts, `seed ${seed}`);
+      barrierNamed += conflicts.filter((c) => c.details?.kind === "no_slot_round_barrier").length;
       expect(orderRows(assignments, config), `seed ${seed}: verifier`).toEqual([]);
       const judged = endBarrierBreaches(fixtures, assignments);
       expect(judged.breaches, `seed ${seed}: the rule`).toEqual([]);
@@ -483,6 +588,30 @@ describe("X-SW-31 a Swiss round starts only after the previous round ends", () =
       // The upper bound (a pin of a later round) at work: a card the start floor placed and the barrier refused.
       const onBoard = new Set(assignments.map((a) => a.fixtureId));
       refused += absentBoard.assignments.filter((a) => flagged.has(a.fixtureId) && !onBoard.has(a.fixtureId)).length;
+      // A played round arrives as obstacles in `existing`, never as pins: move a seeded prefix of each sequence's
+      // rounds off the fixture list and onto `existing`, exactly where this run placed them, and place the rest around
+      // them. Judged as the app's apply gate judges it (round order over the board widened with its same-sequence
+      // siblings) and by the rule off the input.
+      const played = playedPrefix(seed, fixtures);
+      if (played.size > 0) {
+        const existing = assignments.filter((a) => played.has(a.fixtureId));
+        const rest = fixtures.filter((f) => !played.has(f.id));
+        const rerun = slotFixtures({ fixtures: rest, config, existing });
+        refusalsNamed += refusalsAccountedFor(rest, rerun.assignments, rerun.conflicts, `seed ${seed} existing`);
+        const widened = [...rerun.assignments, ...existing];
+        expect(roundOrderConflicts(widened, config.tz), `seed ${seed}: existing, widened gate`).toEqual([]);
+        expect(endBarrierBreaches(fixtures, widened).breaches, `seed ${seed}: existing, the rule`).toEqual([]);
+        const rebuilt = await buildSchedule({ fixtures: rest, config, existing, solve: unavailableSolver, log: silentLogger });
+        expect(roundOrderConflicts([...rebuilt.assignments, ...existing], config.tz), `seed ${seed}: existing, build`).toEqual([]);
+        // Does reading `existing` BITE here? The same obstacles, re-keyed into a sequence of their own so they occupy
+        // the courts and bind nothing: a board that breaches the widened rule is one only the read keeps legal.
+        const blindTo = existing.map((a) => ({ ...a, stageId: `${a.stageId ?? ""}~` }));
+        const blind = slotFixtures({ fixtures: rest, config, existing: blindTo });
+        if (endBarrierBreaches(fixtures, [...blind.assignments, ...existing]).breaches.length > 0) existingBites++;
+        existingCases++;
+        existingRows += existing.length;
+        crossPairs += crossingPairs(fixtures, existing, rerun.assignments);
+      }
       // And "start" is the absent value, placement for placement and row for row.
       const start = slotFixtures({ fixtures: absent.map((f) => ({ ...f, roundBarrier: "start" as const })), config });
       expect(slots(start.assignments), `seed ${seed}: start = absent`).toEqual(slots(absentBoard.assignments));
@@ -490,7 +619,9 @@ describe("X-SW-31 a Swiss round starts only after the previous round ends", () =
       startEqualsAbsent++;
       cases++;
     }
-    Object.assign(task.meta, { corpus: { cases, placed, pairs, bites, refused, startEqualsAbsent } });
+    Object.assign(task.meta, {
+      corpus: { cases, placed, pairs, bites, refused, refusalsNamed, barrierNamed, existingCases, existingRows, crossPairs, existingBites, startEqualsAbsent },
+    });
     // Anti-vacuity: every case judged, boards actually placed, cross-round pairs actually compared, and the barrier
     // actually moving boards in a real share of the corpus (floors set below the measured counts in the T10b report).
     expect(cases).toBe(CORPUS_SIZE);
@@ -499,6 +630,11 @@ describe("X-SW-31 a Swiss round starts only after the previous round ends", () =
     expect(pairs).toBeGreaterThanOrEqual(PAIRS_FLOOR);
     expect(bites).toBeGreaterThanOrEqual(BITES_FLOOR);
     expect(refused).toBeGreaterThanOrEqual(REFUSED_FLOOR);
+    expect(refusalsNamed).toBeGreaterThanOrEqual(refused);
+    expect(barrierNamed).toBeGreaterThanOrEqual(BARRIER_NAMED_FLOOR);
+    expect(existingCases).toBeGreaterThanOrEqual(EXISTING_CASES_FLOOR);
+    expect(crossPairs).toBeGreaterThanOrEqual(CROSS_PAIRS_FLOOR);
+    expect(existingBites).toBeGreaterThanOrEqual(EXISTING_BITES_FLOOR);
   }, 120_000);
 });
 
@@ -515,12 +651,74 @@ function proved(assignments: SolveBuildOutcome["assignments"]): SolveBuildOutcom
 }
 
 const CORPUS_SIZE = 240;
-/** Floors at about 80% of the measured corpus (2026-10-31, seeds 1-240: 3,670 cross-round pairs judged, the barrier
- *  moving boards in 177 cases, 249 cards refused by a later round's pin): low enough that a legitimate placer change
- *  does not trip them, high enough that a corpus which stopped exercising the barrier, or its upper bound, does. */
+/** Floors at about 80% of the measured corpus (seeds 1-240). 2026-10-31: 3,670 cross-round pairs judged, the barrier
+ *  moving boards in 177 cases, 249 cards refused by a later round's pin. 2026-11-01 (T10b fix round 1): all 249
+ *  refusals named `no_slot_round_barrier`; 171 cases with a played prefix in `existing` (601 rows, 1,617 pairs of an
+ *  `existing` row against a later round placed around it), and in 82 of them a placer blind to `existing` breaches.
+ *  Low enough that a legitimate placer change does not trip them, high enough that a corpus which stopped exercising
+ *  the barrier, its upper bound, its refusal detail or its `existing` read does. */
 const PAIRS_FLOOR = 3000;
 const BITES_FLOOR = 140;
 const REFUSED_FLOOR = 200;
+const BARRIER_NAMED_FLOOR = 200;
+const EXISTING_CASES_FLOOR = 135;
+const CROSS_PAIRS_FLOOR = 1300;
+const EXISTING_BITES_FLOOR = 65;
+
+/** Asserts every fixture missing from `board` has a refusal row (`no_slot` or `start_window`) in `conflicts`, the
+ *  same run's; returns how many it checked. */
+function refusalsAccountedFor(
+  fixtures: readonly SchedulableFixture[],
+  board: readonly Assignment[],
+  conflicts: readonly { fixtureId: string; reason: string }[],
+  label: string,
+): number {
+  const onBoard = new Set(board.map((a) => a.fixtureId));
+  const named = new Set(conflicts.filter((c) => c.reason === "no_slot" || c.reason === "start_window").map((c) => c.fixtureId));
+  let checked = 0;
+  for (const f of fixtures) {
+    if (onBoard.has(f.id)) continue;
+    expect(named.has(f.id), `${label}: ${f.id} left off the board with no refusal row`).toBe(true);
+    checked++;
+  }
+  return checked;
+}
+
+/** The ids of a seeded prefix of rounds per flagged sequence (0 to all-but-the-last), standing for rounds already
+ *  played. Its own stream, so `corpusCase` and every count measured before it are unchanged. */
+function playedPrefix(seed: number, fixtures: readonly SchedulableFixture[]): Set<string> {
+  const r = mulberry32(seed * 104729);
+  const lastRound = new Map<string, number>();
+  for (const f of fixtures) {
+    if (f.roundBarrier !== "end" || f.roundNo === undefined) continue;
+    lastRound.set(seqKeyOf(f), Math.max(lastRound.get(seqKeyOf(f)) ?? 0, f.roundNo));
+  }
+  const upTo = new Map([...lastRound].map(([key, last]) => [key, Math.floor(r() * last)]));
+  return new Set(
+    fixtures.filter((f) => f.roundNo !== undefined && f.roundNo <= (upTo.get(seqKeyOf(f)) ?? 0)).map((f) => f.id),
+  );
+}
+
+/** Earlier-round `existing` rows against later-round rows of the rerun, same sequence, not both pins: the pairs only
+ *  a placer that reads `existing` can keep apart. */
+function crossingPairs(
+  fixtures: readonly SchedulableFixture[],
+  existing: readonly Assignment[],
+  rerun: readonly Assignment[],
+): number {
+  const byId = new Map(fixtures.map((f) => [f.id, f]));
+  let n = 0;
+  for (const e of existing) {
+    const ef = byId.get(e.fixtureId)!;
+    for (const p of rerun) {
+      const pf = byId.get(p.fixtureId)!;
+      if (pf.roundBarrier !== "end" || seqKeyOf(ef) !== seqKeyOf(pf) || (ef.roundNo ?? 0) >= (pf.roundNo ?? 0)) continue;
+      if (ef.locked !== undefined && pf.locked !== undefined) continue;
+      n++;
+    }
+  }
+  return n;
+}
 
 const seqKeyOf = (f: SchedulableFixture): string => `${f.divisionId ?? ""}|${f.stageId ?? ""}|${f.poolId ?? ""}`;
 

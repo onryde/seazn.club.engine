@@ -67,21 +67,32 @@
 // 29th. A Swiss sequence (`roundBarrier: "end"`) may not start a round before
 // the previous round's LAST board has ended; the start floor's two kinds above
 // it cannot say that, because a round-2 board starting at 10:00 beside a
-// round-1 board that started at 10:00 is a legal start tie. `otherEndAt` is
-// that last board's end, an instant (epoch ms); the client formats it in the
-// org zone. BLOCKING, like the start floor's kinds (`reason: "order"`,
-// `direct: true`).
+// round-1 board that started at 10:00 is a legal start tie. It carries only
+// the two rounds. How far the board starts too early is MEASURED, so it rides
+// in `Conflict.shortfallMinutes`, outside the identity, exactly as feed order's
+// `order_before_feeder` does (T10b fix round 1, controller ruling m1): a
+// measured value in here would re-key the row every time a board moved, and an
+// improving but incomplete repair would read as a new conflict and be refused.
+// BLOCKING, like the start floor's kinds (`reason: "order"`, `direct: true`).
+//
+// `no_slot_round_barrier` (T10b fix round 1, controller ruling m2) is the 30th:
+// the placer could not place a card of a Swiss sequence because a board of a
+// LATER round of it (`otherFixtureId`, round `otherRoundNo`) starts too soon
+// for the card to end first. Like `no_slot_person_bound`, it names the fact the
+// organiser has to change, which `no_slot_horizon` would hide.
 
 /** One member per family template. The design doc's own table enumerates 25;
  *  a 26th (`court_tag_mismatch`), a 27th (`outside_court_hours`) and a 28th
  *  (`stranded_fixture`) have since been added by owner ruling, and a 29th
- *  (`round_order_end`) by the W3 controller ruling of 2026-10-31 — closed at
- *  exactly these 29, and a 30th needs the same, not a cast. */
+ *  (`round_order_end`) and 30th (`no_slot_round_barrier`) by the W3 controller
+ *  rulings of 2026-10-31 and 2026-11-01 — closed at exactly these 30, and a
+ *  31st needs the same, not a cast. */
 export type ConflictDetailKind =
   | "person_double_booking"
   | "locked_slot_clash"
   | "no_slot_start_window"
   | "no_slot_person_bound"
+  | "no_slot_round_barrier"
   | "no_slot_horizon"
   | "instruction_feeder_gap"
   | "instruction_day_cap"
@@ -133,8 +144,6 @@ export interface ConflictDetail {
   ruleType?: string;
   roundNo?: number;
   otherRoundNo?: number;
-  /** `round_order_end` only: when the earlier round's last board ends, epoch ms. */
-  otherEndAt?: number;
   minutes?: number;
   requiredMinutes?: number;
   count?: number;
@@ -166,7 +175,6 @@ const FIELD_ORDER_WITNESS: Record<Exclude<keyof ConflictDetail, "kind">, true> =
   ruleType: true,
   roundNo: true,
   otherRoundNo: true,
-  otherEndAt: true,
   minutes: true,
   requiredMinutes: true,
   count: true,

@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { canonConflictDetail, type ConflictDetail, type ConflictDetailKind } from "./conflict-detail.ts";
 import { conflictKey, type Conflict } from "./calendar.ts";
 
-// The 29-kind table, field-for-field, written out explicitly rather than
+// The 30-kind table, field-for-field, written out explicitly rather than
 // generated so it reads beside the design doc's table and a missing kind is a
 // `Record<ConflictDetailKind, …>` type error rather than a silently skipped
 // row — the same reasoning `RULE_BY_REASON` uses for `ConflictReason`.
@@ -21,6 +21,9 @@ const FULL_DETAIL: Record<ConflictDetailKind, ConflictDetail> = {
   locked_slot_clash: { kind: "locked_slot_clash", court: "C1" },
   no_slot_start_window: { kind: "no_slot_start_window" },
   no_slot_person_bound: { kind: "no_slot_person_bound", personIds: ["p1", "p2"], otherFixtureId: "f-other" },
+  // T10b fix round 1's 30th kind: a Swiss card refused because a later round's
+  // board (`otherFixtureId`, round `otherRoundNo`) starts too soon.
+  no_slot_round_barrier: { kind: "no_slot_round_barrier", roundNo: 2, otherRoundNo: 3, otherFixtureId: "f-other" },
   no_slot_horizon: { kind: "no_slot_horizon" },
   instruction_feeder_gap: { kind: "instruction_feeder_gap", minutes: 20, requiredMinutes: 40 },
   instruction_day_cap: { kind: "instruction_day_cap", count: 4, day: "2026-08-10", requiredCount: 2 },
@@ -73,9 +76,10 @@ const FULL_DETAIL: Record<ConflictDetailKind, ConflictDetail> = {
     otherDay: "2026-08-09",
   },
   round_order_same_day: { kind: "round_order_same_day", roundNo: 3, otherRoundNo: 2, day: "2026-08-10" },
-  // W3 T10b's 29th kind (X-SW-31): the Swiss end barrier. `otherEndAt` is the
-  // earlier round's last end, epoch ms.
-  round_order_end: { kind: "round_order_end", roundNo: 3, otherRoundNo: 2, otherEndAt: 1786183200000 },
+  // W3 T10b's 29th kind (X-SW-31): the Swiss end barrier. The two rounds only:
+  // how early the board starts is measured, so it rides in `shortfallMinutes`,
+  // outside the identity.
+  round_order_end: { kind: "round_order_end", roundNo: 3, otherRoundNo: 2 },
   no_slot_lattice: { kind: "no_slot_lattice" },
   no_slot_budget: { kind: "no_slot_budget" },
 };
@@ -102,14 +106,13 @@ const ALT_VALUE: { [K in keyof Omit<ConflictDetail, "kind">]-?: NonNullable<Conf
   ruleType: "not_after",
   roundNo: 5,
   otherRoundNo: 4,
-  otherEndAt: 1786185000000,
   minutes: 25,
   requiredMinutes: 45,
   count: 6,
   requiredCount: 3,
 };
 
-describe("canonConflictDetail — per-kind field participation (all 29 kinds)", () => {
+describe("canonConflictDetail — per-kind field participation (all 30 kinds)", () => {
   for (const kind of ALL_KINDS) {
     const base = FULL_DETAIL[kind];
     const fields = Object.keys(base).filter((k) => k !== "kind") as (keyof Omit<ConflictDetail, "kind">)[];
