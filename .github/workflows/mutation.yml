@@ -130,6 +130,11 @@ on:
           - sports-other-6
           - sports-other-7
           - probe
+      incremental:
+        description: "restore (default): a single-group dispatch restores the incremental file of an older commit, so its wall time and tested count are WARM and are not a measurement. cold: skip the restore, as the weekly and `all` runs do — the form a re-measure into stryker-measured.json needs"
+        type: choice
+        default: restore
+        options: [restore, cold]
       inject_visibility:
         description: "mutation proof of the visibility guard: none, or a visibility to pretend (the run must then fail)"
         type: choice
@@ -368,7 +373,7 @@ jobs:
       # PARTIAL incremental file and no JSON report (Stryker's "Saved a partial incremental report ... after an unexpected
       # interrupt"), so a save that waited for Survivors would never keep what the longest legs earned before the clock stopped them.
       - name: Restore the incremental file
-        if: github.event_name != 'schedule' && inputs.group != 'all'   # cold on the weekly and `all` runs (owner ruling 2026-10-31)
+        if: github.event_name != 'schedule' && inputs.group != 'all' && inputs.incremental != 'cold'   # cold on the weekly and `all` runs (owner ruling 2026-10-31) and on any dispatch that asks for it
         uses: actions/cache/restore@v4
         with:
           path: reports/mutation/${{ matrix.group }}.incremental.json

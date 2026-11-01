@@ -92,10 +92,10 @@ function evalExpr(raw: string, ctx: Record<string, unknown>, cancelled = false):
   // The expression is this repo's own committed workflow text, restricted to the token whitelist above.
   return new Function("ref", "fj", "join", "format", "always", "cancelled", "success", `return (${js});`)(ref, fj, join, format, () => true, () => cancelled, () => !cancelled);
 }
-const ctxOf = (o: { event: string; head?: string | null; weekly?: string; planResult?: string; scope?: string; group?: string; headRef?: string; runId?: string; prNumber?: number; matrix?: string }) => ({
+const ctxOf = (o: { event: string; head?: string | null; weekly?: string; planResult?: string; scope?: string; group?: string; incremental?: string; headRef?: string; runId?: string; prNumber?: number; matrix?: string }) => ({
   github: { event_name: o.event, repository: SAME_REPO, head_ref: o.headRef ?? "", run_id: o.runId ?? "1", event: o.event === "pull_request" ? { pull_request: { number: o.prNumber ?? 1, head: { repo: o.head === null ? null : { full_name: o.head ?? SAME_REPO } } } } : {} },
   vars: { STRYKER_WEEKLY_ENABLED: o.weekly ?? "true" },
-  inputs: { scope: o.scope ?? "", group: o.group ?? "" },
+  inputs: { scope: o.scope ?? "", group: o.group ?? "", incremental: o.incremental ?? "" },
   needs: { plan: { result: o.planResult ?? "success", outputs: { matrix: o.matrix ?? "" } }, "matrix-rows": { outputs: { run: "true" } } },
 });
 
@@ -564,6 +564,11 @@ describe("mutation.yml: triggers, the weekly gate and the fork gate (T9 conventi
     }
     expect(evaluated).toBe(2 * cases.length);
     expect(cases.filter((c) => c.cold).length, "both cold runs are cases").toBe(2);
+    // a single-group dispatch may ask for a cold run (`incremental: cold`): a re-measure needs one, because the default restores an older commit's file and its wall is warm. Cold there does NOT make the drift job run: strict sizing stays on the weekly and `all` runs.
+    const coldOne = ctxOf({ event: "workflow_dispatch", group: "draws-3", incremental: "cold", matrix: planMatrix("workflow_dispatch", "draws-3") });
+    expect(evalIf(restoreIf!, coldOne), "restore: workflow_dispatch of one leg, incremental=cold").toBe(false);
+    expect(evalIf(drift, coldOne), "drift (strict) does not run for a cold single leg").toBe(false);
+    expect(evalIf(restoreIf!, ctxOf({ event: "workflow_dispatch", group: "draws-3", incremental: "restore", matrix: planMatrix("workflow_dispatch", "draws-3") })), "restore: incremental=restore is the default").toBe(true);
     // the save keeps the cold run's file for a later warm dispatch: its condition reads only the check, never the event
     const saveIf = /^ {8}if: (.+?)\s*(?:#.*)?$/m.exec(stepOf(MJOBS.mutate!, "Save the incremental file").body)![1]!;
     expect(saveIf).not.toMatch(/event_name|inputs\./);
