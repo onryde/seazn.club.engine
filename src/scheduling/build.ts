@@ -93,9 +93,11 @@ import { buildGrid, type BuildGrid, type BuildSlot } from "./build-grid.ts";
 import {
   deltaConflicts,
   effectiveHard,
+  endSequenceRows,
   entityKeysFor,
   isBlockingConflict,
   roundBarrierBySequence,
+  roundOrderConflicts,
   roundSequenceKey,
   scopeCoversFixture,
   slotFixtures,
@@ -2279,7 +2281,25 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
   //    z3's did.
   const conflicts = conflictsForBoard(incumbent, proved);
   const ours = new Set(incumbent.map((a) => a.fixtureId));
-  const rejected = rejectedBlockingConflicts(rawSeedConflicts, conflicts, ours);
+  // X-SW-31 (W3 T10b fix round 2). The Swiss end barrier against PLAYED
+  // rounds. The app hands those over in `existing`, never as pins, and its
+  // apply gate re-runs round order over the board widened with them; the
+  // board-only check above cannot see that pair, so a service that places by
+  // the start floor alone (today's model) could ship a board the apply then
+  // refuses. Widened here the same way, with `existing`'s rows of an "end"
+  // sequence of THIS build's fixtures only (`endSequenceRows`: matched by key,
+  // their own flag never read), and judged as a DELTA against the raw greedy
+  // seed's widened rows, like the gate above. NOT scoped to `ours`: a later
+  // round sitting in `existing` is blamed for a breach an earlier-round card
+  // of this board caused, and a row between two `existing` boards appears on
+  // both sides and cancels. Empty for every build with no "end" sequence, so a
+  // start-floor board is gated exactly as before.
+  const endSiblings = endSequenceRows(barrierBySequence, existing);
+  const widenedRoundOrder = (board: readonly Assignment[]): Conflict[] =>
+    roundOrderConflicts([...board, ...endSiblings], verifyConfig.tz).filter(isBlockingConflict);
+  const againstPlayed =
+    endSiblings.length === 0 ? [] : deltaConflicts(widenedRoundOrder(rawSeed.assignments), widenedRoundOrder(incumbent));
+  const rejected = [...rejectedBlockingConflicts(rawSeedConflicts, conflicts, ours), ...againstPlayed];
   if (rejected.length > 0) {
     // Structured error log, not a fallback-and-forget: the caller is handed a
     // VALID board and a status field they may never read, so an

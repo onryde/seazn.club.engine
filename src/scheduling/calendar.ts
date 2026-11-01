@@ -899,9 +899,7 @@ export function slotFixtures(input: SlotInput): SlotResult {
     const key = roundSequenceKey(f);
     return barrierBySequence.get(key) === "end" ? { key, round: f.roundNo } : undefined;
   };
-  const barrierExisting = (input.existing ?? []).filter(
-    (a) => a.roundNo !== undefined && barrierBySequence.get(roundSequenceKey(a)) === "end",
-  );
+  const barrierExisting = endSequenceRows(barrierBySequence, input.existing ?? []);
 
   const ordered = [...input.fixtures].sort((a, b) => {
     const ra = a.roundNo ?? 0;
@@ -2332,6 +2330,27 @@ function roundEndConflicts(group: readonly Assignment[]): Conflict[] {
  *  copies of a grouping key is how a placer and a verifier fork. */
 export function roundSequenceKey(row: { divisionId?: string; stageId?: string; poolId?: string }): string {
   return `${row.divisionId ?? ""}|${row.stageId ?? ""}|${row.poolId ?? ""}`;
+}
+
+/**
+ * X-SW-31 (W3 T10b fix rounds 1-2): the rows of `rows` (an `existing` board:
+ * played or decided boards, other divisions' fixed boards) that belong to an
+ * `"end"` sequence of `barrierBySequence` (the map read off the FIXTURES).
+ * Matched by sequence KEY only: each row's own flag is never read and comes
+ * back as `"end"`, so an older or unflagged sibling can neither unbind the
+ * barrier nor make `roundOrderConflicts` refuse the set as mixed. Rows with no
+ * round are in no sequence. ONE filter for both readers that need it: the
+ * placer (`slotFixtures`) and `build.ts`'s verifier gate.
+ */
+export function endSequenceRows(
+  barrierBySequence: ReadonlyMap<string, RoundBarrier>,
+  rows: readonly Assignment[],
+): Assignment[] {
+  return rows.flatMap((a) =>
+    a.roundNo !== undefined && barrierBySequence.get(roundSequenceKey(a)) === "end"
+      ? [{ ...a, roundBarrier: "end" as const }]
+      : [],
+  );
 }
 
 /**

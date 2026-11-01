@@ -538,6 +538,87 @@ describe("X-SW-31 a Swiss round starts only after the previous round ends", () =
     expect(slots(plain.assignments)).toEqual({ "r1-a": "C1@+0", "r1-b": "C2@+0", "r2-a": "C3@+0" });
   });
 
+  it("X-SW-31 the build gate judges a solver board against played rounds in `existing` too, and ships greedy when it breaks the barrier", async () => {
+    // The solver road: a seated final round (CP-SAT only runs when no TBD shell is in the movable set), round 1 played
+    // and handed over as `existing`, its LAST board late: r1-a C1, r1-b C2, r1-d C4 at +0..+30 and r1-c C3 at +30..+60.
+    // The service applies only the start floor today, so it may answer r2-a C4@+30: after every round-1 START, 30
+    // minutes before round 1's END. Greedy waits for +60: ready = +60, C1 is the first court free then → C1@+60.
+    const played = [
+      row("r1-a", 1, "C1", 0, 30, END),
+      row("r1-b", 1, "C2", 0, 30, END),
+      row("r1-c", 1, "C3", 30, 60, END),
+      row("r1-d", 1, "C4", 0, 30, END),
+    ];
+    const finalRound = [shell("r2-a", 2, { home: "E0", away: "E1", ...END })];
+    const reply = proved([{ fixtureId: "r2-a", court: "C4", startAtMs: T0 + 30 * MIN }]);
+    const config = cfg();
+    let shapes = 0;
+    // Siblings matched by sequence KEY: flagged, unflagged or "start", they bind the gate the same way and never
+    // turn the build into CONFIG_INVALID.
+    for (const flag of [END, {}, { roundBarrier: "start" as const }]) {
+      const existing = played.map(({ roundBarrier: _drop, ...a }) => ({ ...a, ...flag }));
+      const { lines, log } = recordingLogger();
+      const built = await buildSchedule({ fixtures: finalRound, config, existing, solve: resolvingSolver(reply), log });
+      expect(built.status, `siblings ${JSON.stringify(flag)}`).toBe("verifier_rejected");
+      expect(built.engine).toBe("greedy");
+      expect(slots(built.assignments)).toEqual({ "r2-a": "C1@+60" });
+      expect(lines.filter((l) => l.level === "error").map((l) => l.fields)).toEqual([{ rejected: ["r2-a:order"] }]);
+      // The app's apply gate over what shipped: clean.
+      expect(roundOrderConflicts([...built.assignments, ...played], TZ)).toEqual([]);
+      shapes++;
+    }
+    expect(shapes).toBe(3);
+    // Premise: the reply really is the breach the app's gate refuses — 30 minutes short of r1-c's +60.
+    const answered = [{ ...row("r2-a", 2, "C4", 30, 60, END), entrants: ["E0", "E1"] }];
+    expect(roundOrderConflicts([...answered, ...played], TZ).map((c) => [c.fixtureId, c.details, c.shortfallMinutes])).toEqual([
+      ["r2-a", { kind: "round_order_end", roundNo: 2, otherRoundNo: 1 }, 30],
+    ]);
+
+    // The cap side, where the row is blamed on the `existing` board: round 1 played on C1 (+0..+30) and a round-3
+    // board already on C2 at +50. r2-a must start at +30 or later and end by +50, so greedy refuses it. A reply
+    // placing it C3@+30 (ending +60) places more than greedy did, and overruns round 3's start by 10 minutes.
+    const capped = [row("r1-a", 1, "C1", 0, 30, END), row("r3-a", 3, "C2", 50, 80, END)];
+    const over = await buildSchedule({
+      fixtures: finalRound,
+      config,
+      existing: capped,
+      solve: resolvingSolver(proved([{ fixtureId: "r2-a", court: "C3", startAtMs: T0 + 30 * MIN }])),
+      log: silentLogger,
+    });
+    expect([over.status, over.engine]).toEqual(["verifier_rejected", "greedy"]);
+    expect(over.assignments).toEqual([]);
+
+    // A DELTA, not an absolute test: a breach already on the played board (round 2's r2-x started at +20, before
+    // r1-a's +30 end: legacy data) is on both sides and refuses nothing. Round 3's r3-a waits for round 2's +50 end:
+    // greedy C1@+50 (C1 is the first court free then); the reply C3@+50 ties it, legal, so it is not refused.
+    const legacy = [row("r1-a", 1, "C1", 0, 30, END), row("r2-x", 2, "C2", 20, 50, END)];
+    expect(roundOrderConflicts(legacy, TZ).map((c) => [c.fixtureId, c.shortfallMinutes])).toEqual([["r2-x", 10]]);
+    const { lines: legacyLines, log: legacyLog } = recordingLogger();
+    const legal = await buildSchedule({
+      fixtures: [shell("r3-a", 3, { home: "E0", away: "E1", ...END })],
+      config,
+      existing: legacy,
+      solve: resolvingSolver(proved([{ fixtureId: "r3-a", court: "C3", startAtMs: T0 + 50 * MIN }])),
+      log: legacyLog,
+    });
+    expect(legal.status).not.toBe("verifier_rejected");
+    expect(legacyLines.filter((l) => l.level === "error")).toEqual([]);
+    expect(Object.values(slots(legal.assignments)).map((at) => at.split("@")[1])).toEqual(["+50"]);
+
+    // The differential, start-floor sequences untouched: the same reply for an unflagged sequence is legal (greedy's
+    // own best is +30 there too, C1 first), so nothing is refused and nothing is logged.
+    const { lines, log } = recordingLogger();
+    const plain = await buildSchedule({
+      fixtures: finalRound.map(({ roundBarrier: _drop, ...f }) => f),
+      config,
+      existing: played.map(({ roundBarrier: _drop, ...a }) => a),
+      solve: resolvingSolver(reply),
+      log,
+    });
+    expect(plain.status).not.toBe("verifier_rejected");
+    expect(lines.filter((l) => l.level === "error")).toEqual([]);
+  });
+
   it("X-SW-31 placer and verifier agree (parity)", async ({ task }) => {
     // A fixed-seed corpus: 1-4 courts, 1-3 Swiss sequences (two divisions, a stage each, some pooled), 1-4 rounds of
     // 1-3 boards, half seated (entrants shared within a sequence, so rest bites) and half shells, ~12% pinned at a

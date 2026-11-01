@@ -38,8 +38,10 @@ export interface SolveBuildInput {
      * The model is NOT in this repository (onryde/seazn.club.placement, behind
      * onryde/seazn.club's `@seazn/scheduler` adapter). Until it reads this
      * field, `build.ts`'s verifier gate refuses any board that breaks the
-     * barrier (`round_order_end` is a blocking `order` row) and ships the
-     * greedy board, which honours it.
+     * barrier — between two of its own rows, or against a same-sequence row
+     * of `existing` (a played round, the shape the app hands over) — and
+     * ships the greedy board, which honours both (`round_order_end` is a
+     * blocking `order` row).
      */
     roundBarrier?: "start" | "end";
     /**
