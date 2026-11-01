@@ -791,10 +791,10 @@ describe("W2d T4 — the refinement driver's guards", () => {
     expect(ids(rankStandings(swissRows(played), { cascade: ["points", "seed", "lots"], swiss: played, pointsUnit: "half", seeds, rngSeed: 1 }))).toEqual(["B", "A", "C", "D"]);
   });
 
-  it("direct at rank time on a forfeited Swiss meeting matches the engine's directEncounter (parity pin; no FIDE C.07 digest covers forfeits)", () => {
-    // NOT a rulebook value: the rulebook digests do not say whether a forfeit counts in direct encounter, so this pins
-    // only that the rank-time step and the exported pairwise reader agree (both skip `unplayed`). A FIDE ruling is
-    // owed; if it says a forfeit counts, both readers and this expected order change together.
+  it("direct at rank time on a forfeited Swiss meeting matches the engine's directEncounter (parity pin; a forfeit is not a meeting, rulebook-W3 §4 M1)", () => {
+    // Settled by W3 (row X-SW-7): a forfeit is NOT a meeting (rulebook-W3 §4 M1, P-A2, A2 3.5), so direct
+    // encounter skips it; the rule's own proof is swiss-unplayed.test.ts ("a forfeit is not a meeting"). This test pins
+    // that the rank-time step and the exported pairwise reader agree on it (both skip `unplayed`).
     const [seeds, cascade] = [swissSeeds, swissDirect];
     // The same scores, but A beat B by FORFEIT and D over the board. directEncounter reads the unplayed game as no
     // meeting, so the pair is level on direct and the seed decides: B above A.

@@ -751,6 +751,27 @@ describe("X-SW-7 forfeits, double walkovers and withdrawals: FIDE C.07 (2026) ar
       { entrant: "R", score: 5, games: [] },
     ];
     expect([0, 1, 2, 3].map((cut) => buchholz(hand, "X", { cut }))).toEqual([12, 9, 5, 5]);
+    // 16.1: a forfeit WIN (16.2.2) and a pairing-allocated bye (16.2.1) are unplayed but NOT VURs, so a Cut-1 on a card
+    // with no VUR passes over them to the lowest contribution (16.5.1). Hand card (half-points, R = 4, D = 1): Y, score 8,
+    // beat P (score 1), won by forfeit v F (score 4: dummy min(8, F 4) = 4, 16.4.1), had the round-3 bye (dummy
+    // min(8, D x R = 4) = 4, 16.4.2), beat S (score 5).
+    //   Contributions {P 1, forfeit win 4, bye 4, S 5}, Buchholz 14.
+    //   Cut-1 has no VUR to cut, so it cuts the lowest, P's 1 → 13 (reading the forfeit win or the bye as a VUR cuts a 4 → 10).
+    const noVur: SwissTable = [
+      {
+        entrant: "Y", score: 8,
+        games: [
+          { round: 1, opponent: "P", result: "win", scored: 2 },
+          { round: 2, opponent: "F", result: "win", scored: 2, unplayed: "forfeit_win", cap: 4 },
+          { round: 3, opponent: null, result: "win", scored: 2, unplayed: "bye", cap: 4 },
+          { round: 4, opponent: "S", result: "win", scored: 2 },
+        ],
+      },
+      { entrant: "P", score: 1, games: [] },
+      { entrant: "F", score: 4, games: [] },
+      { entrant: "S", score: 5, games: [] },
+    ];
+    expect([0, 1].map((cut) => buchholz(noVur, "Y", { cut }))).toEqual([14, 13]);
   });
 
   it("X-SW-7 a forfeit is not a meeting: direct encounter A v B is level (P-A2)", () => {
