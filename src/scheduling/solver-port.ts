@@ -45,6 +45,47 @@ export interface SolveBuildInput {
      */
     roundBarrier?: "start" | "end";
     /**
+     * W3 T10c (owner ruling 256, 2026-11-01; proto `Fixture.round_gap_minutes`)
+     * — an `"end"` sequence's gap, in whole minutes: a fixture of round j does
+     * not start before a fixture of an earlier round i of its sequence ENDS
+     * plus this: `start_j >= start_i + constraints.matchMinutes + gap`
+     * (equality legal; pins in both directions, pin-pin exempt, exactly as
+     * `roundBarrier`). The division's minimum rest, carried by the round
+     * because an unpaired slot has no people for person rest to reach. Sent
+     * only beside `roundBarrier: "end"` and only when above 0; absent = no gap.
+     * Constant across a sequence (`build.ts` refuses a mixed one first).
+     */
+    roundGapMinutes?: number;
+    /**
+     * W3 T10c (owner ruling 256; proto `Fixture.rounds_per_day_cap`) — an
+     * `"end"` sequence's cap on ROUNDS per calendar day: the distinct rounds
+     * with at least one fixture on one `dayIndex`, pins counted, are at most
+     * this (the division's per-player daily match cap — in a Swiss each player
+     * plays once per round). Paired fixtures and unpaired slots alike. Sent
+     * only beside `roundBarrier: "end"`, only when above 0, and only when the
+     * build has a zone: without one every slot's `dayIndex` is 0 and the cap
+     * would bind the whole schedule. Absent = no cap. Constant across a
+     * sequence.
+     *
+     * Pin rows carry neither limit: a pin's round is forwarded only when the
+     * request holds exactly one round sequence, so a pin binds by that
+     * sequence's limits, read off its fixtures.
+     */
+    roundsPerDayCap?: number;
+    /**
+     * W3 T10c (owner ruling 255, 2026-11-01; proto `Fixture.unpaired_round_slot`)
+     * — an UNPAIRED ROUND SLOT: a board of a Swiss round whose pairing is not
+     * drawn yet. `entrantIds` and `people` are both empty, `roundNo` is set and
+     * `roundBarrier` is `"end"`; it takes a court and a time and carries no
+     * person constraint, every other constraint applying (the barrier, its
+     * gap, the day cap, courts, windows). Without it the service refuses a
+     * fixture with neither entrants nor people. `build.ts` sets it ONLY beside
+     * a round it forwards: a slot whose round was stripped goes out unflagged
+     * (and is refused, so greedy ships), never flagged without a round, which
+     * the service would refuse for the whole request.
+     */
+    unpairedRoundSlot?: boolean;
+    /**
      * C10 (2026-08-16, wire person indices) — person ids, straight from
      * {@link SchedulableFixture.people} — resolved through a SEPARATE index
      * space than {@link entrantIds}; see `Fixture.person_indices`'s own

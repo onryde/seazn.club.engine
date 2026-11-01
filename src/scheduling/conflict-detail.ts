@@ -80,19 +80,35 @@
 // LATER round of it (`otherFixtureId`, round `otherRoundNo`) starts too soon
 // for the card to end first. Like `no_slot_person_bound`, it names the fact the
 // organiser has to change, which `no_slot_horizon` would hide.
+//
+// `rounds_per_day` (W3 T10c, owner ruling 256, 2026-11-01) is the 31st. An
+// unpaired Swiss round slot carries no people, so the division's per-player
+// daily match cap cannot reach it as a person rule; a Swiss sequence caps the
+// distinct ROUNDS on one calendar day instead (`roundsPerDayCap`). It carries
+// the day and the cap (`day`, `requiredCount`). The day's count is MEASURED,
+// so it rides in `Conflict.measuredCount`, outside the identity, for the
+// reason `round_order_end`'s shortfall does: taking one round off a day still
+// over its cap is a repair the delta gate must let through. BLOCKING
+// (`reason: "order"`, `direct: true`), like the barrier it belongs to.
+//
+// `no_slot_rounds_per_day` (same ruling) is the 32nd: the placer could not
+// place a card of a Swiss sequence because the cap left it no day (`roundNo`,
+// the cap in `requiredCount`).
 
 /** One member per family template. The design doc's own table enumerates 25;
  *  a 26th (`court_tag_mismatch`), a 27th (`outside_court_hours`) and a 28th
- *  (`stranded_fixture`) have since been added by owner ruling, and a 29th
+ *  (`stranded_fixture`) have since been added by owner ruling, a 29th
  *  (`round_order_end`) and 30th (`no_slot_round_barrier`) by the W3 controller
- *  rulings of 2026-10-31 and 2026-11-01 — closed at exactly these 30, and a
- *  31st needs the same, not a cast. */
+ *  rulings of 2026-10-31 and 2026-11-01, and a 31st (`rounds_per_day`) and
+ *  32nd (`no_slot_rounds_per_day`) by owner ruling 256 — closed at exactly
+ *  these 32, and a 33rd needs the same, not a cast. */
 export type ConflictDetailKind =
   | "person_double_booking"
   | "locked_slot_clash"
   | "no_slot_start_window"
   | "no_slot_person_bound"
   | "no_slot_round_barrier"
+  | "no_slot_rounds_per_day"
   | "no_slot_horizon"
   | "instruction_feeder_gap"
   | "instruction_day_cap"
@@ -116,6 +132,7 @@ export type ConflictDetailKind =
   | "round_order_day"
   | "round_order_same_day"
   | "round_order_end"
+  | "rounds_per_day"
   | "no_slot_lattice"
   | "no_slot_budget";
 

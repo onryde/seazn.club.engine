@@ -106,6 +106,10 @@ export interface SchedulableFixture {
    *  `Assignment.roundBarrier` below. Read by the placer (`slotFixtures`) and
    *  forwarded to the solver by `build.ts`. */
   roundBarrier?: RoundBarrier;
+  /** W3 T10c (ruling 256): the end barrier's gap — see `Assignment.roundGapMinutes`. */
+  roundGapMinutes?: number;
+  /** W3 T10c (ruling 256): the rounds one day may hold — see `Assignment.roundsPerDayCap`. */
+  roundsPerDayCap?: number;
   locked?: { court: string; startAt: number }; // pinned assignment — honoured as-is
   /**
    * #622 — the courts THIS fixture may be placed on, a subset of
@@ -180,7 +184,7 @@ export interface Assignment {
    *  exactly at that end is legal). The start floor still applies too.
    *
    *  Per row, constant per sequence: a sequence whose rows disagree is
-   *  CONFIG_INVALID (`roundBarrierBySequence`), checked by the placer (over
+   *  CONFIG_INVALID (`roundRulesBySequence`), checked by the placer (over
    *  its fixtures), the verifier and the build alike. The placer's `existing`
    *  rows are the one exception: they join a sequence by its key and their
    *  own flag is never read, so a played round handed over as obstacles binds
@@ -191,6 +195,27 @@ export interface Assignment {
    *  Assignments for a Swiss stage must set it on every row, the two widening
    *  delta-gate callers' siblings included. */
   roundBarrier?: RoundBarrier;
+  /** W3 T10c (owner ruling 256, 2026-11-01). An `"end"` sequence's GAP, in
+   *  whole minutes: no board of a later round starts before the last board of
+   *  an earlier round has ended PLUS this (the division's minimum rest). An
+   *  unpaired round slot has no people, so person rest cannot reach it; the
+   *  round carries it instead. Absent or 0: no gap, T10b's barrier exactly.
+   *
+   *  Like `roundBarrier`: per row, constant per sequence (mixed values are
+   *  CONFIG_INVALID, `roundRulesBySequence`), read only beside `roundNo`, an
+   *  `existing` row's own value never read by the placer, and carried
+   *  through by `commit` and `assignmentOf`. Only an `"end"` sequence may set
+   *  it: a gap with no end barrier to add to is refused, not ignored. */
+  roundGapMinutes?: number;
+  /** W3 T10c (owner ruling 256). An `"end"` sequence's ROUNDS PER DAY: the
+   *  distinct rounds with at least one board on one calendar day of the org
+   *  zone are at most this (the division's per-player daily match cap — in a
+   *  Swiss each player plays once per round, so rounds per day is matches per
+   *  player per day, paired boards and unpaired slots alike). Absent or 0: no
+   *  cap. A calendar day needs `tz`, so without one it is not read, by the
+   *  placer, the verifier or the wire (the house rule for every day-shaped
+   *  rule). Same per-sequence rules as `roundGapMinutes`. */
+  roundsPerDayCap?: number;
 }
 
 /** X-SW-31: see `Assignment.roundBarrier`. */
@@ -286,6 +311,14 @@ export interface Conflict {
    *  refuse it. The size travels beside the key instead, so `deltaConflicts` can
    *  tell "worse" from "better" without either being a different conflict. */
   shortfallMinutes?: number;
+  /** `rounds_per_day` only (W3 T10c, ruling 256): how many distinct rounds the
+   *  day holds, against the cap in `details.requiredCount`. MEASURED, so it is
+   *  not part of `conflictKey`, for the reason `shortfallMinutes` is not: an
+   *  organiser taking a fourth round off a day capped at two leaves a breach
+   *  of three, and a key that moved with the count would refuse that repair.
+   *  `deltaConflicts` needs no reading of it: a day's count can only grow when
+   *  a board ARRIVES on it, and that board's row is a new key. */
+  measuredCount?: number;
 }
 
 /** Stamped where a producer RETURNS, not where it pushes: a new
@@ -893,13 +926,27 @@ export function slotFixtures(input: SlotInput): SlotResult {
   // CONFIG_INVALID before anything is placed, and an `existing` row joins a
   // sequence by its KEY, its own flag never read — an older or unflagged
   // sibling must never turn a build into a refusal.
-  const barrierBySequence = roundBarrierBySequence(input.fixtures);
-  const endSequenceOf = (f: SchedulableFixture): { key: string; round: number } | undefined => {
+  //
+  // Ruling 256 (T10c): the sequence's two round limits ride the same reads.
+  // The GAP widens both bounds (start no earlier than an earlier round's end
+  // plus the gap, end no later than a later round's start minus it). The CAP
+  // is a day test inside the repair loop below: a start whose org-zone day
+  // already holds `roundsPerDayCap` OTHER rounds of the sequence — placed,
+  // pinned or in `existing` — moves to the next day, and a card the cap
+  // leaves no day for is refused `no_slot_rounds_per_day`. Both read off the
+  // fixtures, like the flag; both inert at 0, and the cap without `tz`.
+  const rulesBySequence = roundRulesBySequence(input.fixtures);
+  const endSequenceOf = (
+    f: SchedulableFixture,
+  ): { key: string; round: number; gapMs: number; roundsPerDayCap: number } | undefined => {
     if (f.roundNo === undefined) return undefined;
     const key = roundSequenceKey(f);
-    return barrierBySequence.get(key) === "end" ? { key, round: f.roundNo } : undefined;
+    const rules = rulesBySequence.get(key);
+    return rules?.barrier === "end"
+      ? { key, round: f.roundNo, gapMs: rules.gapMinutes * MS_PER_MIN, roundsPerDayCap: rules.roundsPerDayCap }
+      : undefined;
   };
-  const barrierExisting = endSequenceRows(barrierBySequence, input.existing ?? []);
+  const barrierExisting = endSequenceRows(rulesBySequence, input.existing ?? []);
 
   const ordered = [...input.fixtures].sort((a, b) => {
     const ra = a.roundNo ?? 0;
@@ -1005,8 +1052,11 @@ export function slotFixtures(input: SlotInput): SlotResult {
       // this sits".
       ...(f.roundNo !== undefined ? { roundNo: f.roundNo } : {}),
       // X-SW-31. Carried through for the same reason as `roundNo`: the
-      // verifier reads the sequence's barrier off the Assignment.
+      // verifier reads the sequence's barrier off the Assignment — and, T10c,
+      // its two round limits.
       ...(f.roundBarrier !== undefined ? { roundBarrier: f.roundBarrier } : {}),
+      ...(f.roundGapMinutes !== undefined ? { roundGapMinutes: f.roundGapMinutes } : {}),
+      ...(f.roundsPerDayCap !== undefined ? { roundsPerDayCap: f.roundsPerDayCap } : {}),
       movable: f.locked === undefined,
     };
     bookings.push(assignment);
@@ -1069,17 +1119,38 @@ export function slotFixtures(input: SlotInput): SlotResult {
     let roundDeadline = Infinity;
     /** The later-round board that set `roundDeadline`, named by a refusal. */
     let deadlineBy: Assignment | undefined;
+    /** Ruling 256: the rounds of this card's sequence already on each day, or
+     *  undefined when no cap binds it (none set, or no zone to find a day in). */
+    let roundsOnDay: Map<string, Set<number>> | undefined;
     const endSequence = endSequenceOf(f);
     if (endSequence !== undefined) {
+      if (endSequence.roundsPerDayCap > 0 && tz !== undefined) roundsOnDay = new Map();
       for (const p of [...placed, ...barrierExisting]) {
         if (p.roundNo === undefined || roundSequenceKey(p) !== endSequence.key) continue;
-        if (p.roundNo < endSequence.round) ready = Math.max(ready, p.endAt);
-        else if (p.roundNo > endSequence.round && p.startAt < roundDeadline) {
-          roundDeadline = p.startAt;
+        if (p.roundNo < endSequence.round) ready = Math.max(ready, p.endAt + endSequence.gapMs);
+        else if (p.roundNo > endSequence.round && p.startAt - endSequence.gapMs < roundDeadline) {
+          roundDeadline = p.startAt - endSequence.gapMs;
           deadlineBy = p;
+        }
+        if (roundsOnDay !== undefined) {
+          const day = dayKeyInTz(p.startAt, tz as string);
+          (roundsOnDay.get(day) ?? roundsOnDay.set(day, new Set()).get(day)!).add(p.roundNo);
         }
       }
     }
+    /** Ruling 256: `null` when `start`'s day has room for this card's round
+     *  (the round is already there, or fewer than `cap` rounds are), else the
+     *  next day's first instant — a whole day, like the typed day cap, so the
+     *  repair budget is spent on days, not half-hours. */
+    const roundsPerDayBound = (start: number): number | null => {
+      if (roundsOnDay === undefined || endSequence === undefined) return null;
+      const day = dayKeyInTz(start, tz as string);
+      const rounds = roundsOnDay.get(day);
+      const withThis = rounds === undefined ? 1 : rounds.size + (rounds.has(endSequence.round) ? 0 : 1);
+      return withThis <= endSequence.roundsPerDayCap ? null : dayStart(ymdAddDays(day, 1));
+    };
+    /** Ruling 256: the cap pushed this card off a day on some court. */
+    let capBound = false;
 
     let best: { court: string; start: number } | null = null;
     let windowBound = false;
@@ -1124,7 +1195,17 @@ export function slotFixtures(input: SlotInput): SlotResult {
         // Typed-rule rejection (#463), on the same repair budget. The bound is
         // strictly greater than `start`, so the loop always makes progress.
         const bound = nextAcceptableStart(f, start);
-        if (bound === null) break;
+        if (bound === null) {
+          // Ruling 256: the round cap, the same day-level push. Checked once
+          // every other rule has accepted `start`, so the next iteration
+          // re-asks all of them on the new day.
+          const capAt = roundsPerDayBound(start);
+          if (capAt === null) break;
+          capBound = true;
+          start = null;
+          lb = capAt;
+          continue;
+        }
         start = null;
         // `Infinity` — no later instant can ever satisfy the rule. Abandon this
         // court now; the unplaceable path reports it.
@@ -1176,6 +1257,10 @@ export function slotFixtures(input: SlotInput): SlotResult {
       // the barrier binding, and the board that set the deadline is the fact
       // the organiser has to move. Never set for a start-floor sequence
       // (`roundDeadline` stays `Infinity`), so those refusals read as before.
+      //
+      // `no_slot_rounds_per_day` (ruling 256, T10c) likewise: the cap pushed
+      // the card off a day it could otherwise have used, so the cap is what
+      // the organiser has to change. After the barrier, which names a board.
       conflicts.push({
         fixtureId: f.id,
         reason: windowBound ? "start_window" : "no_slot",
@@ -1188,13 +1273,15 @@ export function slotFixtures(input: SlotInput): SlotResult {
                 otherRoundNo: deadlineBy.roundNo,
                 otherFixtureId: deadlineBy.fixtureId,
               }
-            : personBound !== null
-              ? {
-                  kind: "no_slot_person_bound",
-                  personIds: [personBound.person],
-                  otherFixtureId: personBound.other,
-                }
-              : { kind: "no_slot_horizon" },
+            : capBound && endSequence !== undefined
+              ? { kind: "no_slot_rounds_per_day", roundNo: endSequence.round, requiredCount: endSequence.roundsPerDayCap }
+              : personBound !== null
+                ? {
+                    kind: "no_slot_person_bound",
+                    personIds: [personBound.person],
+                    otherFixtureId: personBound.other,
+                  }
+                : { kind: "no_slot_horizon" },
       });
       continue;
     }
@@ -2218,9 +2305,10 @@ export function roundOrderConflicts(
 ): Conflict[] {
   const conflicts: Conflict[] = [];
   // X-SW-31 (W3 T10b). The guard first, and ahead of the zone check: a
-  // sequence whose rows disagree on their barrier is a caller bug whatever
-  // the clock, and reporting either reading of it would be a guess.
-  const barrierBySequence = roundBarrierBySequence(assignments);
+  // sequence whose rows disagree on their barrier (or, T10c, on its gap or
+  // cap) is a caller bug whatever the clock, and reporting either reading of
+  // it would be a guess.
+  const rulesBySequence = roundRulesBySequence(assignments);
   const bySequence = new Map<string, Assignment[]>();
   for (const a of assignments) {
     if (a.roundNo === undefined) continue;
@@ -2230,10 +2318,16 @@ export function roundOrderConflicts(
   // X-SW-31. The end barrier compares two INSTANTS, so unlike the start
   // floor's day/same-day rows below it needs no zone and is not skipped
   // without one. Appended after them, so a start-floor board's rows come out
-  // exactly as before.
+  // exactly as before. Ruling 256 (T10c): the gap rides inside it; the
+  // rounds-per-day cap follows it, and needs the zone (a calendar day).
   const endBarrier: Conflict[] = [];
   for (const [key, group] of bySequence) {
-    if (barrierBySequence.get(key) === "end") endBarrier.push(...roundEndConflicts(group));
+    const rules = rulesBySequence.get(key);
+    if (rules?.barrier !== "end") continue;
+    endBarrier.push(...roundEndConflicts(group, rules.gapMinutes));
+    if (tz !== undefined && rules.roundsPerDayCap > 0) {
+      endBarrier.push(...roundsPerDayConflicts(group, rules.roundsPerDayCap, tz));
+    }
   }
   if (tz === undefined) return endBarrier.map(withRule);
   for (const group of bySequence.values()) {
@@ -2292,8 +2386,14 @@ export function roundOrderConflicts(
  * round r's last board earlier without clearing the breach is a repair the
  * delta gate must let through, and moving b earlier still is a worsening it
  * must refuse.
+ *
+ * Ruling 256 (T10c): with a gap, b may not start before that end PLUS
+ * `gapMinutes`, and the gap counts in `shortfallMinutes` (a board starting at
+ * round r's last end with a 15-minute gap is 15 minutes short). 0 is T10b's
+ * barrier exactly.
  */
-function roundEndConflicts(group: readonly Assignment[]): Conflict[] {
+function roundEndConflicts(group: readonly Assignment[], gapMinutes: number): Conflict[] {
+  const gapMs = gapMinutes * MS_PER_MIN;
   const endAll = new Map<number, number>();
   const endMovable = new Map<number, number>();
   for (const a of group) {
@@ -2309,7 +2409,7 @@ function roundEndConflicts(group: readonly Assignment[]): Conflict[] {
     for (const round of rounds) {
       if (round >= b.roundNo) break;
       const otherEndAt = ends.get(round);
-      if (otherEndAt === undefined || b.startAt >= otherEndAt) continue;
+      if (otherEndAt === undefined || b.startAt >= otherEndAt + gapMs) continue;
       out.push({
         fixtureId: b.fixtureId,
         reason: "order",
@@ -2317,9 +2417,49 @@ function roundEndConflicts(group: readonly Assignment[]): Conflict[] {
         direct: true,
         // Rounded UP: a board that starts any part of a minute early is at
         // least a minute short, never "0 minutes".
-        shortfallMinutes: Math.ceil((otherEndAt - b.startAt) / MS_PER_MIN),
+        shortfallMinutes: Math.ceil((otherEndAt + gapMs - b.startAt) / MS_PER_MIN),
       });
     }
+  }
+  return out;
+}
+
+/**
+ * Ruling 256 (W3 T10c): the rounds-per-day cap over ONE `"end"` sequence's
+ * round-bearing rows. A day (the start's calendar day in the org zone) holds
+ * the distinct rounds of every row on it, pins included. A day holding more
+ * than `cap` is a breach, reported once on every MOVABLE row on that day:
+ * a day filled past the cap by pins alone has nothing to repair and yields no
+ * row (the start floor's pin-pin exemption, read per day), exactly as
+ * `instruction_day_cap` reports its cap. `reason: "order"`, `direct: true`,
+ * so it blocks like the barrier it belongs to, and it rides every seam that
+ * runs `roundOrderConflicts` (the two widening callers, the build gate).
+ *
+ * The identity is the board and the day (`details: {day, requiredCount}`);
+ * the count is MEASURED and rides in `measuredCount`, outside it, so taking a
+ * round off an over-full day is a repair the delta gate lets through even
+ * when the day is still over.
+ */
+function roundsPerDayConflicts(group: readonly Assignment[], cap: number, tz: string): Conflict[] {
+  const roundsByDay = new Map<string, Set<number>>();
+  for (const a of group) {
+    if (a.roundNo === undefined) continue;
+    const day = dayKeyInTz(a.startAt, tz);
+    (roundsByDay.get(day) ?? roundsByDay.set(day, new Set()).get(day)!).add(a.roundNo);
+  }
+  const out: Conflict[] = [];
+  for (const b of group) {
+    if (b.roundNo === undefined || b.movable === false) continue;
+    const day = dayKeyInTz(b.startAt, tz);
+    const count = roundsByDay.get(day)!.size;
+    if (count <= cap) continue;
+    out.push({
+      fixtureId: b.fixtureId,
+      reason: "order",
+      details: { kind: "rounds_per_day", day, requiredCount: cap },
+      direct: true,
+      measuredCount: count,
+    });
   }
   return out;
 }
@@ -2333,47 +2473,85 @@ export function roundSequenceKey(row: { divisionId?: string; stageId?: string; p
 }
 
 /**
- * X-SW-31 (W3 T10b fix rounds 1-2): the rows of `rows` (an `existing` board:
- * played or decided boards, other divisions' fixed boards) that belong to an
- * `"end"` sequence of `barrierBySequence` (the map read off the FIXTURES).
- * Matched by sequence KEY only: each row's own flag is never read and comes
- * back as `"end"`, so an older or unflagged sibling can neither unbind the
- * barrier nor make `roundOrderConflicts` refuse the set as mixed. Rows with no
- * round are in no sequence. ONE filter for both readers that need it: the
- * placer (`slotFixtures`) and `build.ts`'s verifier gate.
+ * X-SW-31 (W3 T10b fix rounds 1-2; T10c): the rows of `rows` (an `existing`
+ * board: played or decided boards, other divisions' fixed boards) that belong
+ * to an `"end"` sequence of `rulesBySequence` (the rules read off the
+ * FIXTURES). Matched by sequence KEY only: each row's own flag and limits are
+ * never read and come back as the sequence's (`"end"`, and its gap and cap
+ * when set), so an older or unstamped sibling can neither unbind the barrier
+ * nor make `roundOrderConflicts` refuse the set as mixed. Rows with no round
+ * are in no sequence. ONE filter for both readers that need it: the placer
+ * (`slotFixtures`) and `build.ts`'s verifier gate.
  */
 export function endSequenceRows(
-  barrierBySequence: ReadonlyMap<string, RoundBarrier>,
+  rulesBySequence: ReadonlyMap<string, RoundSequenceRules>,
   rows: readonly Assignment[],
 ): Assignment[] {
-  return rows.flatMap((a) =>
-    a.roundNo !== undefined && barrierBySequence.get(roundSequenceKey(a)) === "end"
-      ? [{ ...a, roundBarrier: "end" as const }]
-      : [],
-  );
+  return rows.flatMap((a) => {
+    if (a.roundNo === undefined) return [];
+    const rules = rulesBySequence.get(roundSequenceKey(a));
+    if (rules?.barrier !== "end") return [];
+    const { roundGapMinutes: _ownGap, roundsPerDayCap: _ownCap, ...row } = a;
+    return [{ ...row, roundBarrier: "end" as const, ...roundLimitFields(rules) }];
+  });
+}
+
+/** X-SW-31 / ruling 256: how one round sequence is ordered. Absent fields read
+ *  as `"start"` and 0. */
+export interface RoundSequenceRules {
+  barrier: RoundBarrier;
+  /** `Assignment.roundGapMinutes`; 0 = no gap. */
+  gapMinutes: number;
+  /** `Assignment.roundsPerDayCap`; 0 = no cap. */
+  roundsPerDayCap: number;
+}
+
+/** The two limits as row fields, each omitted at 0, so a sequence without them
+ *  stamps exactly T10b's row. */
+function roundLimitFields(rules: RoundSequenceRules): { roundGapMinutes?: number; roundsPerDayCap?: number } {
+  return {
+    ...(rules.gapMinutes > 0 ? { roundGapMinutes: rules.gapMinutes } : {}),
+    ...(rules.roundsPerDayCap > 0 ? { roundsPerDayCap: rules.roundsPerDayCap } : {}),
+  };
 }
 
 /**
  * X-SW-31 (W3 T10b): each round-bearing sequence's barrier, absent read as
- * `"start"`. The flag is per row but the rule is per sequence, so a sequence
- * whose rows disagree — `"end"` beside `"start"` or beside an absent flag — is
- * refused CONFIG_INVALID rather than read either way: half a Swiss stage
- * ordered by its end and half by its start is no rule anyone wrote, and the
- * likeliest cause is a caller seam that forgot to set it. A value outside the
- * two is refused the same way. Rows with no `roundNo` are in no sequence and
+ * `"start"` — `roundRulesBySequence`'s barrier, and every refusal it makes.
+ */
+export function roundBarrierBySequence(rows: readonly RoundRuleRow[]): Map<string, RoundBarrier> {
+  return new Map([...roundRulesBySequence(rows)].map(([key, rules]) => [key, rules.barrier]));
+}
+
+/** The fields `roundRulesBySequence` reads off a fixture or an Assignment. */
+type RoundRuleRow = {
+  roundNo?: number;
+  roundBarrier?: RoundBarrier;
+  roundGapMinutes?: number;
+  roundsPerDayCap?: number;
+  divisionId?: string;
+  stageId?: string;
+  poolId?: string;
+};
+
+/**
+ * X-SW-31 (W3 T10b) and ruling 256 (T10c): each round-bearing sequence's rules
+ * — its barrier (absent = `"start"`), gap and rounds-per-day cap (absent = 0).
+ * The fields are per row but the rules are per sequence, so a sequence whose
+ * rows disagree — `"end"` beside `"start"` or beside an absent flag, a gap of
+ * 15 beside 30 or beside none — is refused CONFIG_INVALID rather than read
+ * either way: half a Swiss stage ordered one way and half another is no rule
+ * anyone wrote, and the likeliest cause is a caller seam that forgot a row.
+ * Also refused: a barrier outside the two, a limit that is not a whole number
+ * of minutes or rounds at least 0, and a limit on a sequence that is not
+ * `"end"` (they are Swiss ROUND limits — on a round robin there is no barrier
+ * for a gap to extend, and the likeliest cause is a forgotten barrier, which
+ * ignoring the limit would hide). Rows with no `roundNo` are in no sequence and
  * are skipped. Called by `slotFixtures`, `roundOrderConflicts` and
  * `buildSchedule`, so all three refuse the same input.
  */
-export function roundBarrierBySequence(
-  rows: readonly {
-    roundNo?: number;
-    roundBarrier?: RoundBarrier;
-    divisionId?: string;
-    stageId?: string;
-    poolId?: string;
-  }[],
-): Map<string, RoundBarrier> {
-  const out = new Map<string, RoundBarrier>();
+export function roundRulesBySequence(rows: readonly RoundRuleRow[]): Map<string, RoundSequenceRules> {
+  const out = new Map<string, RoundSequenceRules>();
   for (const row of rows) {
     if (row.roundNo === undefined) continue;
     const key = roundSequenceKey(row);
@@ -2385,15 +2563,53 @@ export function roundBarrierBySequence(
         { sequence: key, roundBarrier: barrier },
       );
     }
-    const seen = out.get(key);
-    if (seen === undefined) out.set(key, barrier);
-    else if (seen !== barrier) {
+    const gapMinutes = roundLimitOf(row.roundGapMinutes, "roundGapMinutes", key);
+    const roundsPerDayCap = roundLimitOf(row.roundsPerDayCap, "roundsPerDayCap", key);
+    if (barrier !== "end" && (gapMinutes > 0 || roundsPerDayCap > 0)) {
       throw new EngineError(
         "CONFIG_INVALID",
-        `round order: sequence "${key}" mixes roundBarrier "${seen}" and "${barrier}"; a sequence is ordered one way`,
-        { sequence: key, roundBarriers: [seen, barrier] },
+        `round order: sequence "${key}" sets roundGapMinutes/roundsPerDayCap without roundBarrier "end"; they are Swiss round limits`,
+        { sequence: key, roundBarrier: barrier, roundGapMinutes: gapMinutes, roundsPerDayCap },
+      );
+    }
+    const seen = out.get(key);
+    if (seen === undefined) {
+      out.set(key, { barrier, gapMinutes, roundsPerDayCap });
+      continue;
+    }
+    if (seen.barrier !== barrier) {
+      throw new EngineError(
+        "CONFIG_INVALID",
+        `round order: sequence "${key}" mixes roundBarrier "${seen.barrier}" and "${barrier}"; a sequence is ordered one way`,
+        { sequence: key, roundBarriers: [seen.barrier, barrier] },
+      );
+    }
+    if (seen.gapMinutes !== gapMinutes || seen.roundsPerDayCap !== roundsPerDayCap) {
+      throw new EngineError(
+        "CONFIG_INVALID",
+        `round order: sequence "${key}" mixes round limits (gap ${seen.gapMinutes} and ${gapMinutes} minutes, ` +
+          `cap ${seen.roundsPerDayCap} and ${roundsPerDayCap} rounds a day); a sequence has one of each`,
+        {
+          sequence: key,
+          roundGapMinutes: [seen.gapMinutes, gapMinutes],
+          roundsPerDayCap: [seen.roundsPerDayCap, roundsPerDayCap],
+        },
       );
     }
   }
   return out;
+}
+
+/** One limit's value: absent = 0; anything but a whole number at least 0 is
+ *  refused (a division setting is never negative, fractional or a string). */
+function roundLimitOf(value: unknown, field: "roundGapMinutes" | "roundsPerDayCap", sequence: string): number {
+  if (value === undefined) return 0;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new EngineError(
+      "CONFIG_INVALID",
+      `round order: ${field} must be a whole number at least 0, got ${JSON.stringify(value)}`,
+      { sequence, [field]: value },
+    );
+  }
+  return value;
 }

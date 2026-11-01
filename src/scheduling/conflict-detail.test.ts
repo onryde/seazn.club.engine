@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { canonConflictDetail, type ConflictDetail, type ConflictDetailKind } from "./conflict-detail.ts";
 import { conflictKey, type Conflict } from "./calendar.ts";
 
-// The 30-kind table, field-for-field, written out explicitly rather than
+// The 32-kind table, field-for-field, written out explicitly rather than
 // generated so it reads beside the design doc's table and a missing kind is a
 // `Record<ConflictDetailKind, …>` type error rather than a silently skipped
 // row — the same reasoning `RULE_BY_REASON` uses for `ConflictReason`.
@@ -80,6 +80,12 @@ const FULL_DETAIL: Record<ConflictDetailKind, ConflictDetail> = {
   // how early the board starts is measured, so it rides in `shortfallMinutes`,
   // outside the identity.
   round_order_end: { kind: "round_order_end", roundNo: 3, otherRoundNo: 2 },
+  // W3 T10c's 31st (ruling 256): a Swiss sequence's day holds more rounds than
+  // its cap. The day and the cap only: the day's count is measured, so it rides
+  // in `Conflict.measuredCount`, outside the identity.
+  rounds_per_day: { kind: "rounds_per_day", day: "2026-08-10", requiredCount: 2 },
+  // ... and its 32nd: a Swiss card refused because the cap left it no day.
+  no_slot_rounds_per_day: { kind: "no_slot_rounds_per_day", roundNo: 3, requiredCount: 2 },
   no_slot_lattice: { kind: "no_slot_lattice" },
   no_slot_budget: { kind: "no_slot_budget" },
 };
@@ -112,7 +118,7 @@ const ALT_VALUE: { [K in keyof Omit<ConflictDetail, "kind">]-?: NonNullable<Conf
   requiredCount: 3,
 };
 
-describe("canonConflictDetail — per-kind field participation (all 30 kinds)", () => {
+describe("canonConflictDetail — per-kind field participation (all 32 kinds)", () => {
   for (const kind of ALL_KINDS) {
     const base = FULL_DETAIL[kind];
     const fields = Object.keys(base).filter((k) => k !== "kind") as (keyof Omit<ConflictDetail, "kind">)[];

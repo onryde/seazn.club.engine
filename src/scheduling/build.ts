@@ -96,8 +96,8 @@ import {
   endSequenceRows,
   entityKeysFor,
   isBlockingConflict,
-  roundBarrierBySequence,
   roundOrderConflicts,
+  roundRulesBySequence,
   roundSequenceKey,
   scopeCoversFixture,
   slotFixtures,
@@ -1169,10 +1169,11 @@ export function buildSchedule(input: BuildInput): Promise<BuildResult> {
   try {
     assertEnginePorts(input, "buildSchedule");
     // X-SW-31 (W3 T10b): a round sequence with mixed `roundBarrier` values is
-    // CONFIG_INVALID. Checked here, inside this `try`, because the queue-cap
-    // and size-gate exits below build the greedy board SYNCHRONOUSLY, and
-    // `slotFixtures` would throw the same refusal from there.
-    roundBarrierBySequence(input.fixtures);
+    // CONFIG_INVALID (and, T10c, mixed or impossible round limits). Checked
+    // here, inside this `try`, because the queue-cap and size-gate exits below
+    // build the greedy board SYNCHRONOUSLY, and `slotFixtures` would throw the
+    // same refusal from there.
+    roundRulesBySequence(input.fixtures);
   } catch (e) {
     return Promise.reject(e instanceof Error ? e : new TypeError(String(e)));
   }
@@ -1714,8 +1715,12 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
       ...(f?.roundNo !== undefined ? { roundNo: f.roundNo } : {}),
       // X-SW-31 (W3 T10b). Carried through for the same reason as `roundNo`:
       // this helper's output is what the gate below re-verifies, and a solver
-      // board that lost the flag would be judged by the start floor only.
+      // board that lost the flag would be judged by the start floor only. The
+      // two round limits (T10c, ruling 256) likewise, or the gate would judge
+      // a solver board with no gap and no cap.
       ...(f?.roundBarrier !== undefined ? { roundBarrier: f.roundBarrier } : {}),
+      ...(f?.roundGapMinutes !== undefined ? { roundGapMinutes: f.roundGapMinutes } : {}),
+      ...(f?.roundsPerDayCap !== undefined ? { roundsPerDayCap: f.roundsPerDayCap } : {}),
       movable: !pinnedFixtureIds.has(fixtureId),
     };
   };
@@ -2030,9 +2035,36 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
   // the field, a board that breaks the barrier is refused by the gate below
   // (`round_order_end` is a blocking `order` row) and the greedy board, which
   // honours it, ships instead.
-  const barrierBySequence = roundBarrierBySequence(fixtures);
+  const rulesBySequence = roundRulesBySequence(fixtures);
   const endBarrierOnWire = (roundNo: number | undefined, sequence: string): { roundBarrier?: "end" } =>
-    roundNo !== undefined && barrierBySequence.get(sequence) === "end" ? { roundBarrier: "end" } : {};
+    roundNo !== undefined && rulesBySequence.get(sequence)?.barrier === "end" ? { roundBarrier: "end" } : {};
+  // Rulings 255-256 (W3 T10c). A movable fixture of a forwarded Swiss round
+  // also carries its sequence's two round limits, each only when set: the gap
+  // always, the cap only with a zone — without one every slot's `dayIndex` is
+  // 0 (see `dayIndexOf` above), and a cap on day 0 would cap the WHOLE
+  // schedule rather than a day. And a fixture with neither entrants nor
+  // people goes out as an UNPAIRED ROUND SLOT: a Swiss round not drawn yet,
+  // which takes a court and a time and no person constraint. Flagged ONLY
+  // here, beside a round `roundBearingFor` actually forwards with its "end"
+  // barrier: a stripped round takes the flag with it, because the service
+  // refuses a flagged slot with no round — the whole request, so greedy ships.
+  // Pin rows keep T10b's shape (round and barrier): a pin's round is forwarded
+  // only when the request holds exactly one round sequence, so its limits are
+  // that sequence's. Every round-robin request is byte-identical to T10b's.
+  const swissRoundOnWire = (
+    roundNo: number | undefined,
+    sequence: string,
+    unpaired: boolean,
+  ): { roundBarrier?: "end"; roundGapMinutes?: number; roundsPerDayCap?: number; unpairedRoundSlot?: true } => {
+    const rules = rulesBySequence.get(sequence);
+    if (roundNo === undefined || rules?.barrier !== "end") return {};
+    return {
+      roundBarrier: "end",
+      ...(rules.gapMinutes > 0 ? { roundGapMinutes: rules.gapMinutes } : {}),
+      ...(rules.roundsPerDayCap > 0 && tz !== undefined ? { roundsPerDayCap: rules.roundsPerDayCap } : {}),
+      ...(unpaired ? { unpairedRoundSlot: true as const } : {}),
+    };
+  };
 
   // C1 (2026-08-12 round-order design). See `singleRoundRobinSequence`'s
   // own comment above for why a pin's round is only ever forwarded in
@@ -2068,7 +2100,11 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
       entrantIds: [f.home, f.away].filter((e): e is string => e !== undefined),
       divisionId: f.divisionId ?? "",
       roundNo: roundBearingFor(f),
-      ...endBarrierOnWire(roundBearingFor(f), roundBearingSequenceOf(f)),
+      ...swissRoundOnWire(
+        roundBearingFor(f),
+        roundBearingSequenceOf(f),
+        f.home === undefined && f.away === undefined && (f.people ?? []).length === 0,
+      ),
       // C10 (2026-08-16, wire person indices). Same derivation `assignmentOf`
       // (above) and `encodeBuild`'s own `rowOf`/`asAssignment` (z3 path) use
       // for `Assignment.people` — carried through, not dropped, so an
@@ -2294,7 +2330,7 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
   // of this board caused, and a row between two `existing` boards appears on
   // both sides and cancels. Empty for every build with no "end" sequence, so a
   // start-floor board is gated exactly as before.
-  const endSiblings = endSequenceRows(barrierBySequence, existing);
+  const endSiblings = endSequenceRows(rulesBySequence, existing);
   const widenedRoundOrder = (board: readonly Assignment[]): Conflict[] =>
     roundOrderConflicts([...board, ...endSiblings], verifyConfig.tz).filter(isBlockingConflict);
   const againstPlayed =
