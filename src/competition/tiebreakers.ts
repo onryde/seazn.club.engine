@@ -455,6 +455,37 @@ function winsOf(row: StandingsRow, ctx: RankContext): number {
 // goal not scored from a penalty corner or a penalty stroke — the one formula
 // its column prints (T17).
 
+/** W3 (rulebook-W3-swiss.md §5 T10, the goals chain; UEFA CL league phase art. 18, A7: "superior collective goal
+ *  difference of the league phase opponents") — `opp_diff`: the sum, over `entrant`'s PLAYED cards, of that opponent's
+ *  final goal difference as its row in `rows` records it (`DIFF_KEYS`, by alias). An unplayed card adds nothing — a bye, a
+ *  forfeit win or loss, a double walkover, an absence (C.07 16.2): UEFA has no unplayed round, and an art. 16 dummy has no
+ *  goal difference. Higher ranks first (the `opp_diff` comparator). A goal difference is no points unit,
+ *  so it is never halved. Refused, CONFIG_INVALID: a played card naming no opponent; an opponent with no row in `rows`
+ *  (the ledger and the table were built from different entrants); an opponent whose row records no goal difference (a
+ *  sport with none, where `validateCascade` refuses the key, rule 2) — never read as a silent 0. */
+export function opponentsDiff(table: SwissTable, rows: readonly StandingsRow[], entrant: EntrantId): number {
+  const row = requireRow(indexTable(table), entrant);
+  const byEntrant = new Map(rows.map((r) => [r.entrantId, r]));
+  let total = 0;
+  for (const game of row.games) {
+    if (game.unplayed !== undefined) continue;
+    if (game.opponent === null) {
+      throw new EngineError("CONFIG_INVALID", `"${entrant}"'s round ${game.round} names no opponent and no unplayed category`, { entrantId: entrant, round: game.round });
+    }
+    const opponent = byEntrant.get(game.opponent);
+    if (opponent === undefined) {
+      throw new EngineError("CONFIG_INVALID", `opp_diff reads "${entrant}"'s opponent "${game.opponent}", which has no row in the table`, { entrantId: entrant, opponent: game.opponent });
+    }
+    const diff = metricOf(opponent, DIFF_KEYS);
+    if (diff === undefined) {
+      const need = DIFF_KEYS.join(" or ");
+      throw new EngineError("CONFIG_INVALID", `opp_diff reads "${entrant}"'s opponent "${game.opponent}", whose row records no goal difference (${need})`, { entrantId: entrant, opponent: game.opponent, need });
+    }
+    total += diff;
+  }
+  return total;
+}
+
 // The keys the refinement driver handles itself, because they need the tied
 // class (a mini-table, the class size, the stored draw) rather than a pairwise
 // value. Every OTHER key has a comparator: COMPARATORS is a full Record over
@@ -479,6 +510,8 @@ interface RunContext extends RankContext {
   readonly schedule: readonly (readonly [EntrantId, EntrantId])[] | undefined;
   // W2d (IH-TB-2): `partialScheduleOrder`, parsed once per rank call.
   readonly partial: readonly PlainStep[] | undefined;
+  // W3 (`opp_diff`): the table's own rows — an opponent's final goal difference is read off its row.
+  readonly tableRows: readonly StandingsRow[];
 }
 type RunComparator = (a: StandingsRow, b: StandingsRow, run: RunContext) => number;
 
@@ -526,6 +559,9 @@ const COMPARATORS: Readonly<Record<PlainKey, RunComparator>> = {
   // ATP 4.01 C.3-2: more matches played ranks higher ("a 2-1 record beats 2-0").
   matches_played: (a, b) => sgn(a.played - b.played),
   field_goals: (a, b) => sgn(fieldGoalsOf(a) - fieldGoalsOf(b)),
+  // W3 (rulebook-W3-swiss.md §5 T10): the opponents' collective goal difference, off the Swiss ledger; higher first.
+  opp_diff: (a, b, run) =>
+    run.swiss ? sgn(opponentsDiff(run.swiss, run.tableRows, a.entrantId) - opponentsDiff(run.swiss, run.tableRows, b.entrantId)) : 0,
 };
 
 // Inside an h2h block each key is its plain twin applied to the mini-table:
@@ -1007,7 +1043,7 @@ export function rankStandings(rows: readonly StandingsRow[], ctx: RankContext): 
     ctx.swiss === undefined && ctx.results !== undefined && ctx.cascade.includes("sberger")
       ? buildPoolLedger(clones.map((row) => row.entrantId), ctx)
       : undefined;
-  const run: RunContext = { ...ctx, poolLedger, notes: new Map(), schedule, partial };
+  const run: RunContext = { ...ctx, poolLedger, notes: new Map(), schedule, partial, tableRows: clones };
   // No rows, no class: zero entrants are no tie, so there is nothing for lots to draw (W2d T4 N1).
   const classes = refine(clones.length === 0 ? [] : [clones], steps, run);
   // W2d §5.8 step 1 (anti-goal 3): a table with no counted fixture has no
@@ -1082,6 +1118,10 @@ export function rankStandings(rows: readonly StandingsRow[], ctx: RankContext): 
       }
       if (ctx.cascade.includes("sberger")) {
         row.metrics["sberger"] = sonnebornBerger(ctx.swiss, row.entrantId) / (2 * unit);
+      }
+      // W3 (rulebook §5 T10): a goal difference is no points unit, so `opp_diff` is never halved.
+      if (ctx.cascade.includes("opp_diff")) {
+        row.metrics["opp_diff"] = opponentsDiff(ctx.swiss, order, row.entrantId);
       }
     }
   } else if (poolLedger !== undefined) {

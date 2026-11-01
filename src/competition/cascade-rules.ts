@@ -91,6 +91,8 @@ const KEY_RULES: Readonly<Record<TiebreakerKey, KeyRule>> = {
   matches_played: {},
   // B3 (FIH GTR App. 3): gf − goals_pc − goals_stroke (tiebreakers.ts `fieldGoals`).
   field_goals: { ledger: [["gf"], ["goals_pc"], ["goals_stroke"]] },
+  // W3 (rulebook-W3-swiss.md §5 T10): each played opponent's goal difference, off the Swiss ledger (`opponentsDiff`).
+  opp_diff: { swissOnly: true, ledger: [DIFF_KEYS] },
 };
 const KEYS = Object.keys(KEY_RULES) as TiebreakerKey[];
 

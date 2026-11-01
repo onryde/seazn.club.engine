@@ -77,7 +77,9 @@ export type TiebreakerKey =
   | "h2h_reapply"
   | "h2h_exclusion"
   | "matches_played"
-  | "field_goals";
+  | "field_goals"
+  // W3 (rulebook-W3-swiss.md §5 T10) — the opponents' collective goal difference, a Swiss-only key (the goals chain).
+  | "opp_diff";
 
 /** W2d (spec §5.6 "ST-G12", IH-TB-2) — a key of a sport's partial-schedule order (`SportModule.partialScheduleOrder`): a
  *  plain tie-break key, `lots` last, or the internal `fewest_played` (fewer games played ranks higher, IIHF RBG:349-350).

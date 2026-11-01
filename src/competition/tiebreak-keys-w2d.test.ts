@@ -118,6 +118,7 @@ const ALL_KEYS = [
   "points", "wins", "h2h_points", "h2h_diff", "h2h_for", "diff", "for", "nrr", "set_ratio", "game_ratio", "board_ratio",
   "point_ratio", "buchholz", "buchholz_cut1", "sberger", "direct", "fair_play", "seed", "lots", "set_diff", "point_diff",
   "h2h_two", "h2h_wins", "h2h_set_ratio", "h2h_point_ratio", "h2h_reapply", "h2h_exclusion", "matches_played", "field_goals",
+  "opp_diff",
 ] as const;
 type _AllKeysAreKeys = (typeof ALL_KEYS)[number] extends TiebreakerKey ? true : never;
 type _AllKeysAreAll = Exclude<TiebreakerKey, (typeof ALL_KEYS)[number]> extends never ? true : never;
