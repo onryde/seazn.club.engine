@@ -21,7 +21,7 @@ import { declaredCfgs } from "../testkit/declared-cfgs.ts";
 import { forEachSport } from "../testkit/for-each-sport.ts";
 import { offerableKeys } from "./cascade-rules.ts";
 import { decidedInFor } from "./decided-in.ts";
-import { payout, setsToWinOf } from "./points.ts";
+import { payout, setsToWinOf, swissDrawFactsOf } from "./points.ts";
 import { completeTableStage, type TableFixture } from "./stage.ts";
 import type { FixtureResult, StandingsRow } from "./standings.ts";
 import { resolveTableRules, type TableRulesPin } from "./table-rules.ts";
@@ -124,7 +124,7 @@ function rank(s: Scene): readonly StandingsRow[] {
   const done = completeTableStage(
     {
       id: "s", kind: s.kind ?? "league", entrants, rules: resolved, rngSeed: 7,
-      ...(s.kind === "swiss" ? { swiss: true, rounds: 3 } : {}),
+      ...(s.kind === "swiss" ? { swiss: true, rounds: 3, swissDraw: swissDrawFactsOf(s.module, cfg) } : { swiss: false }),
       ...(scheduledPairs === undefined ? {} : { scheduledPairs }),
       ...(s.module.partialScheduleOrder === undefined ? {} : { partialScheduleOrder: s.module.partialScheduleOrder }),
       ...(s.module.winsCount === undefined ? {} : { winsCount: s.module.winsCount }),

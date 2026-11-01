@@ -55,6 +55,13 @@ export interface SwissGame {
   cap?: number;
 }
 
+/** C.07 (2026) 16.1: a VUR (voluntary unplayed round) is a zero-point round (a late entrant's missed round, a round after
+ *  a withdrawal) or a forfeit loss (a double walkover's included). An absence followed only by VURs is 16.2.5, one
+ *  followed by any other card (a played game, a bye, a forfeit win) 16.2.3 (`buildSwissLedger`); a Cut-1 cuts a VUR
+ *  first (16.5.1, `buchholz`). */
+const isVur = (game: SwissGame): boolean =>
+  game.unplayed === "absent" || game.unplayed === "absent_last" || game.unplayed === "forfeit_loss";
+
 export interface SwissRow {
   entrant: EntrantId;
   score: number; // Σ scored — the primary standings key
@@ -99,17 +106,23 @@ function requireRow(byEntrant: Map<EntrantId, SwissRow>, entrant: EntrantId): Sw
 }
 
 // Buchholz = Σ of each card's contribution (opponents' adjusted scores, own unplayed rounds' dummies; C.07 8.1, 16).
-// Cut-`cut` drops the `cut` lowest contributions (FIDE recommends Cut-1 first) — spec 04 §6.3.
+// Cut-`cut` drops `cut` contributions (FIDE recommends Cut-1 first) — spec 04 §6.3: each cut the lowest VUR contribution
+// left, while one is left (C.07 16.5.1), else the lowest contribution left; a Cut-k repeats it k times (16.5.2).
 export function buchholz(table: SwissTable, entrant: EntrantId, opts: { cut?: number } = {}): number {
   const byEntrant = indexTable(table);
   const row = requireRow(byEntrant, entrant);
-  const scores = row.games.map((game) => opponentScore(byEntrant, row, game));
+  const cards = row.games.map((game) => ({ score: opponentScore(byEntrant, row, game), vur: isVur(game) }));
+  const scores = cards.map((card) => card.score);
   const cut = opts.cut ?? 0;
   // Assumptions are guards (W2d A20): every caller cuts 0 or 1 lowest scores; a negative cut means nothing.
   if (cut < 0) throw new EngineError("CONFIG_INVALID", `a Buchholz cut drops opponents' scores, so it is never negative: ${cut}`, { cut });
   if (cut <= 0) return scores.reduce((sum, s) => sum + s, 0);
-  const sorted = [...scores].sort((a, b) => a - b);
-  return sorted.slice(cut).reduce((sum, s) => sum + s, 0);
+  const left = [...cards].sort((a, b) => a.score - b.score);
+  for (let k = 0; k < cut; k++) {
+    const vur = left.findIndex((card) => card.vur);
+    left.splice(vur === -1 ? 0 : vur, 1);
+  }
+  return left.reduce((sum, card) => sum + card.score, 0);
 }
 
 export function buchholzCut1(table: SwissTable, entrant: EntrantId): number {
@@ -1083,32 +1096,38 @@ export function rankStandings(rows: readonly StandingsRow[], ctx: RankContext): 
 // The write-side check of an order (`validateCascade`, `offerableKeys`) lives in cascade-rules.ts (W2d Task 6, spec §5.5).
 
 /** One counted fixture of a Swiss stage as the ledger reads it (stage.ts maps each counted TableFixture to one): its round,
- *  and the sport's [home, away] deltas or a one-sided award (a pairing-allocated bye, C.07 16.2.1). */
+ *  and the sport's [home, away] deltas or a one-sided award (a pairing-allocated bye, C.07 16.2.1). `unplayed` names the
+ *  result's side(s) that lost without playing (`TableFixture.unplayed`, from `unplayedSidesOf`): "home"/"away" a forfeit,
+ *  "both" a double walkover. Absent = played. */
 export interface SwissLedgerFixture {
   readonly round: number;
   readonly result?: FixtureResult;
   readonly award?: StandingsDelta;
+  readonly unplayed?: "home" | "away" | "both";
 }
 
-// A VUR (C.07 16.1): a zero-point round or a forfeit loss. An absence followed only by VURs is 16.2.5; one followed
-// by any other card (a played game, a bye, a forfeit win) is 16.2.3.
-const isVur = (game: SwissGame): boolean =>
-  game.unplayed === "absent" || game.unplayed === "absent_last" || game.unplayed === "forfeit_loss";
+// A forfeit's two cards (16.2.2, 16.2.4): each names its scheduled opponent and is capped at that opponent's adjusted
+// score (16.4.1); every other unplayed card is capped at D × R (16.4.2).
+const isForfeit = (game: SwissGame): boolean => game.unplayed === "forfeit_win" || game.unplayed === "forfeit_loss";
 
 // W3 (FIDE C.07 (2026) art. 16; rulebook-W3-swiss.md §4; X-SW-7, X-SW-8): the Swiss ledger by round for the
 // buchholz/sberger/direct comparators (spec 05 §4.1), in two passes.
-//  1. Cards and categories. A counted result writes a played card on both sides (`scored` is the side's table points); an
+//  1. Cards and categories. A counted result writes a card on both sides naming the other (`scored` is the side's table
+//     points): a played game, or — the side(s) its `unplayed` names lost without playing — a 16.2.4 forfeit loss for each
+//     of those and a 16.2.2 forfeit win for the other (a double walkover is a forfeit loss for both, rulebook §4 M2). An
 //     award writes its holder a 16.2.1 bye (opponent null, the win it paid, X-SW-5); each absent round a zero-point card
-//     (opponent null, a loss, no score: FIDE C.04.2 2.4). Each card goes into round order: a round with no card and no
-//     declared absence is not on the card at all, so a pending board adds nothing (Review Focus 1), and two cards in one
-//     round both stand, in input order (Focus 2). An absence followed by a card that is not a VUR is 16.2.3, else 16.2.5.
-//  2. Scores and caps. score = Σ scored; adjusted = score + D per 16.2.5 card (16.3.2, a draw for its opponents); every
-//     unplayed card's cap is D × R (16.4.2).
+//     (opponent null, a loss, no score: FIDE C.04.2 2.4; a late entrant's missed round or a round after a withdrawal,
+//     16.1). Each card goes into round order: a round with no card and no declared absence is not on the card at all, so
+//     a pending or voided board adds nothing (Review Focus 1), and two cards in one round both stand, in input order
+//     (Focus 2). An absence followed by a card that is not a VUR is 16.2.3, else 16.2.5.
+//  2. Scores and caps. score = Σ scored; adjusted = score + D per 16.2.5 card (16.3.2, a draw for its opponents); a
+//     forfeit card's cap is its scheduled opponent's adjusted score (16.4.1), and every other unplayed card's D × R (16.4.2).
 // `opts.rounds` is the stage's rounds, R — never the card's length — and `opts.drawPoints` is D (`swissDrawPoints`); each
-// is read only when some round is unplayed. `opts.absent` names, per entrant, the rounds it was in the stage but not
-// paired (late entry). Refused, CONFIG_INVALID: a card or an absence for an entrant outside `entrants`; an unplayed round
-// when R is absent or not a positive count, or when D is absent; an absent round outside 1..R, or one the entrant holds
-// a card in.
+// is read only when some card needs it (an absence, a bye). `opts.absent` names, per entrant, the rounds it was in the
+// stage but not paired (before a late entry, after a withdrawal). Refused, CONFIG_INVALID: a card or an absence for an
+// entrant outside `entrants`; an unplayed side on a fixture with no [home, away] result; a forfeit card whose result is
+// not its category's (a forfeit loss holds the loss, a forfeit win the win); a bye or an absence when R is absent or not a
+// positive count, or when D is absent; an absent round outside 1..R, or one the entrant holds a card in.
 export function buildSwissLedger(
   entrants: readonly EntrantId[],
   fixtures: readonly SwissLedgerFixture[],
@@ -1139,12 +1158,26 @@ export function buildSwissLedger(
   };
   const resultOf = (delta: StandingsDelta): GameResult => (delta.won > 0 ? "win" : delta.drawn > 0 ? "draw" : "loss");
 
+  // A result's card for one side: a played game, or the forfeit category of a fixture with an unplayed side.
+  const sideCard = (round: number, side: StandingsDelta, foe: StandingsDelta, seat: "home" | "away", unplayed: SwissLedgerFixture["unplayed"]): SwissGame => {
+    const game: SwissGame = { round, opponent: foe.entrantId, result: resultOf(side), scored: side.points };
+    if (unplayed === undefined) return game;
+    const category: UnplayedRound = unplayed === "both" || unplayed === seat ? "forfeit_loss" : "forfeit_win";
+    // Assumptions are guards: the side that lost without playing holds the loss, and its opponent the win.
+    if (game.result !== (category === "forfeit_win" ? "win" : "loss")) {
+      throw new EngineError("CONFIG_INVALID", `"${side.entrantId}"'s round ${round} is a ${category}, but its result is a ${game.result}`, { entrantId: side.entrantId, round, unplayed });
+    }
+    return { ...game, unplayed: category };
+  };
+
   // Pass 1: cards and categories.
-  for (const { round, result, award } of fixtures) {
+  for (const { round, result, award, unplayed } of fixtures) {
     if (result !== undefined) {
       const [home, away] = result;
-      cardOf(home.entrantId).push({ round, opponent: away.entrantId, result: resultOf(home), scored: home.points });
-      cardOf(away.entrantId).push({ round, opponent: home.entrantId, result: resultOf(away), scored: away.points });
+      cardOf(home.entrantId).push(sideCard(round, home, away, "home", unplayed));
+      cardOf(away.entrantId).push(sideCard(round, away, home, "away", unplayed));
+    } else if (unplayed !== undefined) {
+      throw new EngineError("CONFIG_INVALID", `a Swiss fixture in round ${round} names its unplayed side(s), "${unplayed}", but no [home, away] result`, { round, unplayed });
     }
     if (award !== undefined) {
       cardOf(award.entrantId).push({ round, opponent: null, result: resultOf(award), scored: award.points, unplayed: "bye" });
@@ -1177,10 +1210,12 @@ export function buildSwissLedger(
     return lastAbsences === 0 ? { entrant, score, games } : { entrant, score, adjusted: score + stageDraw() * lastAbsences, games };
   });
 
-  // Pass 2: caps.
+  // Pass 2: caps. A forfeit card's opponent is the other side of its result, one of `entrants` (cardOf), so it has a row.
+  const adjustedOf = new Map<EntrantId, number>(rows.map((row) => [row.entrant, row.adjusted ?? row.score]));
   for (const row of rows) {
     for (const game of row.games) {
-      if (game.unplayed !== undefined) game.cap = stageDraw() * stageRounds();
+      if (isForfeit(game)) game.cap = adjustedOf.get(game.opponent as EntrantId);
+      else if (game.unplayed !== undefined) game.cap = stageDraw() * stageRounds();
     }
   }
   return rows;

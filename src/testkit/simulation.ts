@@ -18,6 +18,7 @@ import {
   type TableStage,
 } from "../competition/stage.ts";
 import { validateCascade } from "../competition/cascade-rules.ts";
+import { swissDrawFactsOf } from "../competition/points.ts";
 import { resolveTableRules, type TableRules } from "../competition/table-rules.ts";
 import type { MembersKey, StoredLotsDraw } from "../competition/tiebreakers.ts";
 import {
@@ -692,6 +693,8 @@ function playSwissStage(
     rules: stageRules(ctx, "swiss"),
     ...(ctx.module.winsCount === undefined ? {} : { winsCount: ctx.module.winsCount }),
     swiss: true,
+    // W3 (ruling R4, N1): a Swiss ledger stage names its sport's draw facts, as the app passes them.
+    swissDraw: swissDrawFactsOf(ctx.module, ctx.cfg),
     seeds,
     rngSeed: deriveSeed(ctx.seed, "lots", stageId),
     rounds: roundsPlayed,

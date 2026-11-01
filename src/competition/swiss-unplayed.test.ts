@@ -1,5 +1,6 @@
 // W3 Task 7: the Swiss ledger by round (SW-M1, SW-L2, late entry; RB3-6 part 1). X-SW-7's own unplayed rounds, and
-// X-SW-8. This is FIDE C.07 (2026) art. 16 as rulebook-W3-swiss.md §4 adopts it, scaled to the stage's table points:
+// X-SW-8. W3 Task 8 (SW-L1; RB3-6 part 2): forfeits and double walkovers, withdrawals, and Cut-1 (the X-SW-7 block at
+// the end). This is FIDE C.07 (2026) art. 16 as rulebook-W3-swiss.md §4 adopts it, scaled to the stage's table points:
 //   - 16.2 names an unplayed round's category:
 //     - 16.2.1 is a pairing-allocated bye.
 //     - 16.2.3 is a zero-point round followed by at least one round that is not a VUR (a VUR is a requested bye or a
@@ -9,6 +10,11 @@
 //   - 16.3: as somebody else's opponent, categories 1-4 count at their real result, and 16.2.5 counts as a draw. That is
 //     the ADJUSTED score: own score + D for each 16.2.5 round.
 //   - 16.4.2: the entrant's OWN unplayed round is scored against a dummy at its own score, capped at D x R.
+//   - 16.2.2 / 16.2.4 and 16.4.1: a forfeit win or loss (nothing played; a double walkover is a forfeit loss for both
+//     sides, rulebook §4 M2) is unplayed too, its dummy capped at the SCHEDULED opponent's adjusted score. A forfeit is
+//     not a meeting (P-A2): direct encounter never reads it.
+//   - 16.1 / 16.5: a VUR is a zero-point round (an absence, a round after a withdrawal) or a forfeit loss. Buchholz Cut-1
+//     on an entrant with a VUR cuts its lowest VUR contribution; otherwise the lowest contribution.
 //   - D is the table's draw points where a draw can stand in the stage, else half the win points (rulebook §4
 //     "Non-chess scaling"; C.07 7.7; ruling R4: a draw the rule declares but no Swiss stage of the sport can reach is no
 //     draw). Under a set-score rule the win points are the clean sweep's (design §5). R is the stage's rounds, never the
@@ -20,18 +26,18 @@
 // round + half a point per round to the end, with byes appended after every result and "rounds" = the card's length).
 // Everything runs through the real consumer, completeTableStage, on hand-built TableFixtures.
 import { describe, expect, it } from "vitest";
-import { MatchOutcome, type EntrantId, type StandingsDelta } from "../core/types.ts";
+import { AWARD_REASONS, MatchOutcome, OUTCOME_KINDS, type EntrantId, type StandingsDelta } from "../core/types.ts";
 import type { AnySportModule, TiebreakerKey } from "../sport/module.ts";
-import { boardgame } from "../sports/boardgame/index.ts"; // single-sport: S1 and S4 are the rulebook's chess cases (C.07 is FIDE's); the every-sport test sweeps the registry
+import { boardgame } from "../sports/boardgame/index.ts"; // single-sport: S1–S4 are the rulebook's chess cases (C.07 is FIDE's); the every-sport test sweeps the registry
 import { builtinModules } from "../sports/index.ts";
 import { declaredCfgs } from "../testkit/declared-cfgs.ts";
 import { forEachSport } from "../testkit/for-each-sport.ts";
 import { tableRulesOf } from "../testkit/helpers.ts";
 import { decidedInFor } from "./decided-in.ts";
-import { PointsRule, payout, setsToWinOf, swissDrawFactsOf, swissDrawPoints, type SwissDrawFacts } from "./points.ts";
+import { PointsRule, payout, setsToWinOf, swissDrawFactsOf, swissDrawPoints, unplayedSidesOf, type SwissDrawFacts } from "./points.ts";
 import { completeTableStage, type TableFixture, type TableStage } from "./stage.ts";
 import type { FixtureResult, StandingsRow } from "./standings.ts";
-import { buildSwissLedger, rankStandings, type SwissTable } from "./tiebreakers.ts";
+import { buchholz, buildSwissLedger, directEncounter, rankStandings, type SwissTable } from "./tiebreakers.ts";
 
 /** Every Swiss column the ledger feeds, so each is materialised on every row. */
 const CASCADE: TiebreakerKey[] = ["points", "buchholz_cut1", "buchholz", "sberger", "lots"];
@@ -73,14 +79,19 @@ interface Scene {
   readonly absent?: ReadonlyMap<EntrantId, readonly number[]>;
   /** The sport's Swiss draw facts (`TableStage.swissDraw`); undefined = not passed. */
   readonly draw: SwissDrawFacts | undefined;
+  /** The stage's tie-break order; absent = CASCADE. */
+  readonly cascade?: readonly TiebreakerKey[];
 }
 function stageOf(s: Scene): TableStage {
-  return {
-    id: "sw", kind: "swiss", swiss: true, entrants: s.entrants, rules: tableRulesOf(CASCADE, s.rule), rngSeed: 7,
+  const stage = {
+    id: "sw", kind: "swiss", swiss: true, entrants: s.entrants, rules: tableRulesOf(s.cascade ?? CASCADE, s.rule), rngSeed: 7,
     ...(s.rounds === undefined ? {} : { rounds: s.rounds }),
     ...(s.absent === undefined ? {} : { swissAbsentRounds: s.absent }),
     ...(s.draw === undefined ? {} : { swissDraw: s.draw }),
-  };
+  } as const;
+  // A Swiss ledger stage with no draw facts is a type error for every caller (N1); a scene builds one only to prove the
+  // run-time refusal behind the type.
+  return stage as TableStage;
 }
 function tableOf(s: Scene): readonly StandingsRow[] {
   const rows = completeTableStage(stageOf(s), s.fixtures).tables.overall;
@@ -162,9 +173,17 @@ function withoutRound(f: TableFixture): TableFixture {
   const { roundNo: _roundNo, ...rest } = f;
   return rest;
 }
-/** The ledger fixtures a stage's counted fixtures map to (stage.ts does the same, with its guards). */
+/** The ledger fixtures a stage's counted fixtures map to (stage.ts does the same, with its guards): a decided or walked-over
+ *  fixture's round, result, award and unplayed side(s). */
 function ledgerFixtures(s: Scene) {
-  return s.fixtures.map((f) => ({ round: f.roundNo!, ...(f.result ? { result: f.result } : {}), ...(f.awardDelta ? { award: f.awardDelta } : {}) }));
+  return s.fixtures
+    .filter((f) => f.status === "decided" || f.status === "walkover")
+    .map((f) => ({
+      round: f.roundNo!,
+      ...(f.result ? { result: f.result } : {}),
+      ...(f.awardDelta ? { award: f.awardDelta } : {}),
+      ...(f.unplayed ? { unplayed: f.unplayed } : {}),
+    }));
 }
 
 /** A thrown EngineError's code and message, or null when the call returns. */
@@ -491,9 +510,10 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
       ["no rounds", { ...S4, rounds: undefined }, /rounds/],
       ["rounds 0", { ...S4, rounds: 0 }, /rounds/],
       ["a bye and no rounds", { ...S1, rounds: undefined }, /rounds/],
-      // an unplayed card needs D for its cap: the stage passes no draw facts (ruling R4)
-      ["no draw facts", { ...S4, draw: undefined }, /draw points/],
-      ["a bye and no draw facts", { ...S1, draw: undefined }, /draw points/],
+      // an unplayed card needs D for its cap, and a Swiss ledger stage names its draw facts (ruling R4) — refused at once
+      // since T8 (N1), whether or not a round is unplayed: the even-field case is the X-SW-7 N1 test
+      ["no draw facts", { ...S4, draw: undefined }, /swissDraw/],
+      ["a bye and no draw facts", { ...S1, draw: undefined }, /swissDraw/],
       // an absent round outside 1..R
       ["round 0", { ...S4, absent: new Map([["L", [0]]]) }, /outside/],
       ["round 4 of 3", { ...S4, absent: new Map([["L", [4]]]) }, /outside/],
@@ -513,13 +533,17 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
       checked++;
     }
     expect(checked).toBe(cases.length);
+    // The ledger's own D guard, for a caller with no stage (a stage refuses first, above): an unplayed card and no D.
+    const noD = refusal(() => buildSwissLedger(S1.entrants, ledgerFixtures(S1), { rounds: 3, drawPoints: undefined }));
+    expect(noD?.code).toBe("CONFIG_INVALID");
+    expect(noD?.message).toMatch(/draw points/);
     // The positive pairs: S4 itself ranks; a board still to play may carry no round (it is no card); a Swiss with no
     // unplayed card ranks with no rounds; the last round may be absent.
     expect(refusal(run(S4))).toBeNull();
     expect(refusal(run({ ...S4, fixtures: [...S4.fixtures, { id: "later", status: "scheduled" }] }))).toBeNull();
     // and a counted fixture carrying neither a result nor an award writes no card, so it needs no round either
     expect(refusal(run({ ...S4, fixtures: [...S4.fixtures, { id: "empty", status: "decided" }] }))).toBeNull();
-    expect(refusal(run({ ...S1, rounds: undefined, draw: undefined, fixtures: S1.fixtures.filter((f) => f.awardDelta === undefined) }))).toBeNull();
+    expect(refusal(run({ ...S1, rounds: undefined, fixtures: S1.fixtures.filter((f) => f.awardDelta === undefined) }))).toBeNull();
     expect(refusal(run({ ...S4, absent: new Map([["L", [1]], ["B", []]]) }))).toBeNull();
   });
 
@@ -551,6 +575,403 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
   });
 });
 
+/** A forfeit: `winner` is paid, `loser` never played (FORFEIT_REASONS; walkover by default). */
+const forfeit = (winner: EntrantId, loser: EntrantId, reason: "walkover" | "withdrew" = "walkover"): MatchOutcome =>
+  MatchOutcome.parse({ kind: "award", winner, loser, reason });
+const DOUBLE_WALKOVER: MatchOutcome = MatchOutcome.parse({ kind: "double_walkover" });
+/** Each entrant's cards as their categories, "played" for a played game. */
+const categoriesOf = (ledger: SwissTable): Record<EntrantId, string[]> =>
+  Object.fromEntries(ledger.map((row) => [row.entrant, row.games.map((game) => game.unplayed ?? "played")]));
+
+// S2: a forfeit. Boardgame half-points (win 2, draw 1, loss 0), R = 2, D = 1.
+//   R1: A v B, B forfeits with nothing played (a walkover: A is paid the win 2, B the loss 0; unplayed "away");
+//       C beats D.   R2: A beats C, B beats D.
+//   Scores: A 2+2 = 4, B 0+2 = 2, C 2+0 = 2, D 0+0 = 0. Nobody is absent, so every adjusted score is the score.
+//   A's round 1 is a forfeit win (16.2.2), B's a forfeit loss (16.2.4). Each is scored against a dummy at its own score,
+//   capped at its SCHEDULED opponent's adjusted score (16.4.1): A min(4, B 2) = 2, B min(2, A 4) = 2. C and D read A and
+//   B at their scores (16.3.1: a forfeit counts at its awarded result).
+//   Buchholz: A = dummy 2 + C 2 = 4.  B = dummy 2 + D 0 = 2.  C = D 0 + A 4 = 4.  D = C 2 + B 2 = 4.
+//   Cut-1 (16.5.1; B's forfeit loss is its one VUR, 16.1; nobody else has one):
+//     A {2, 2} → 2.  B cuts its VUR's 2 → 0 (the lowest overall is D's 0, leaving 2).  C {0, 4} → 4.  D {2, 2} → 2.
+//   Sonneborn-Berger (weight x contribution; a forfeit win is a win against its dummy): A = 2·2 + 2·2 = 8,
+//     B = 0·2 + 2·0 = 0, C = 2·0 + 0·4 = 0, D = 0·2 + 0·2 = 0.
+//   Shown on a half-point table: Buchholz and Cut-1 ÷ 2, SB ÷ 4.
+//   differential: HEAD (T7) reads the forfeit as a game B lost to A, so B = A 4 + D 0 = 4 and its Cut-1 cuts D's 0 → 4.
+function sceneS2(): Scene {
+  return {
+    rule: CHESS, draw: CHESS_DRAW, entrants: ["A", "B", "C", "D"], rounds: 2,
+    fixtures: [
+      walkedOver(boardgame, {}, CHESS, 1, "A", "B", forfeit("A", "B")), board(CHESS, 1, "C", "D", "h"),
+      board(CHESS, 2, "A", "C", "h"), board(CHESS, 2, "B", "D", "h"),
+    ],
+  };
+}
+
+// S3: a withdrawal. Boardgame half-points, R = 3, D = 1, so a bye's or a zero-point round's cap is D x R = 3.
+//   R1: A beats B, C beats D. B then withdraws and is not paired again: rounds 2 and 3 are its zero-point rounds (16.1:
+//   "any round after a participant withdraws is a zero-point-bye"), declared to the stage as `absent: [2, 3]`.
+//   R2: A beats C, D bye.   R3: A draws D, C bye.
+//   Scores: A 2+2+1 = 5, B 0, C 2+0+2 = 4, D 0+2+1 = 3.
+//   B's rounds 2 and 3 are followed only by VURs (or are the last), so both are 16.2.5: its opponents read it at its
+//   ADJUSTED score, a draw for each (16.3.2): 0 + 1 + 1 = 2. Its own dummies are min(0, 3) = 0 (16.4.2).
+//   Buchholz: A = B 2 + C 4 + D 3 = 9.  B = A 5 + 0 + 0 = 5.  C = D 3 + A 5 + bye min(4, 3) 3 = 11.
+//     D = C 4 + bye min(3, 3) 3 + A 5 = 12.
+//   Cut-1: A {2, 4, 3}, no VUR → 7.  B's two zero-point rounds are VURs (16.1), each 0: it cuts one → 5 (its lowest
+//     overall is a 0 as well, so the two rules agree here; S2 is where they differ).  C {3, 5, 3} → 8.  D {4, 3, 5} → 9.
+//   differential: reading B at its real 0 (mutant (c); the pre-W3 engine had no adjusted score), A = 0 + 4 + 3 = 7.
+function sceneS3(): Scene {
+  return {
+    rule: CHESS, draw: CHESS_DRAW, entrants: ["A", "B", "C", "D"], rounds: 3, absent: new Map([["B", [2, 3]]]),
+    fixtures: [
+      board(CHESS, 1, "A", "B", "h"), board(CHESS, 1, "C", "D", "h"),
+      board(CHESS, 2, "A", "C", "h"), bye(CHESS, 2, "D"),
+      board(CHESS, 3, "A", "D", "d"), bye(CHESS, 3, "C"),
+    ],
+  };
+}
+
+describe("X-SW-7 forfeits, double walkovers and withdrawals: FIDE C.07 (2026) art. 16.2.2/16.2.4, 16.3.2, 16.4.1, 16.5 (rulebook-W3 §4)", () => {
+  it("X-SW-7 empty case first: unplayedSidesOf is undefined for a played win and for a bye", () => {
+    const pair = board(CHESS, 1, "A", "B", "h").result!; // A (home) beat B
+    const won = MatchOutcome.parse({ kind: "win", winner: "A", loser: "B", method: "regulation" });
+    const byeAward = MatchOutcome.parse({ kind: "award", winner: "A", loser: null, reason: "bye" });
+    let checked = 0;
+    for (const played of [true, false]) {
+      expect(unplayedSidesOf(won, played, pair), `a played win, played=${played}`).toBeUndefined();
+      expect(unplayedSidesOf(byeAward, played, pair), `a bye, played=${played}`).toBeUndefined();
+      checked += 2;
+    }
+    expect(checked).toBe(4);
+  });
+
+  it("X-SW-7 unplayedSidesOf over every outcome kind, award reason, played fact and seat: the side that lost without playing (counted)", () => {
+    // By hand, from rulebook §4 (M1 walkover, M2 double walkover, M3 retirement) and X-PT-1 (P-3 "A"):
+    //   - a double walkover: "both", played or not (both sides absent);
+    //   - a walkover (an award, or a pre-W2b win by walkover): the loser's seat, played or not — a walkover is nothing
+    //     played by its own reason;
+    //   - any other forfeit (retired, disqualified, withdrew; a pre-W2b win by forfeit): the loser's seat while nothing was
+    //     played, and none after play (a played game, M3);
+    //   - a bye (16.2.1: the award's own unplayed round, nobody forfeited), a played win, a draw, a tie, a no result: none.
+    const cases: Array<{ outcome: MatchOutcome; played: boolean; pair: FixtureResult; expected: "home" | "away" | "both" | undefined; what: string }> = [];
+    // the winner is always A, and B the side that forfeits; `home` is who holds the home seat
+    for (const home of ["A", "B"] as const) {
+      const pair: FixtureResult = home === "A" ? board(CHESS, 1, "A", "B", "h").result! : board(CHESS, 1, "B", "A", "a").result!;
+      const loserSeat = home === "A" ? "away" : "home";
+      for (const played of [false, true]) {
+        const add = (outcome: unknown, expected: "home" | "away" | "both" | undefined, what: string) =>
+          cases.push({ outcome: MatchOutcome.parse(outcome), played, pair, expected, what: `${what}, A ${home === "A" ? "home" : "away"}, played=${played}` });
+        add({ kind: "double_walkover" }, "both", "double walkover");
+        add({ kind: "draw" }, undefined, "draw");
+        add({ kind: "tie" }, undefined, "tie");
+        add({ kind: "no_result" }, undefined, "no result");
+        for (const reason of AWARD_REASONS) {
+          const loser = reason === "bye" ? null : "B";
+          const expected = reason === "bye" ? undefined : reason === "walkover" || !played ? loserSeat : undefined;
+          add({ kind: "award", winner: "A", loser, reason }, expected, `award ${reason}`);
+        }
+        for (const method of ["regulation", "walkover", "forfeit"] as const) {
+          const expected = method === "walkover" || (method === "forfeit" && !played) ? loserSeat : undefined;
+          add({ kind: "win", winner: "A", loser: "B", method }, expected, `win by ${method}`);
+        }
+      }
+    }
+    let checked = 0;
+    const kinds = new Set<string>();
+    const reasons = new Set<string>();
+    for (const { outcome, played, pair, expected, what } of cases) {
+      expect(unplayedSidesOf(outcome, played, pair), what).toBe(expected);
+      kinds.add(outcome.kind);
+      if (outcome.kind === "award") reasons.add(outcome.reason);
+      checked++;
+    }
+    // anti-vacuity: every outcome kind and every award reason, both seats and both played facts
+    expect(checked).toBe(2 * 2 * (4 + AWARD_REASONS.length + 3));
+    expect([...kinds].sort()).toEqual([...OUTCOME_KINDS].sort());
+    expect([...reasons].sort()).toEqual([...AWARD_REASONS].sort());
+    expect(cases.filter((c) => c.expected === "home").length, "the loser sits home in some case").toBeGreaterThan(0);
+    expect(cases.filter((c) => c.expected === "away").length, "the loser sits away in some case").toBeGreaterThan(0);
+  });
+
+  it("X-SW-7 a forfeit loss is scored against a dummy capped at the scheduled opponent's adjusted score: B = min(2, 4) + 0 = 2 (16.4.1)", () => {
+    const s2 = sceneS2();
+    // premise: the producer chain marks the side that never arrived, B, away, and pays A the win, B the loss
+    const [walked] = s2.fixtures;
+    expect([walked?.unplayed, walked?.result?.map((d) => [d.entrantId, d.points])]).toEqual(["away", [["A", 2], ["B", 0]]]);
+    const rows = rowsOf(s2);
+    const bh = (id: EntrantId) => metricOf(rows, id, "buchholz");
+    expect(bh("B")).toBe(2 / 2); // differential: HEAD 4/2 — the forfeit read as a game B lost to A (SW-L1)
+    expect(column(s2, "buchholz")).toEqual({ A: 4 / 2, B: 2 / 2, C: 4 / 2, D: 4 / 2 });
+    expect(column(s2, "sberger")).toEqual({ A: 8 / 4, B: 0, C: 0, D: 0 });
+    expect(Object.fromEntries(s2.entrants.map((id) => [id, rows.get(id)?.points]))).toEqual({ A: 4, B: 2, C: 2, D: 0 });
+    // The cards: each forfeit card names its scheduled opponent and is capped at that opponent's adjusted score.
+    const ledger = buildSwissLedger(s2.entrants, ledgerFixtures(s2), { rounds: 2, drawPoints: 1 });
+    expect(ledger.filter((r) => r.entrant === "A" || r.entrant === "B")).toStrictEqual([
+      {
+        entrant: "A", score: 4,
+        games: [
+          { round: 1, opponent: "B", result: "win", scored: 2, unplayed: "forfeit_win", cap: 2 },
+          { round: 2, opponent: "C", result: "win", scored: 2 },
+        ],
+      },
+      {
+        entrant: "B", score: 2,
+        games: [
+          { round: 1, opponent: "A", result: "loss", scored: 0, unplayed: "forfeit_loss", cap: 4 },
+          { round: 2, opponent: "D", result: "win", scored: 2 },
+        ],
+      },
+    ]);
+  });
+
+  it("X-SW-7 Cut-1 cuts the lowest VUR first: B's Buchholz Cut-1 = 0, not 2 (16.5.1)", () => {
+    const s2 = sceneS2();
+    const cut1 = (id: EntrantId) => metricOf(rowsOf(s2), id, "buchholz_cut1");
+    // differential: HEAD 4/2 (the forfeit read as a game v A, D's 0 cut); cutting the lowest overall gives 2/2
+    expect(cut1("B")).toBe(0);
+    expect(column(s2, "buchholz_cut1")).toEqual({ A: 2 / 2, B: 0, C: 4 / 2, D: 2 / 2 });
+    // 16.5.2: a Cut-k repeats it, each cut taking the lowest VUR left, then the lowest contribution left. On a hand card
+    // (half-points, R = 4, D = 1): X, score 4, beat P (score 0), forfeited to Q (score 3: dummy min(4, Q 3) = 3, a VUR),
+    // missed round 3 before playing again (16.2.3, cap D x R = 4: dummy min(4, 4) = 4, a VUR), beat R (score 5).
+    //   Contributions {P 0, VUR 3, VUR 4, R 5}, Buchholz 12.
+    //   Cut-1 cuts the lowest VUR, 3 → 9 (the lowest overall, P's 0, would leave 12; the highest VUR 8).
+    //   Cut-2 cuts both VURs → 5 (the two lowest overall would leave 9).   Cut-3 has no VUR left for its third cut, so it
+    //   takes the lowest left, P's 0 → 5.
+    const hand: SwissTable = [
+      {
+        entrant: "X", score: 4,
+        games: [
+          { round: 1, opponent: "P", result: "win", scored: 2 },
+          { round: 2, opponent: "Q", result: "loss", scored: 0, unplayed: "forfeit_loss", cap: 3 },
+          { round: 3, opponent: null, result: "loss", scored: 0, unplayed: "absent", cap: 4 },
+          { round: 4, opponent: "R", result: "win", scored: 2 },
+        ],
+      },
+      { entrant: "P", score: 0, games: [] },
+      { entrant: "Q", score: 3, games: [] },
+      { entrant: "R", score: 5, games: [] },
+    ];
+    expect([0, 1, 2, 3].map((cut) => buchholz(hand, "X", { cut }))).toEqual([12, 9, 5, 5]);
+  });
+
+  it("X-SW-7 a forfeit is not a meeting: direct encounter A v B is level (P-A2)", () => {
+    const s2 = sceneS2();
+    // A and B on the ledger: neither card names the other as a game played (A's round 1 is a forfeit win).
+    const ledger = buildSwissLedger(s2.entrants, ledgerFixtures(s2), { rounds: 2, drawPoints: 1 });
+    expect([directEncounter(ledger, "A", "B"), directEncounter(ledger, "B", "A")]).toEqual([0, 0]); // differential: HEAD [1, -1]
+    // Through the stage, ranked by direct encounter alone: each entrant's points in played games against the others are
+    // A 2 (beat C), B 2 (beat D), C 2 (beat D), D 0, so A, B and C stay level for the lots and D is last.
+    // differential: HEAD counts A's forfeit win as 2 more against B, so A 4 ranks alone and only B, C go to lots.
+    const done = completeTableStage(stageOf({ ...s2, cascade: ["direct", "lots"] }), s2.fixtures);
+    const lotGroups = done.events.flatMap((e) => (e.type === "rank_lock_required" ? [[...e.group].sort()] : []));
+    expect(lotGroups).toEqual([["A", "B", "C"]]);
+    expect(done.tables.overall?.at(-1)?.entrantId).toBe("D");
+  });
+
+  it("X-SW-7 a double walkover gives both sides a forfeit_loss card (rulebook §4 M2)", () => {
+    // S2 with round 1's A v B a double walkover (both absent) and round 2's lower board the other way round.
+    //   R1: A v B double walkover (each paid the loss 0; unplayed "both"); C beats D.   R2: A beats C, D beats B.
+    //   Scores: A 0+2 = 2, B 0+0 = 0, C 2+0 = 2, D 0+2 = 2.
+    //   Both round-1 cards are forfeit losses (16.2.4), each capped at the other's adjusted score (16.4.1):
+    //   A min(2, B 0) = 0, B min(0, A 2) = 0.
+    //   Buchholz: A = 0 + C 2 = 2.  B = 0 + D 2 = 2.  C = D 2 + A 2 = 4.  D = C 2 + B 0 = 2.
+    //   Cut-1: A cuts its VUR's 0 → 2.  B cuts its VUR's 0 → 2.  C {2, 2} → 2.  D {2, 0} → 2.
+    //   differential: HEAD reads it as a game both lost, so B = A 2 + D 2 = 4; a cap of D x R (= 2) for a forfeit, A = 4.
+    const dw: Scene = {
+      rule: CHESS, draw: CHESS_DRAW, entrants: ["A", "B", "C", "D"], rounds: 2,
+      fixtures: [
+        walkedOver(boardgame, {}, CHESS, 1, "A", "B", DOUBLE_WALKOVER), board(CHESS, 1, "C", "D", "h"),
+        board(CHESS, 2, "A", "C", "h"), board(CHESS, 2, "D", "B", "h"),
+      ],
+    };
+    expect(dw.fixtures[0]?.unplayed, "the producer marks both sides").toBe("both");
+    expect(column(dw, "buchholz")).toEqual({ A: 2 / 2, B: 2 / 2, C: 4 / 2, D: 2 / 2 });
+    expect(column(dw, "buchholz_cut1")).toEqual({ A: 2 / 2, B: 2 / 2, C: 2 / 2, D: 2 / 2 });
+    // X-DW-4: each played and lost it, 0 points
+    const rows = rowsOf(dw);
+    expect(["A", "B"].map((id) => { const r = rows.get(id); return r && [r.played, r.lost, r.points]; })).toEqual([[2, 1, 2], [2, 2, 0]]);
+    const ledger = buildSwissLedger(dw.entrants, ledgerFixtures(dw), { rounds: 2, drawPoints: 1 });
+    expect(ledger.flatMap((r) => r.games.filter((g) => g.round === 1 && (r.entrant === "A" || r.entrant === "B")))).toStrictEqual([
+      { round: 1, opponent: "B", result: "loss", scored: 0, unplayed: "forfeit_loss", cap: 0 },
+      { round: 1, opponent: "A", result: "loss", scored: 0, unplayed: "forfeit_loss", cap: 2 },
+    ]);
+  });
+
+  it("X-SW-7 a withdrawn entrant stays in its opponents' Buchholz at its adjusted score: A = 2+4+3 = 9 (16.3.2)", () => {
+    const s3 = sceneS3();
+    const bh = (id: EntrantId) => metricOf(rowsOf(s3), id, "buchholz");
+    expect(bh("A")).toBe(9 / 2); // differential: 7/2 — B read at its real 0 (mutant (c)); HEAD (T7) already reads `adjusted`
+    expect(column(s3, "buchholz")).toEqual({ A: 9 / 2, B: 5 / 2, C: 11 / 2, D: 12 / 2 });
+    const rows = rowsOf(s3);
+    expect(Object.fromEntries(s3.entrants.map((id) => [id, rows.get(id)?.points]))).toEqual({ A: 5, B: 0, C: 4, D: 3 });
+  });
+
+  it("X-SW-7 after a withdrawal its post-withdrawal rounds are VURs on its own card: B's Cut-1 cuts a 0, Buchholz 5", () => {
+    const s3 = sceneS3();
+    // B's card: its one played round, then two 16.2.5 zero-point rounds (VURs), each a dummy min(0, 3) = 0; adjusted 2.
+    const ledger = buildSwissLedger(s3.entrants, ledgerFixtures(s3), { rounds: 3, drawPoints: 1, absent: s3.absent! });
+    expect(ledger.find((r) => r.entrant === "B")).toStrictEqual({
+      entrant: "B", score: 0, adjusted: 2,
+      games: [
+        { round: 1, opponent: "A", result: "loss", scored: 0 },
+        { round: 2, opponent: null, result: "loss", scored: 0, unplayed: "absent_last", cap: 3 },
+        { round: 3, opponent: null, result: "loss", scored: 0, unplayed: "absent_last", cap: 3 },
+      ],
+    });
+    const rows = rowsOf(s3);
+    expect([metricOf(rows, "B", "buchholz"), metricOf(rows, "B", "buchholz_cut1")]).toEqual([5 / 2, 5 / 2]);
+    expect(column(s3, "buchholz_cut1")).toEqual({ A: 7 / 2, B: 5 / 2, C: 8 / 2, D: 9 / 2 });
+  });
+
+  it("X-SW-7 a withdrawal with its next board paired: that board walks over (a forfeit loss), and the walkover winner's dummy is capped at the withdrawn side's ADJUSTED score (16.4.1, 16.3.2)", () => {
+    // Boardgame half-points, R = 3, D = 1. B withdraws after round 1 with its round-2 board already paired: that board
+    // walks over to C (reason "withdrew", nothing played; rulebook §4 "Withdrawal with a paired, undecided board"), and
+    // B is not paired in round 3.
+    //   R1: A beats B, C beats D.   R2: B v C walks over to C (unplayed "home"), A beats D.   R3: A draws C, D bye; B absent.
+    //   Scores: A 2+2+1 = 5, B 0, C 2+2+1 = 5, D 0+0+2 = 2.
+    //   B's card: R1 played, R2 a forfeit loss (16.2.4, a VUR), R3 a zero-point round followed by nothing: 16.2.5, so B's
+    //   adjusted score is 0 + 1 = 1 (16.3.2). C's R2 is a forfeit win capped at B's ADJUSTED 1 (16.4.1): min(5, 1) = 1.
+    //   Buchholz: A = B 1 + D 2 + C 5 = 8.  B = A 5 + min(0, C 5) 0 + min(0, 3) 0 = 5.  C = D 2 + 1 + A 5 = 8.
+    //     D = C 5 + A 5 + bye min(2, 3) 2 = 12.
+    //   Cut-1: A {1, 2, 5} → 7.  B's VURs (0, 0) → cut a 0 → 5.  C {2, 1, 5} (a forfeit WIN is no VUR) → 7.  D {5, 5, 2} → 10.
+    //   differential: the cap at B's real 0 gives C = 2 + 0 + 5 = 7; at D x R (16.4.2's cap) 2 + 3 + 5 = 10.
+    const wd: Scene = {
+      rule: CHESS, draw: CHESS_DRAW, entrants: ["A", "B", "C", "D"], rounds: 3, absent: new Map([["B", [3]]]),
+      fixtures: [
+        board(CHESS, 1, "A", "B", "h"), board(CHESS, 1, "C", "D", "h"),
+        walkedOver(boardgame, {}, CHESS, 2, "B", "C", forfeit("C", "B", "withdrew")), board(CHESS, 2, "A", "D", "h"),
+        board(CHESS, 3, "A", "C", "d"), bye(CHESS, 3, "D"),
+      ],
+    };
+    expect(wd.fixtures[2]?.unplayed, "the withdrawn side sits home").toBe("home");
+    expect(column(wd, "buchholz")).toEqual({ A: 8 / 2, B: 5 / 2, C: 8 / 2, D: 12 / 2 });
+    expect(column(wd, "buchholz_cut1")).toEqual({ A: 7 / 2, B: 5 / 2, C: 7 / 2, D: 10 / 2 });
+    const ledger = buildSwissLedger(wd.entrants, ledgerFixtures(wd), { rounds: 3, drawPoints: 1, absent: wd.absent! });
+    expect(categoriesOf(ledger)).toEqual({
+      A: ["played", "played", "played"],
+      B: ["played", "forfeit_loss", "absent_last"],
+      C: ["played", "forfeit_win", "played"],
+      D: ["played", "played", "bye"],
+    });
+    expect(ledger.find((r) => r.entrant === "B")?.adjusted).toBe(1);
+  });
+
+  it("X-SW-7 after a void: a voided round-2 board is not on either card and adds no dummy", () => {
+    // S3 with round 2's A v C voided. Scores: A 2+1 = 3, B 0, C 2+2 = 4, D 0+2+1 = 3; B adjusted 0 + 2 = 2.
+    //   A = B 2 + D 3 = 5 (a dummy for the void round would add min(3, 3) = 3, giving 8).
+    //   B = A 3 + 0 + 0 = 3.   C = D 3 + bye min(4, 3) 3 = 6 (with a dummy: + min(4, 3) = 3, giving 9).
+    //   D = C 4 + bye min(3, 3) 3 + A 3 = 10.
+    const s3 = sceneS3();
+    const voided: Scene = { ...s3, fixtures: s3.fixtures.map((f) => (f.id === "r2-A-C" ? { ...f, status: "void" } : f)) };
+    expect(voided.fixtures.filter((f) => f.status === "void")).toHaveLength(1);
+    expect(column(voided, "buchholz")).toEqual({ A: 5 / 2, B: 3 / 2, C: 6 / 2, D: 10 / 2 });
+    const ledger = buildSwissLedger(voided.entrants, ledgerFixtures(voided), { rounds: 3, drawPoints: 1, absent: voided.absent! });
+    expect(Object.fromEntries(ledger.map((r) => [r.entrant, r.games.map((g) => g.round)]))).toEqual({
+      A: [1, 3], B: [1, 2, 3], C: [1, 3], D: [1, 2, 3],
+    });
+  });
+
+  it("X-SW-7 another sport: S2's shape on football's declared rule (D = draw points) gives the same categories", () => {
+    // single-sport: football is the goals representative; the sweep is Task 7's
+    // S2 in football's own Swiss points: win 3, draw 1, loss 0, whole points; a draw stands in a football Swiss, so D is
+    // the rule's draw, 1 (ruling R4); R = 2. The forfeit runs through football's standingsDelta (its walkover credit) and
+    // the rule's payout: A is paid 3, B 0.
+    //   Scores: A 3+3 = 6, B 0+3 = 3, C 3+0 = 3, D 0.
+    //   Dummies (16.4.1): A min(6, B 3) = 3, B min(3, A 6) = 3.
+    //   Buchholz: A = 3 + C 3 = 6.  B = 3 + D 0 = 3.  C = D 0 + A 6 = 6.  D = C 3 + B 3 = 6.
+    //   Cut-1: A {3, 3} → 3.  B cuts its forfeit loss's 3 → 0 (the lowest overall, D's 0, would leave 3).  C {0, 6} → 6.
+    //     D {3, 3} → 3.   Shown unhalved (whole points).
+    //   differential: a cap of D x R = 2 for the forfeit gives A 2 + 3 = 5.
+    const m = builtinModules.find((x) => x.key === "football");
+    if (m === undefined) throw new Error("football is not registered");
+    const rule = m.tablePointsRule(m.configSchema.parse({}), "swiss");
+    const facts = swissDrawFactsOf(m, {});
+    expect([rule.win.regulation, rule.draw, rule.loss.regulation, rule.unit, swissDrawPoints(rule, facts)]).toEqual([3, 1, 0, "whole", 1]);
+    const scene: Scene = {
+      rule, draw: facts, entrants: ["A", "B", "C", "D"], rounds: 2,
+      fixtures: [
+        walkedOver(m, {}, rule, 1, "A", "B", forfeit("A", "B")), board(rule, 1, "C", "D", "h"),
+        board(rule, 2, "A", "C", "h"), board(rule, 2, "B", "D", "h"),
+      ],
+    };
+    expect([scene.fixtures[0]?.unplayed, scene.fixtures[0]?.result?.map((d) => d.points)]).toEqual(["away", [3, 0]]);
+    expect(column(scene, "buchholz")).toEqual({ A: 6, B: 3, C: 6, D: 6 });
+    expect(column(scene, "buchholz_cut1")).toEqual({ A: 3, B: 0, C: 6, D: 3 });
+    // the same categories as S2 in chess, card for card
+    const s2 = sceneS2();
+    const chess = categoriesOf(buildSwissLedger(s2.entrants, ledgerFixtures(s2), { rounds: 2, drawPoints: 1 }));
+    const goals = categoriesOf(buildSwissLedger(scene.entrants, ledgerFixtures(scene), { rounds: 2, drawPoints: 1 }));
+    expect(goals).toEqual({ A: ["forfeit_win", "played"], B: ["forfeit_loss", "played"], C: ["played", "played"], D: ["played", "played"] });
+    expect(goals).toEqual(chess);
+  });
+
+  it("X-SW-7 N1: a Swiss ledger stage that names no swissDraw is refused at once (CONFIG_INVALID), even with an even field and no unplayed card", () => {
+    // An even field, every board played: no card is unplayed, so D is never read — and the stage is still refused, so a
+    // caller that forgets the draw facts fails on its first ranking, not on the first odd round (T7 re-review N1).
+    const even: Scene = {
+      rule: CHESS, draw: undefined, entrants: ["A", "B", "C", "D"], rounds: 2,
+      fixtures: [board(CHESS, 1, "A", "B", "h"), board(CHESS, 1, "C", "D", "d"), board(CHESS, 2, "A", "C", "h"), board(CHESS, 2, "B", "D", "a")],
+    };
+    let checked = 0;
+    for (const fixtures of [even.fixtures, []]) {
+      const got = refusal(() => tableOf({ ...even, fixtures }));
+      expect(got?.code, `${fixtures.length} fixtures`).toBe("CONFIG_INVALID");
+      expect(got?.message, `${fixtures.length} fixtures`).toMatch(/names no swissDraw/);
+      checked++;
+    }
+    expect(checked).toBe(2);
+    // the positive pair: with the facts, the same stage ranks
+    expect(refusal(() => tableOf({ ...even, draw: CHESS_DRAW }))).toBeNull();
+    expect(rowsOf({ ...even, draw: CHESS_DRAW }).size).toBe(4);
+    // and the type says so first: a Swiss ledger stage with no draw facts does not compile
+    // @ts-expect-error — N1: TableStage's Swiss arm requires `swissDraw`, so a caller that leaves it out fails to compile
+    const untyped: TableStage = { id: "sw", kind: "swiss", swiss: true, entrants: [], rules: tableRulesOf(CASCADE, CHESS) };
+    expect(refusal(() => completeTableStage(untyped, []))?.message).toMatch(/names no swissDraw/);
+  });
+
+  it("X-SW-7 guards: an unplayed side on a fixture with no result, a forfeit side that did not lose, a forfeit whose winner or loser is not a seat → CONFIG_INVALID", () => {
+    const s2 = sceneS2();
+    const walked = s2.fixtures[0]!;
+    const pair = walked.result!; // [A (home) paid the win, B (away) the loss]
+    const swapped = (f: TableFixture): Scene => ({ ...s2, fixtures: s2.fixtures.map((x) => (x.id === walked.id ? f : x)) });
+    const cases: Array<[string, () => unknown, RegExp]> = [
+      // the producer names the WINNER's seat, or both seats of a won fixture: a forfeit-loss card would hold a win
+      ["unplayed home on A's win", () => tableOf(swapped({ ...walked, unplayed: "home" })), /"A"'s round 1 is a forfeit_loss, but its result is a win/],
+      ["unplayed both on A's win", () => tableOf(swapped({ ...walked, unplayed: "both" })), /"A"'s round 1 is a forfeit_loss, but its result is a win/],
+      // …or the loser's seat of a fixture the other side won: the forfeit-win card would hold a loss
+      ["unplayed away on B's win", () => tableOf(swapped({ ...board(CHESS, 1, "A", "B", "a"), unplayed: "away" })), /"A"'s round 1 is a forfeit_win, but its result is a loss/],
+      // an unplayed side on a one-sided award (a bye is its own unplayed round, 16.2.1; it has no [home, away])
+      ["unplayed on a bye", () => tableOf({ ...S1, fixtures: S1.fixtures.map((f) => (f.awardDelta ? { ...f, unplayed: "away" as const } : f)) }), /no \[home, away\] result/],
+      // unplayedSidesOf: the forfeit's winner holds neither seat; its typed loser holds neither the other seat
+      ["winner in neither seat", () => unplayedSidesOf(forfeit("X", "B"), false, pair), /is not a seat/],
+      ["loser not the other seat", () => unplayedSidesOf(forfeit("A", "C"), false, pair), /is not a seat/],
+    ];
+    let checked = 0;
+    for (const [what, run, message] of cases) {
+      const got = refusal(run);
+      expect(got?.code, what).toBe("CONFIG_INVALID");
+      expect(got?.message, what).toMatch(message);
+      checked++;
+    }
+    expect(checked).toBe(cases.length);
+    // The positive pairs: S2 ranks; a pre-W2b award (no typed loser, its reason in `method`) is charged to the seat that is
+    // not the winner's; a forfeit's caps read the scheduled opponent, never R, so a forfeit-only stage ranks with no rounds.
+    expect(refusal(() => tableOf(s2))).toBeNull();
+    expect(unplayedSidesOf({ kind: "award", winner: "A", method: "walkover" } as never, false, pair)).toBe("away");
+    expect(unplayedSidesOf(forfeit("A", "B"), false, pair)).toBe("away");
+    expect(refusal(() => tableOf({ ...s2, rounds: undefined }))).toBeNull();
+  });
+
+  it("X-SW-7 second call: ranking S2 twice gives identical rows and leaves its fixtures as they were", () => {
+    const s2 = sceneS2();
+    const before = JSON.stringify(s2.fixtures);
+    const first = completeTableStage(stageOf(s2), s2.fixtures);
+    const second = completeTableStage(stageOf(s2), s2.fixtures);
+    expect(second).toStrictEqual(first);
+    expect(first.tables.overall).toHaveLength(s2.entrants.length);
+    expect(JSON.stringify(s2.fixtures)).toBe(before);
+  });
+});
+
 /** The sets a best-of-N match is won on, ⌈N/2⌉, read off the cfg; undefined for a sport whose cfg names no `bestOf`. */
 function setsToWinByRulebook(m: AnySportModule, rawCfg: unknown): number | undefined {
   const bestOf = (m.configSchema.parse(rawCfg) as { bestOf?: unknown }).bestOf;
@@ -578,4 +999,16 @@ function paidBye(m: AnySportModule, rawCfg: unknown, rule: PointsRule, winner: E
   const paid = pair.find((d) => d.entrantId === winner);
   if (paid === undefined) throw new Error(`${m.key}: the paid bye names no winner`);
   return paid;
+}
+
+/** A forfeit or a double walkover on a seated Swiss board, through the producer chain the app runs for a walked-over
+ *  table fixture: the module's own standingsDelta over the fixture's two seats, the stage rule's payout with nothing
+ *  played, and `unplayedSidesOf` — the one authority the app calls to fill `TableFixture.unplayed`. */
+function walkedOver(m: AnySportModule, rawCfg: unknown, rule: PointsRule, round: number, home: EntrantId, away: EntrantId, outcome: MatchOutcome): TableFixture {
+  const cfg = m.configSchema.parse(rawCfg);
+  const state = m.init(cfg, { home: { entrantId: home, slots: [] }, away: { entrantId: away, slots: [] } });
+  const raw = m.standingsDelta(outcome, cfg, { kind: "swiss" }, state) as FixtureResult;
+  const result = payout(outcome, decidedInFor(m, outcome), raw, false, rule, m.awardScoreKeys, setsToWinOf(m, cfg));
+  const unplayed = unplayedSidesOf(outcome, false, result);
+  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "walkover", result, ...(unplayed === undefined ? {} : { unplayed }) };
 }

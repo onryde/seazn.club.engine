@@ -42,6 +42,11 @@ export interface TableFixture {
   status: FixtureStatus;
   result?: FixtureResult;
   awardDelta?: StandingsDelta;
+  /** W3 (X-SW-7; FIDE C.07 (2026) 16.2.2 / 16.2.4): the side(s) of `result` that lost WITHOUT playing — "home"/"away" a
+   *  forfeit with nothing played, "both" a double walkover — as `unplayedSidesOf` (points.ts) answers for the fixture's
+   *  outcome, the one authority the caller fills it from. Absent = played (a retirement after play included). Read only by
+   *  the Swiss ledger: a forfeit there is an unplayed round on both cards and no meeting (P-A2). */
+  unplayed?: "home" | "away" | "both";
 }
 
 // A bracket fixture (knockout / double_elim / stepladder). `round` is 0-based
@@ -65,8 +70,21 @@ export interface BracketFixture {
 }
 
 // Everything the ranking pass needs about a table stage that isn't in the
-// fixtures themselves (spec 05 §4 cascade is data).
-export interface TableStage {
+// fixtures themselves (spec 05 §4 cascade is data). A stage that assembles the
+// Swiss ledger names its draw facts beside it (`SwissLedgerStage`).
+export type TableStage = TableStageFields & (SwissLedgerStage | { swiss?: false; swissDraw?: SwissDrawFacts });
+
+/** A stage that assembles the Swiss ledger for buchholz/sberger/direct (`swiss: true`). */
+interface SwissLedgerStage {
+  swiss: true;
+  /** W3 (ruling R4; X-SW-7; T7 re-review N1): the sport's Swiss draw facts under the stage's cfg (`swissDrawFactsOf`),
+   *  which turn `rules.points` into D, the draw points of art. 16's dummy cap and of a 16.2.5 round. Required by the type,
+   *  and refused at run time (CONFIG_INVALID) whenever it is absent — whether or not a round is yet unplayed — so a caller
+   *  that leaves it out fails on its first ranking, not on its first odd round. */
+  swissDraw: SwissDrawFacts;
+}
+
+interface TableStageFields {
   id: string;
   kind: Extract<StageKind, "league" | "group" | "swiss">;
   entrants: readonly EntrantId[];
@@ -78,17 +96,14 @@ export interface TableStage {
   winsCount?: RankContext["winsCount"];
   /** W2d (B5): a result's GAME points, for `sberger` and `direct` on a non-Swiss stage. Absent = the table points. */
   gamePoints?: RankContext["gamePoints"];
-  swiss?: boolean; // assemble the Swiss ledger for buchholz/sberger/direct
   seeds?: ReadonlyMap<EntrantId, number>;
   rngSeed?: number;
-  rounds?: number; // swiss: N rounds to play; REQUIRED on a Swiss ledger stage with any unplayed round (CONFIG_INVALID)
-  /** W3 (X-SW-8, FIDE C.04.2 2.4; ruling 251): per entrant, the rounds (1-based) it was in the stage but not paired, before
-   *  its late entry. Each is a zero-point unplayed round (C.07 16.2.3 when play follows it, else 16.2.5). Keys must be the
-   *  table's entrants; a round must be in 1..`rounds` and not one the entrant holds a card in. Read only with `swiss`. */
+  rounds?: number; // swiss: N rounds to play; REQUIRED on a Swiss ledger stage with a bye or an absence (CONFIG_INVALID)
+  /** W3 (X-SW-7, X-SW-8; FIDE C.04.2 2.4, C.07 16.1; ruling 251): per entrant, the rounds (1-based) it was in the stage but
+   *  not paired — before its late entry, or after its withdrawal. Each is a zero-point unplayed round (C.07 16.2.3 when
+   *  play follows it, else 16.2.5: its opponents then read it as a draw, 16.3.2). Keys must be the table's entrants; a
+   *  round must be in 1..`rounds` and not one the entrant holds a card in. Read only with `swiss`. */
   swissAbsentRounds?: ReadonlyMap<EntrantId, readonly number[]>;
-  /** W3 (ruling R4; X-SW-7): the sport's Swiss draw facts under the stage's cfg (`swissDrawFactsOf`), which turn `rules.points`
-   *  into D, the draw points of art. 16's dummy cap. REQUIRED on a Swiss ledger stage with any unplayed round. */
-  swissDraw?: SwissDrawFacts;
   /** Carry-over openings (Jul3/05 §3): synthetic deltas folded before the
    *  stage's own fixtures — prior H2H is never replayed. */
   openingDeltas?: readonly StandingsDelta[];
@@ -340,11 +355,15 @@ export function completeTableStage(
   };
 }
 
-// W3 (X-SW-8; FIDE C.07 (2026) art. 16): the pool's Swiss ledger by round, from its counted fixtures (decided or walked
-// over, with a result or a sit-out award) and the stage's declared absences, scaled by the stage's points rule and the
-// sport's draw facts (D = `swissDrawPoints`, ruling R4). Every counted fixture names its round: art. 16 reads a card's
-// place among the rounds.
+// W3 (X-SW-7, X-SW-8; FIDE C.07 (2026) art. 16): the pool's Swiss ledger by round, from its counted fixtures (decided or
+// walked over, with a result or a sit-out award, and the side(s) that lost without playing) and the stage's declared
+// absences, scaled by the stage's points rule and the sport's draw facts (D = `swissDrawPoints`, ruling R4). Every counted
+// fixture names its round: art. 16 reads a card's place among the rounds. The draw facts are refused when absent at once
+// (N1), before any card is read: an even field with no unplayed round needs no D, but its stage still names them.
 function swissLedgerOf(stage: TableStage, entrants: readonly EntrantId[], fixtures: readonly TableFixture[]): SwissTable {
+  if (stage.swissDraw === undefined) {
+    throw new EngineError("CONFIG_INVALID", `Swiss stage "${stage.id}" names no swissDraw: the sport's Swiss draw facts (swissDrawFactsOf) give its draw points`, { stageId: stage.id });
+  }
   const counted: SwissLedgerFixture[] = [];
   for (const fixture of fixtures) {
     if (!COUNTS_FOR_STANDINGS.has(fixture.status) || (fixture.result === undefined && fixture.awardDelta === undefined)) continue;
@@ -355,11 +374,12 @@ function swissLedgerOf(stage: TableStage, entrants: readonly EntrantId[], fixtur
       round: fixture.roundNo,
       ...(fixture.result === undefined ? {} : { result: fixture.result }),
       ...(fixture.awardDelta === undefined ? {} : { award: fixture.awardDelta }),
+      ...(fixture.unplayed === undefined ? {} : { unplayed: fixture.unplayed }),
     });
   }
   return buildSwissLedger(entrants, counted, {
     rounds: stage.rounds,
-    drawPoints: stage.swissDraw === undefined ? undefined : swissDrawPoints(stage.rules.points, stage.swissDraw),
+    drawPoints: swissDrawPoints(stage.rules.points, stage.swissDraw),
     ...(stage.swissAbsentRounds === undefined ? {} : { absent: stage.swissAbsentRounds }),
   });
 }
