@@ -458,9 +458,9 @@ function winsOf(row: StandingsRow, ctx: RankContext): number {
 /** W3 (rulebook-W3-swiss.md §5 T10, the goals chain; UEFA CL league phase art. 18, A7: "superior collective goal
  *  difference of the league phase opponents") — `opp_diff`: the sum, over `entrant`'s PLAYED cards, of that opponent's
  *  final goal difference as its row in `rows` records it (`DIFF_KEYS`, by alias). An unplayed card adds nothing — a bye, a
- *  forfeit win or loss, a double walkover, an absence (C.07 16.2): UEFA has no unplayed round, and an art. 16 dummy has no
- *  goal difference. Higher ranks first (the `opp_diff` comparator). A goal difference is no points unit,
- *  so it is never halved. Refused, CONFIG_INVALID: a played card naming no opponent; an opponent with no row in `rows`
+ *  forfeit win or loss, a double walkover, an absence (C.07 16.2 categories): a W3 product rule, as X-SW-7's "a forfeit
+ *  is not a meeting" (the T10 row records it). Higher ranks first. A goal difference is no points unit, so it is never
+ *  halved. Refused, CONFIG_INVALID: a played card naming no opponent; an opponent with no row in `rows`
  *  (the ledger and the table were built from different entrants); an opponent whose row records no goal difference (a
  *  sport with none, where `validateCascade` refuses the key, rule 2) — never read as a silent 0. */
 export function opponentsDiff(table: SwissTable, rows: readonly StandingsRow[], entrant: EntrantId): number {

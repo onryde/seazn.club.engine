@@ -2,9 +2,10 @@
 // family's sixth Swiss key, after Buchholz (UEFA CL league phase, art. 18 order, A7: "superior collective goal difference
 // of the league phase opponents"). An entrant's `opp_diff` is the sum, over its PLAYED cards, of that opponent's final goal
 // difference as the table records it (`DIFF_KEYS`: gd, run_diff or diff). An unplayed card adds nothing: a bye, a forfeit
-// win or loss, a double walkover and an absence (FIDE C.07 (2026) 16.2) have no opponent goals to read — UEFA has no
-// unplayed round, and an art. 16 dummy has no goal difference. Higher ranks first. Swiss only (validateCascade rule 3) and
-// only on a sport that records a goal difference (rule 2). It is no points unit, so it is never halved.
+// win or loss, a double walkover and an absence (the FIDE C.07 (2026) 16.2 categories). That exclusion is a W3 product
+// rule, consistent with X-SW-7's "a forfeit is not a meeting"; the T10 row records it. Higher ranks first. Swiss only
+// (validateCascade rule 3) and only on a sport that records a goal difference (rule 2). It is no points unit, so it is
+// never halved.
 //
 // Every expected number is derived by hand from those rules and from FB-WO-1 ("Football walkover = 3-0", FDC 2025 Art.
 // 28.1) in the comment beside its scene, never from the engine. Everything ranks through the real consumer,
@@ -60,6 +61,14 @@ function game(round: number, home: EntrantId, away: EntrantId, hg: number, ag: n
  *  played, and unplayedSidesOf — the one authority the app fills `TableFixture.unplayed` from. */
 function walkover(round: number, home: EntrantId, away: EntrantId, winner: EntrantId, loser: EntrantId): TableFixture {
   const outcome = MatchOutcome.parse({ kind: "award", winner, loser, reason: "walkover" });
+  const result = paid(outcome, football.standingsDelta(outcome, FB_CFG, { kind: "swiss" }, football.init(FB_CFG, seats(home, away))), false);
+  const unplayed = unplayedSidesOf(outcome, false, result);
+  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "walkover", result, ...(unplayed === undefined ? {} : { unplayed }) };
+}
+/** A double walkover on a seated board (both sides absent, rulebook §4 M2): the same producer chain as `walkover`. X-DW-4
+ *  credits nothing, so each side's goal difference moves by 0 here. */
+function doubleWalkover(round: number, home: EntrantId, away: EntrantId): TableFixture {
+  const outcome = MatchOutcome.parse({ kind: "double_walkover" });
   const result = paid(outcome, football.standingsDelta(outcome, FB_CFG, { kind: "swiss" }, football.init(FB_CFG, seats(home, away))), false);
   const unplayed = unplayedSidesOf(outcome, false, result);
   return { id: `r${round}-${home}-${away}`, roundNo: round, status: "walkover", result, ...(unplayed === undefined ? {} : { unplayed }) };
@@ -153,6 +162,23 @@ function sceneW(): Scene {
   };
 }
 
+// Scene DW: a double walkover (rulebook §4 M2: both sides absent; each takes a forfeit_loss card). Football's Swiss rule, R = 2.
+//   R1: A v B double walkover — each paid the loss, 0 points, and X-DW-4 credits nothing, so neither goal difference moves.
+//       C 3-0 D.   R2: A 2-0 C, D 3-1 B.
+//   Final goal difference: A = 0 + 2 = +2.  B = 0 − 2 = −2.  C = +3 − 2 = +1.  D = −3 + 2 = −1.  (Σ = 0.)
+//   Points: A 0 + 3 = 3, B 0 + 0 = 0, C 3 + 0 = 3, D 0 + 3 = 3.
+//   opp_diff, over the PLAYED cards only (both round-1 cards are unplayed):
+//     A = C +1 = +1.   B = D −1 = −1.   C = D −1 + A +2 = +1.   D = C +1 + B −2 = −1.
+//   A's and B's own final goal differences still feed their other opponents as the table records them: C reads A's +2,
+//   D reads B's −2.
+//   differential: counting the double-walkover card gives A = B −2 + C +1 = −1 and B = A +2 + D −1 = +1.
+function sceneDW(): Scene {
+  return {
+    entrants: ["A", "B", "C", "D"], rounds: 2,
+    fixtures: [doubleWalkover(1, "A", "B"), game(1, "C", "D", 3, 0), game(2, "A", "C", 2, 0), game(2, "D", "B", 3, 1)],
+  };
+}
+
 describe("opp_diff — the opponents' collective goal difference (rulebook-W3 §5 T10, Swiss only)", () => {
   it("opp_diff empty case first: an entrant with no played card has 0", () => {
     // single-sport: football is the goals representative of the hand-built stages; the sport sweeps are below
@@ -222,12 +248,37 @@ describe("opp_diff — the opponents' collective goal difference (rulebook-W3 §
     expect(column(rows, oppDiff)).toEqual({ A: -3, B: 3, C: 1, D: 4 });
   });
 
+  it("opp_diff after a double walkover: neither side's card counts; both sides' final GD still feeds their other opponents", () => {
+    // single-sport: football is the goals representative; the sport sweeps are below
+    const d = sceneDW();
+    expect(d.fixtures[0]?.unplayed, "premise: the producer marks both sides").toBe("both");
+    const roundOne = ledgerOf(d).flatMap((row) =>
+      row.games.filter((g) => g.round === 1 && (row.entrant === "A" || row.entrant === "B")).map((g) => [row.entrant, g.opponent, g.unplayed]),
+    );
+    expect(roundOne, "premise: both round-1 cards are forfeit losses (rulebook §4 M2)").toEqual([["A", "B", "forfeit_loss"], ["B", "A", "forfeit_loss"]]);
+    const rows = tableOf(d);
+    expect(column(rows, gd), "premise: the hand goal differences, the double walkover moving neither (X-DW-4)").toEqual({ A: 2, B: -2, C: 1, D: -1 });
+    expect(column(rows, (r) => r.points), "premise: the hand points").toEqual({ A: 3, B: 0, C: 3, D: 3 });
+    // differential: counting the double-walkover card gives A −1, B +1
+    expect(column(rows, oppDiff)).toEqual({ A: 1, B: -1, C: 1, D: -1 });
+    expect(column(rows, (r) => derivedMetricText(r, "opp_diff"))).toEqual({ A: "1", B: "-1", C: "1", D: "-1" });
+  });
+
   it("opp_diff is shown: a DERIVED_METRICS column beside Buchholz, printed by derivedMetricText as the ranker materialised it", () => {
     // single-sport: football is the goals representative; the column list is sport-agnostic
     const specs = DERIVED_METRICS.filter((m) => m.key === "opp_diff");
     expect(specs, "exactly one opp_diff column").toHaveLength(1);
     const spec = specs[0];
     expect(spec?.label.trim(), "a header to print").not.toBe("");
+    // Rule 2 admits the key on every sport recording any DIFF_KEYS alias, so the header names no one family's unit: it
+    // takes the neutral difference form of its neighbours ("Diff", "Pts diff"), never "GD" or "runs".
+    const aliases = new Set<string>();
+    forEachSport(({ module }) => {
+      for (const alias of DIFF_KEYS) if (module.metrics.some((m) => m.key === alias)) aliases.add(alias);
+    });
+    expect(aliases.size, "premise: more than one family's difference reaches this column").toBeGreaterThan(1);
+    expect(spec?.label).toMatch(/\bdiff\b/i);
+    expect(spec?.label, "a goal-only or run-only header").not.toMatch(/\bGD\b|goal|run/i);
     expect(spec?.decimals, "a goal difference is a whole number").toBe(0);
     const keys = DERIVED_METRICS.map((m) => m.key);
     expect(keys.indexOf("opp_diff"), "directly after Buchholz, its neighbour in the goals chain").toBe(keys.indexOf("buchholz") + 1);

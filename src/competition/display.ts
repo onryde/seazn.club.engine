@@ -30,8 +30,8 @@ export const DERIVED_METRICS: readonly DerivedMetricSpec[] = [
   { key: "point_ratio", label: "Pts ratio", decimals: 2 },
   { key: "buchholz_cut1", label: "Buchholz Cut-1", decimals: 1 },
   { key: "buchholz", label: "Buchholz", decimals: 1 },
-  // W3 (rulebook-W3-swiss.md §5 T10): the goals chain's key after Buchholz, a Swiss column beside it.
-  { key: "opp_diff", label: "Opp GD", decimals: 0 },
+  // W3 (rulebook-W3-swiss.md §5 T10): after Buchholz. Neutral, like "Diff": goals in football, runs in cricket.
+  { key: "opp_diff", label: "Opp diff", decimals: 0 },
   { key: "set_diff", label: "Diff", decimals: 0 }, // neutral, like "Ratio": sets in volleyball, games in badminton
   { key: "point_diff", label: "Pts diff", decimals: 0 },
   { key: "field_goals", label: "FG", decimals: 0 },
