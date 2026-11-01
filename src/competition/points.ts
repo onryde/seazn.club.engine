@@ -775,9 +775,35 @@ export function pointsRuleBounds(rule: PointsRule, reachable: ReadonlySet<Outcom
   };
 }
 
-/** W3 (X-SW-7, X-SW-8; rulebook-W3-swiss.md §4 "Non-chess scaling") — a draw's points under a Swiss stage's rule: the
- *  unit of the dummy cap "draw points × rounds" (FIDE C.07 (2026) 16.4.2) and of a 16.2.5 round read as a draw (16.3.2).
- *  The rule's `draw`, else half its win: the Standard-Points midpoint (C.07 7.7) for a sport with no draw. */
-export function swissDrawPoints(rule: PointsRule): number {
-  return rule.draw ?? rule.win.regulation / 2;
+/** W3 (ruling R4; design §5) — what a Swiss stage's draw points read off its SPORT under the stage's cfg, beside the rule:
+ *  whether a draw can stand in the stage, and the sets a match is won on (a set-score rule's clean sweep is "W-0"). */
+export interface SwissDrawFacts {
+  /** `reachableResultKinds(cfg, "swiss")` holds "draw", or `supportsDraws(cfg, "swiss")`. A rule that DECLARES a draw the
+   *  stage can never reach (IIHF ice hockey's 3/2/1/0, generic's win/loss mode) is a sport with no draw here. */
+  readonly drawReachable: boolean;
+  /** `setsToWinOf(module, cfg)`: undefined for a sport that keeps no set score. */
+  readonly setsToWin: number | undefined;
+}
+
+/** The facts `swissDrawPoints` reads, from the sport's own declarations under `cfg` (as its schema parses it). */
+export function swissDrawFactsOf(module: AnySportModule, cfg: unknown): SwissDrawFacts {
+  const parsed: unknown = module.configSchema.parse(cfg);
+  return {
+    drawReachable: module.reachableResultKinds(parsed, "swiss").has("draw") || module.supportsDraws(parsed, "swiss"),
+    setsToWin: setsToWinOf(module, cfg),
+  };
+}
+
+/** W3 (X-SW-7, X-SW-8; rulebook-W3-swiss.md §4 "Non-chess scaling"; rulings R4, 251) — a draw's points under a Swiss
+ *  stage's rule: the unit of the dummy cap "draw points × rounds" (FIDE C.07 (2026) 16.4.2) and of a 16.2.5 round read as
+ *  a draw (16.3.2). The rule's `draw` where a draw can stand in the stage; otherwise half the win points, the
+ *  Standard-Points midpoint (C.07 7.7). Under a set-score rule the win points are the clean sweep's ("W-0", else "*"),
+ *  the win a bye pays (design §5, X-SW-5). */
+export function swissDrawPoints(rule: PointsRule, facts: SwissDrawFacts): number {
+  if (facts.drawReachable && rule.draw !== undefined) return rule.draw;
+  if (rule.bySetScore === undefined) return rule.win.regulation / 2;
+  if (facts.setsToWin === undefined) {
+    throw new EngineError("CONFIG_INVALID", "the points rule pays by set score, but the sport keeps no set score (coverage refuses such a rule at save)", {});
+  }
+  return setPairOf(rule.bySetScore, `${facts.setsToWin}-0`)[0] / 2;
 }

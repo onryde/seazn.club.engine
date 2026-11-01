@@ -4,8 +4,8 @@
 // everyone once) with a strict hierarchy A > B > C > D > E > F. A round-robin
 // makes every tiebreak hand-verifiable: each player's opponents are ALL other
 // players, so Buchholz = (Σ all scores) − own score, and Sonneborn-Berger is the
-// sum of beaten opponents' scores. All values are exact integers (half-points;
-// SB in quarter-points) — no floats anywhere (PROMPT-07 acceptance).
+// sum of beaten opponents' scores. The golden's values are exact integers (half-points; SB in quarter-points). An
+// art. 16 dummy can be x.5 (½ x win points), still exact: multiples of ½ add exactly in IEEE-754 (PROMPT-07).
 import { describe, expect, it } from "vitest";
 import type { StandingsDelta } from "../core/types.ts";
 import type { FixtureResult } from "./standings.ts";

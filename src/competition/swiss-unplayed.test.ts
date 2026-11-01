@@ -9,8 +9,10 @@
 //   - 16.3: as somebody else's opponent, categories 1-4 count at their real result, and 16.2.5 counts as a draw. That is
 //     the ADJUSTED score: own score + D for each 16.2.5 round.
 //   - 16.4.2: the entrant's OWN unplayed round is scored against a dummy at its own score, capped at D x R.
-//   - D is the table's draw points, else half the win points (rulebook §4 "Non-chess scaling"; C.07 7.7). R is the
-//     stage's rounds, never the length of the entrant's card.
+//   - D is the table's draw points where a draw can stand in the stage, else half the win points (rulebook §4
+//     "Non-chess scaling"; C.07 7.7; ruling R4: a draw the rule declares but no Swiss stage of the sport can reach is no
+//     draw). Under a set-score rule the win points are the clean sweep's (design §5). R is the stage's rounds, never the
+//     length of the entrant's card.
 //   - Sonneborn-Berger weighs each round's contribution win 2 / draw 1 / loss 0; a bye is a win (rulebook §4).
 //   - Buchholz and SB are shown in the table's own points (SW-L2): half-points are halved only on a half-point table.
 // Every expected number is derived by hand from those rules in the comment beside its test, never from the engine. Each
@@ -26,7 +28,7 @@ import { declaredCfgs } from "../testkit/declared-cfgs.ts";
 import { forEachSport } from "../testkit/for-each-sport.ts";
 import { tableRulesOf } from "../testkit/helpers.ts";
 import { decidedInFor } from "./decided-in.ts";
-import { PointsRule, payout, setsToWinOf } from "./points.ts";
+import { PointsRule, payout, setsToWinOf, swissDrawFactsOf, swissDrawPoints, type SwissDrawFacts } from "./points.ts";
 import { completeTableStage, type TableFixture, type TableStage } from "./stage.ts";
 import type { FixtureResult, StandingsRow } from "./standings.ts";
 import { buildSwissLedger, rankStandings, type SwissTable } from "./tiebreakers.ts";
@@ -36,8 +38,12 @@ const CASCADE: TiebreakerKey[] = ["points", "buchholz_cut1", "buchholz", "sberge
 
 /** FIDE's 1 / ½ / 0 in boardgame's half-points (chess.md §2): the sport's own declared Swiss rule, pinned in a test below. */
 const CHESS = boardgame.tablePointsRule(boardgame.configSchema.parse({}), "swiss");
+/** Boardgame's Swiss draw facts under its default cfg, from its own declarations (pinned in the premise test below). */
+const CHESS_DRAW = swissDrawFactsOf(boardgame, {});
 /** S5's custom stage rule: win 3, loss 0 and no draw, in whole points. */
 const NO_DRAW = PointsRule.parse({ win: { regulation: 3 }, loss: { regulation: 0 }, shootoutAs: "result", unit: "whole", bonuses: [] });
+/** S5's sport: one where no draw stands and no set score is kept. */
+const NO_DRAW_FACTS: SwissDrawFacts = { drawReachable: false, setsToWin: undefined };
 
 type Side = "w" | "d" | "l";
 /** One side of a decided game, paid by `rule`: a win `win.regulation`, a draw `draw`, a loss `loss.regulation`. */
@@ -65,12 +71,15 @@ interface Scene {
   readonly rounds: number | undefined;
   readonly fixtures: readonly TableFixture[];
   readonly absent?: ReadonlyMap<EntrantId, readonly number[]>;
+  /** The sport's Swiss draw facts (`TableStage.swissDraw`); undefined = not passed. */
+  readonly draw: SwissDrawFacts | undefined;
 }
 function stageOf(s: Scene): TableStage {
   return {
     id: "sw", kind: "swiss", swiss: true, entrants: s.entrants, rules: tableRulesOf(CASCADE, s.rule), rngSeed: 7,
     ...(s.rounds === undefined ? {} : { rounds: s.rounds }),
     ...(s.absent === undefined ? {} : { swissAbsentRounds: s.absent }),
+    ...(s.draw === undefined ? {} : { swissDraw: s.draw }),
   };
 }
 function tableOf(s: Scene): readonly StandingsRow[] {
@@ -107,7 +116,7 @@ const LEDGER_OPTS = { rounds: 3, drawPoints: 1 } as const;
 //     C = 1·2 + 2·3 + 2·2 = 12; D = 1·5 + 0 + 1·5 = 10; E = 2·2 + 0 + 0 = 4.
 //   Shown on a half-point table: Buchholz and Cut-1 ÷ 2, SB ÷ 4.
 const S1: Scene = {
-  rule: CHESS, entrants: ["A", "B", "C", "D", "E"], rounds: 3,
+  rule: CHESS, draw: CHESS_DRAW, entrants: ["A", "B", "C", "D", "E"], rounds: 3,
   fixtures: [
     board(CHESS, 1, "A", "B", "h"), board(CHESS, 1, "C", "D", "d"), bye(CHESS, 1, "E"),
     board(CHESS, 2, "A", "E", "h"), board(CHESS, 2, "B", "D", "h"), bye(CHESS, 2, "C"),
@@ -124,7 +133,7 @@ const S1: Scene = {
 //   Buchholz: L = 3 + B 1 + A 4 = 8. B = A 4 + L 4 + C 3 = 11 (misread as 16.2.5, L is adjusted to 4 + 1 = 5, giving 12).
 //     A = B 1 + C 3 + L 4 = 8. C = bye min(3, 3) 3 + A 4 + B 1 = 8.
 const S4: Scene = {
-  rule: CHESS, entrants: ["A", "B", "C", "L"], rounds: 3, absent: new Map([["L", [1]]]),
+  rule: CHESS, draw: CHESS_DRAW, entrants: ["A", "B", "C", "L"], rounds: 3, absent: new Map([["L", [1]]]),
   fixtures: [
     board(CHESS, 1, "A", "B", "h"), bye(CHESS, 1, "C"),
     board(CHESS, 2, "A", "C", "h"), board(CHESS, 2, "L", "B", "h"),
@@ -140,7 +149,7 @@ const S4: Scene = {
 //   SB in table points (a win counts the opponent's whole contribution, a draw half): X = 6 + 3 + 4.5 = 13.5.
 //   Shown on a whole-point table: unhalved (multiples of ½ are exact in IEEE-754, Review Focus 4).
 const S5: Scene = {
-  rule: NO_DRAW, entrants: ["X", "Y", "Z"], rounds: 3,
+  rule: NO_DRAW, draw: NO_DRAW_FACTS, entrants: ["X", "Y", "Z"], rounds: 3,
   fixtures: [
     board(NO_DRAW, 1, "X", "Y", "h"), bye(NO_DRAW, 1, "Z"),
     board(NO_DRAW, 2, "X", "Z", "h"), bye(NO_DRAW, 2, "Y"),
@@ -194,6 +203,8 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
 
   it("X-SW-8 premise: boardgame's declared Swiss rule is FIDE's 1 / ½ / 0 in half-points (the scale S1 and S4 are derived in)", () => {
     expect([CHESS.win.regulation, CHESS.draw, CHESS.loss.regulation, CHESS.unit]).toEqual([2, 1, 0, "half"]);
+    // and a game of chess may be drawn in a Swiss (FIDE), with no set score: D is the declared draw, 1 half-point
+    expect(CHESS_DRAW).toEqual({ drawReachable: true, setsToWin: undefined });
   });
 
   it("X-SW-7 own bye = dummy at own score capped at draw×rounds: E (bye in round 1) Buchholz 2+5+5 = 12 half-points (16.4.2)", () => {
@@ -274,6 +285,26 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
     expect(column(lastAbsent, "buchholz")).toEqual({ A: 7 / 2, B: 12 / 2, C: 10 / 2, L: 5 / 2 });
   });
 
+  it("X-SW-8 two missed rounds, then play: BOTH are 16.2.3 (any later played card, not the next one, decides), so A reads L at its real 2", () => {
+    // The commonest late entry: L joins in round 3 of 3 (absent [1, 2]). Boardgame half-points, D = 1, cap 3.
+    //   R1: A beats B, C bye.   R2: A beats C, B bye.   R3: L beats A, B draws C.
+    //   Scores: A 2+2+0 = 4, B 0+2+1 = 3, C 2+0+1 = 3, L 0+0+2 = 2.
+    //   Each of L's missed rounds is followed by a played card (round 3), so both are 16.2.3 (round 1's NEXT card is the
+    //   round-2 absence, a VUR, but a later card is not): nothing is 16.2.5, and L's adjusted score is its real 2.
+    //   A = B 3 + C 3 + L 2 = 8 (9 if round 1 were 16.2.5, L adjusted 3; 10 if both were).
+    //   B = A 4 + bye min(3, 3) 3 + C 3 = 10.   C = bye min(3, 3) 3 + A 4 + B 3 = 10.   L = dummy min(2, 3) 2 + 2 + A 4 = 8.
+    const lateTwo: Scene = {
+      rule: CHESS, draw: CHESS_DRAW, entrants: ["A", "B", "C", "L"], rounds: 3, absent: new Map([["L", [1, 2]]]),
+      fixtures: [
+        board(CHESS, 1, "A", "B", "h"), bye(CHESS, 1, "C"),
+        board(CHESS, 2, "A", "C", "h"), bye(CHESS, 2, "B"),
+        board(CHESS, 3, "L", "A", "h"), board(CHESS, 3, "B", "C", "d"),
+      ],
+    };
+    expect(column(lateTwo, "buchholz")).toEqual({ A: 8 / 2, B: 10 / 2, C: 10 / 2, L: 8 / 2 });
+    expect(Object.fromEntries([...rowsOf(lateTwo)].map(([id, r]) => [id, r.points]))).toEqual({ A: 4, B: 3, C: 3, L: 2 });
+  });
+
   it("X-SW-7 non-chess scale: X's dummy is min(9, 1.5×3) = 4.5 → Buchholz 6+3+4.5 = 13.5, displayed unhalved (SW-L2)", () => {
     const rows = rowsOf(S5);
     const bh = (id: EntrantId) => metricOf(rows, id, "buchholz");
@@ -283,16 +314,22 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
     expect(metricOf(rows, "X", "sberger")).toBe(13.5);
   });
 
-  it("X-SW-7 every sport: a bye dummy is min(own, D×R) with D from the declared rule (draw, else ½ win) (counted)", () => {
+  it("X-SW-7 every sport: a bye dummy is min(own, D×R) with D from the declared rule (its draw where a draw stands, R4; else ½ win) (counted)", () => {
     // Per sport and declared cfg, S5's shape in that sport's own Swiss points, each bye built as the app's one producer
-    // builds it (`awardByeDelta`: the typed bye, the module's standingsDelta, the stage rule's payout). Expected, by hand
-    // from rulebook §4: D = the rule's draw, else ½ x the win points (a set-score map's clean-sweep pair, design §5);
-    // R = 3. X = win + win + bye, Y = loss + bye + win, Z = bye + loss + loss. Nobody is absent, so adjusted = score, and
+    // builds it (`awardByeDelta`: the typed bye, the module's standingsDelta, the stage rule's payout), and the stage's
+    // draw facts as the app passes them (`swissDrawFactsOf`). Expected, by hand from rulebook §4 and ruling R4: D = the
+    // rule's draw where a draw can stand in this sport's Swiss stage, read off the sport's OWN declarations
+    // (`reachableResultKinds` / `supportsDraws`), else ½ x the win points (a set-score map's clean-sweep pair, design §5,
+    // with the sets a match is won on read off its bestOf); R = 3. X = win + win + bye, Y = loss + bye + win,
+    // Z = bye + loss + loss. Nobody is absent, so adjusted = score, and
     //   Buchholz X = Y + Z + min(X, 3D), Y = X + min(Y, 3D) + Z, Z = min(Z, 3D) + X + Y,
     // shown ÷ 2 on a half-point table and unhalved otherwise.
     let checked = 0;
     let capBound = 0; // the cap is below the entrant's score, so the min takes the cap
     let ownBound = 0; // the entrant's own score is the min
+    let drawD = 0; // cfgs whose D is the draw (a draw stands)
+    let halfWinD = 0; // cfgs whose D is ½ x win (no draw stands)
+    let declaredUnreachable = 0; // cfgs whose rule declares a draw no Swiss stage of the sport reaches (R4's case)
     const perSport = new Map<string, number>();
     const sports = forEachSport(({ module: m }) => {
       for (const { name, cfg } of declaredCfgs(m as never)) {
@@ -301,7 +338,12 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
         const rule = m.tablePointsRule(parsed, "swiss");
         const sets = setsToWinByRulebook(m, cfg);
         const [win, loss] = cleanSweep(rule, sets);
-        const d = rule.draw !== undefined ? rule.draw : win / 2;
+        const drawStands = m.reachableResultKinds(parsed, "swiss").has("draw") || m.supportsDraws(parsed, "swiss");
+        if (drawStands) expect(rule.draw, `${where}: a draw stands, so the rule prices one`).toBeDefined();
+        const d = drawStands ? (rule.draw as number) : win / 2;
+        if (drawStands) drawD++;
+        else halfWinD++;
+        if (!drawStands && rule.draw !== undefined) declaredUnreachable++;
         const cap = d * 3;
         const won = (id: EntrantId): StandingsDelta => ({ entrantId: id, played: 1, won: 1, drawn: 0, lost: 0, points: win, metrics: {} });
         const lost = (id: EntrantId): StandingsDelta => ({ entrantId: id, played: 1, won: 0, drawn: 0, lost: 1, points: loss, metrics: {} });
@@ -316,7 +358,7 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
         const dummy = (id: "X" | "Y" | "Z") => Math.min(score[id], cap);
         const expected = { X: score.Y + score.Z + dummy("X"), Y: score.X + dummy("Y") + score.Z, Z: dummy("Z") + score.X + score.Y };
         const scale = rule.unit === "half" ? 2 : 1;
-        const rows = rowsOf({ rule, entrants: ["X", "Y", "Z"], rounds: 3, fixtures });
+        const rows = rowsOf({ rule, draw: swissDrawFactsOf(m, cfg), entrants: ["X", "Y", "Z"], rounds: 3, fixtures });
         for (const id of ["X", "Y", "Z"] as const) {
           expect(rows.get(id)?.points, `${where} ${id}: the score the hand count reads`).toBe(score[id]);
           expect(metricOf(rows, id, "buchholz"), `${where} ${id}`).toBe(expected[id] / scale);
@@ -332,6 +374,87 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
     expect(checked).toBeGreaterThanOrEqual(3 * sports);
     expect(capBound, "some entrant's cap binds").toBeGreaterThan(0);
     expect(ownBound, "some entrant's own score binds").toBeGreaterThan(0);
+    expect(drawD, "some cfg's D is its draw").toBeGreaterThan(0);
+    expect(halfWinD, "some cfg's D is half its win").toBeGreaterThan(0);
+    expect(declaredUnreachable, "some cfg declares a draw its Swiss stage cannot reach (R4)").toBeGreaterThan(0);
+  });
+
+  it("X-SW-7 R4: a draw the rule declares but no Swiss stage can reach is no draw: IIHF ice hockey and generic win/loss take D = ½ × 3 = 1.5", () => {
+    // single-sport: the two declared cfgs whose rule prices a draw (1) no Swiss stage of theirs can reach — the IIHF's
+    // overtime and shoot-out decide every game, and generic's win/loss mode allows no draw — named by hand; the every-sport
+    // test sweeps the registry.
+    // Each in S5's shape under the sport's own declared Swiss rule (win 3, loss 0, draw 1, whole points) and the app's
+    // paid bye (the win, 3): scores X 3+3+3 = 9, Y 0+3+3 = 6, Z 3+0+0 = 3. No draw stands, so D = ½ x 3 = 1.5 and the
+    // cap is 4.5 (rulebook §4 "for a sport with no draw, ½ x win points x rounds"):
+    //   X = Y 6 + Z 3 + min(9, 4.5) 4.5 = 13.5.   Y = X 9 + min(6, 4.5) 4.5 + Z 3 = 16.5.   Z = min(3, 4.5) 3 + X 9 + Y 6 = 18.
+    // differential: D = the declared draw 1 gives cap 3, so X 6+3+3 = 12, Y 9+3+3 = 15, Z 18.
+    let checked = 0;
+    for (const [key, cfgName] of [["icehockey", "iihf"], ["generic", "win_loss"]] as const) {
+      const m = builtinModules.find((x) => x.key === key);
+      const cfg = m === undefined ? undefined : declaredCfgs(m as never).find((c) => c.name === cfgName)?.cfg;
+      if (m === undefined || cfg === undefined) throw new Error(`${key}/${cfgName} is not declared`);
+      const rule = m.tablePointsRule(m.configSchema.parse(cfg), "swiss");
+      expect([rule.win.regulation, rule.loss.regulation, rule.draw, rule.unit], key).toEqual([3, 0, 1, "whole"]);
+      const facts = swissDrawFactsOf(m, cfg);
+      expect(facts, key).toEqual({ drawReachable: false, setsToWin: undefined });
+      const byeOf = (round: number, id: EntrantId): TableFixture => ({ id: `r${round}-bye`, roundNo: round, status: "walkover", awardDelta: paidBye(m, cfg, rule, id) });
+      expect(byeOf(1, "Z").awardDelta?.points, `${key}: the bye pays the win`).toBe(3);
+      const scene: Scene = {
+        rule, draw: facts, entrants: ["X", "Y", "Z"], rounds: 3,
+        fixtures: [
+          board(rule, 1, "X", "Y", "h"), byeOf(1, "Z"), board(rule, 2, "X", "Z", "h"), byeOf(2, "Y"), board(rule, 3, "Y", "Z", "h"), byeOf(3, "X"),
+        ],
+      };
+      expect(column(scene, "buchholz"), key).toEqual({ X: 13.5, Y: 16.5, Z: 18 });
+      checked++;
+    }
+    expect(checked).toBe(2);
+    // R4's two declarations, each alone: a draw is reachable when the stage's reachable results hold one OR the sport stands
+    // draws in the stage (generic win/loss answers no to both; each stub answers yes to one).
+    const generic = builtinModules.find((x) => x.key === "generic");
+    const winLoss = generic === undefined ? undefined : declaredCfgs(generic as never).find((c) => c.name === "win_loss")?.cfg;
+    if (generic === undefined || winLoss === undefined) throw new Error("generic/win_loss is not declared");
+    const draws = { ...generic, supportsDraws: () => true } as AnySportModule;
+    const reaches = { ...generic, reachableResultKinds: () => new Set(["draw"] as const) } as AnySportModule;
+    expect([generic, draws, reaches].map((m) => swissDrawFactsOf(m, winLoss).drawReachable)).toEqual([false, true, true]);
+  });
+
+  it("X-SW-7 design §5: under a set-score rule the win points are the clean sweep's, so D = ½ × 4 = 2 (not ½ × win.regulation 2)", () => {
+    // single-sport: badminton stands for every set sport (no draw; a best-of-3 is won on 2 sets); the every-sport test
+    // sweeps the registry.
+    // An organiser's set map on a best-of-3: 2-0 pays 4/0, 2-1 pays 3/1; win.regulation 2 (the schema asks for one).
+    // design §5: "win points" under a score-keyed rule are the clean sweep's, 4; a bye pays them (X-SW-5). No draw stands,
+    // so D = ½ x 4 = 2 and the cap is 2 x 3 = 6.
+    //   R1: X beats Y 2-0, Z bye.   R2: X beats Z 2-0, Y bye.   R3: Y beats Z 2-1, X bye.
+    //   Scores: X 4+4+4 = 12, Y 0+4+3 = 7, Z 4+0+1 = 5.
+    //   Buchholz X = Y 7 + Z 5 + min(12, 6) 6 = 18.   Y = X 12 + min(7, 6) 6 + Z 5 = 23.   Z = min(5, 6) 5 + X 12 + Y 7 = 24.
+    // differential: D = ½ x win.regulation 2 = 1 gives cap 3, so X 7+5+3 = 15, Y 12+3+5 = 20, Z 3+12+7 = 22.
+    const m = builtinModules.find((x) => x.key === "badminton");
+    if (m === undefined) throw new Error("badminton is not registered");
+    const rule = PointsRule.parse({
+      win: { regulation: 2 }, loss: { regulation: 0 }, shootoutAs: "result", unit: "whole", bonuses: [],
+      bySetScore: { "2-0": [4, 0], "2-1": [3, 1] },
+    });
+    const facts = swissDrawFactsOf(m, {});
+    expect(facts).toEqual({ drawReachable: false, setsToWin: 2 });
+    const byeOf = (round: number, id: EntrantId): TableFixture => ({ id: `r${round}-bye`, roundNo: round, status: "walkover", awardDelta: paidBye(m, {}, rule, id) });
+    expect(byeOf(1, "Z").awardDelta?.points, "the bye pays the clean sweep's 4").toBe(4);
+    const game = (round: number, winner: EntrantId, loser: EntrantId, [w, l]: readonly [number, number]): TableFixture => ({
+      id: `r${round}-${winner}-${loser}`, roundNo: round, status: "decided",
+      result: [
+        { entrantId: winner, played: 1, won: 1, drawn: 0, lost: 0, points: w, metrics: {} },
+        { entrantId: loser, played: 1, won: 0, drawn: 0, lost: 1, points: l, metrics: {} },
+      ],
+    });
+    const scene: Scene = {
+      rule, draw: facts, entrants: ["X", "Y", "Z"], rounds: 3,
+      fixtures: [game(1, "X", "Y", [4, 0]), byeOf(1, "Z"), game(2, "X", "Z", [4, 0]), byeOf(2, "Y"), game(3, "Y", "Z", [3, 1]), byeOf(3, "X")],
+    };
+    expect(column(scene, "buchholz")).toEqual({ X: 18, Y: 23, Z: 24 });
+    // a set-score rule on a sport that keeps no set score has no clean sweep: refused, never guessed
+    const noSets = refusal(() => swissDrawPoints(rule, { drawReachable: false, setsToWin: undefined }));
+    expect(noSets?.code).toBe("CONFIG_INVALID");
+    expect(noSets?.message).toMatch(/keeps no set score/);
   });
 
   it("X-SW-8 mid-round: a pending round-3 board adds no card and no dummy (Review Focus 1)", () => {
@@ -368,6 +491,9 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
       ["no rounds", { ...S4, rounds: undefined }, /rounds/],
       ["rounds 0", { ...S4, rounds: 0 }, /rounds/],
       ["a bye and no rounds", { ...S1, rounds: undefined }, /rounds/],
+      // an unplayed card needs D for its cap: the stage passes no draw facts (ruling R4)
+      ["no draw facts", { ...S4, draw: undefined }, /draw points/],
+      ["a bye and no draw facts", { ...S1, draw: undefined }, /draw points/],
       // an absent round outside 1..R
       ["round 0", { ...S4, absent: new Map([["L", [0]]]) }, /outside/],
       ["round 4 of 3", { ...S4, absent: new Map([["L", [4]]]) }, /outside/],
@@ -393,7 +519,7 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
     expect(refusal(run({ ...S4, fixtures: [...S4.fixtures, { id: "later", status: "scheduled" }] }))).toBeNull();
     // and a counted fixture carrying neither a result nor an award writes no card, so it needs no round either
     expect(refusal(run({ ...S4, fixtures: [...S4.fixtures, { id: "empty", status: "decided" }] }))).toBeNull();
-    expect(refusal(run({ ...S1, rounds: undefined, fixtures: S1.fixtures.filter((f) => f.awardDelta === undefined) }))).toBeNull();
+    expect(refusal(run({ ...S1, rounds: undefined, draw: undefined, fixtures: S1.fixtures.filter((f) => f.awardDelta === undefined) }))).toBeNull();
     expect(refusal(run({ ...S4, absent: new Map([["L", [1]], ["B", []]]) }))).toBeNull();
   });
 

@@ -57,6 +57,7 @@ describe("Swiss ledger error paths", () => {
 
   it("rejects a card referencing an opponent outside the table", () => {
     expect(() => buchholz(table, "A")).toThrow(/unknown opponent/);
+    expect(() => buchholz(table, "A")).toThrowError(expect.objectContaining({ code: "CONFIG_INVALID" }));
   });
 
   it("rejects building a ledger from results outside the entrant set", () => {

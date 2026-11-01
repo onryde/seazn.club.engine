@@ -87,7 +87,7 @@ function opponentScore(byEntrant: Map<EntrantId, SwissRow>, row: SwissRow, game:
   }
   const opp = byEntrant.get(game.opponent);
   if (opp === undefined) {
-    throw new Error(`Swiss ledger references unknown opponent "${game.opponent}"`);
+    throw new EngineError("CONFIG_INVALID", `Swiss ledger references unknown opponent "${game.opponent}"`, { entrantId: row.entrant, opponent: game.opponent });
   }
   return opp.adjusted ?? opp.score;
 }
@@ -921,7 +921,7 @@ function buildPoolLedger(ids: readonly EntrantId[], ctx: RankContext): SwissTabl
   });
   // A round robin has no Swiss rounds and no unplayed round: each result reads as round 1, and neither the rounds nor the
   // draw points are read.
-  return buildSwissLedger(ids, scored.map((result) => ({ round: 1, result })), { rounds: undefined, drawPoints: 0 });
+  return buildSwissLedger(ids, scored.map((result) => ({ round: 1, result })), { rounds: undefined, drawPoints: undefined });
 }
 
 // FNV-1a fold of the division rngSeed and sorted tie-group ids → a stable
@@ -1104,14 +1104,15 @@ const isVur = (game: SwissGame): boolean =>
 //     round both stand, in input order (Focus 2). An absence followed by a card that is not a VUR is 16.2.3, else 16.2.5.
 //  2. Scores and caps. score = Σ scored; adjusted = score + D per 16.2.5 card (16.3.2, a draw for its opponents); every
 //     unplayed card's cap is D × R (16.4.2).
-// `opts.rounds` is the stage's rounds, R — never the card's length — and is read only when some round is unplayed;
-// `opts.drawPoints` is D (`swissDrawPoints`); `opts.absent` names, per entrant, the rounds it was in the stage but not
+// `opts.rounds` is the stage's rounds, R — never the card's length — and `opts.drawPoints` is D (`swissDrawPoints`); each
+// is read only when some round is unplayed. `opts.absent` names, per entrant, the rounds it was in the stage but not
 // paired (late entry). Refused, CONFIG_INVALID: a card or an absence for an entrant outside `entrants`; an unplayed round
-// when R is absent or not a positive count; an absent round outside 1..R, or one the entrant holds a card in.
+// when R is absent or not a positive count, or when D is absent; an absent round outside 1..R, or one the entrant holds
+// a card in.
 export function buildSwissLedger(
   entrants: readonly EntrantId[],
   fixtures: readonly SwissLedgerFixture[],
-  opts: { readonly rounds: number | undefined; readonly drawPoints: number; readonly absent?: ReadonlyMap<EntrantId, readonly number[]> },
+  opts: { readonly rounds: number | undefined; readonly drawPoints: number | undefined; readonly absent?: ReadonlyMap<EntrantId, readonly number[]> },
 ): SwissTable {
   const cards = new Map<EntrantId, SwissGame[]>(entrants.map((id) => [id, []]));
   const cardOf = (entrant: EntrantId): SwissGame[] => {
@@ -1128,6 +1129,13 @@ export function buildSwissLedger(
       throw new EngineError("CONFIG_INVALID", `an unplayed Swiss round needs the stage's rounds, a positive count, not ${String(rounds)}`, { rounds: rounds ?? null });
     }
     return rounds;
+  };
+  // D, read only for an unplayed round: its cap (16.4.2) and a 16.2.5 round's draw (16.3.2) need it.
+  const stageDraw = (): number => {
+    if (opts.drawPoints === undefined) {
+      throw new EngineError("CONFIG_INVALID", "an unplayed Swiss round needs the stage's draw points (the sport's Swiss draw facts)", {});
+    }
+    return opts.drawPoints;
   };
   const resultOf = (delta: StandingsDelta): GameResult => (delta.won > 0 ? "win" : delta.drawn > 0 ? "draw" : "loss");
 
@@ -1166,13 +1174,13 @@ export function buildSwissLedger(
         lastAbsences++;
       }
     });
-    return lastAbsences === 0 ? { entrant, score, games } : { entrant, score, adjusted: score + opts.drawPoints * lastAbsences, games };
+    return lastAbsences === 0 ? { entrant, score, games } : { entrant, score, adjusted: score + stageDraw() * lastAbsences, games };
   });
 
   // Pass 2: caps.
   for (const row of rows) {
     for (const game of row.games) {
-      if (game.unplayed !== undefined) game.cap = opts.drawPoints * stageRounds();
+      if (game.unplayed !== undefined) game.cap = stageDraw() * stageRounds();
     }
   }
   return rows;

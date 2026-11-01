@@ -7,7 +7,7 @@
 import { EngineError } from "../core/errors.ts";
 import type { EntrantId, StageKind } from "../core/types.ts";
 import { foldResults, foldStandings, type FixtureResult } from "./standings.ts";
-import { applyRankLocks, swissDrawPoints, type RankLock } from "./points.ts";
+import { applyRankLocks, swissDrawPoints, type RankLock, type SwissDrawFacts } from "./points.ts";
 import type { StandingsDelta } from "../core/types.ts";
 import type { CrossGroupRules, PoolTable, SourceTables as StageTables } from "./progression.ts";
 import type { TableRules } from "./table-rules.ts";
@@ -86,6 +86,9 @@ export interface TableStage {
    *  its late entry. Each is a zero-point unplayed round (C.07 16.2.3 when play follows it, else 16.2.5). Keys must be the
    *  table's entrants; a round must be in 1..`rounds` and not one the entrant holds a card in. Read only with `swiss`. */
   swissAbsentRounds?: ReadonlyMap<EntrantId, readonly number[]>;
+  /** W3 (ruling R4; X-SW-7): the sport's Swiss draw facts under the stage's cfg (`swissDrawFactsOf`), which turn `rules.points`
+   *  into D, the draw points of art. 16's dummy cap. REQUIRED on a Swiss ledger stage with any unplayed round. */
+  swissDraw?: SwissDrawFacts;
   /** Carry-over openings (Jul3/05 §3): synthetic deltas folded before the
    *  stage's own fixtures — prior H2H is never replayed. */
   openingDeltas?: readonly StandingsDelta[];
@@ -338,8 +341,9 @@ export function completeTableStage(
 }
 
 // W3 (X-SW-8; FIDE C.07 (2026) art. 16): the pool's Swiss ledger by round, from its counted fixtures (decided or walked
-// over, with a result or a sit-out award) and the stage's declared absences, scaled by the stage's points rule (D =
-// `swissDrawPoints`). Every counted fixture names its round: art. 16 reads a card's place among the rounds.
+// over, with a result or a sit-out award) and the stage's declared absences, scaled by the stage's points rule and the
+// sport's draw facts (D = `swissDrawPoints`, ruling R4). Every counted fixture names its round: art. 16 reads a card's
+// place among the rounds.
 function swissLedgerOf(stage: TableStage, entrants: readonly EntrantId[], fixtures: readonly TableFixture[]): SwissTable {
   const counted: SwissLedgerFixture[] = [];
   for (const fixture of fixtures) {
@@ -355,7 +359,7 @@ function swissLedgerOf(stage: TableStage, entrants: readonly EntrantId[], fixtur
   }
   return buildSwissLedger(entrants, counted, {
     rounds: stage.rounds,
-    drawPoints: swissDrawPoints(stage.rules.points),
+    drawPoints: stage.swissDraw === undefined ? undefined : swissDrawPoints(stage.rules.points, stage.swissDraw),
     ...(stage.swissAbsentRounds === undefined ? {} : { absent: stage.swissAbsentRounds }),
   });
 }
