@@ -119,7 +119,7 @@ describe("tieDecidingKey", () => {
   });
 });
 
-describe("tieWhatIf — the cascade and the skip read off real modules", () => {
+describe("tieWhatIf — the cascade (a module's default or a typed pinned order) and the skip (matchPointsBounds) read off real modules", () => {
   // Badminton pays 2 for every win and 0 otherwise, so rows level on points
   // are level on wins: the target lands on set_ratio, the next key.
   it("badminton Swiss stage pinned to the pre-W3 order: `wins` is skipped and the target is on set ratio", () => {
@@ -184,15 +184,20 @@ describe("tieWhatIf — the cascade and the skip read off real modules", () => {
   });
   // W3 (X-SW-9, BD-TB-2): badminton's Swiss DEFAULT is rulebook §5's set-sport chain, whose step after points is
   // Buchholz Cut-1 — a column of the opponents' scores, which no result of the row's own can be aimed at: the rule only.
-  it("X-SW-9 badminton Swiss default (rulebook §5): two level on points go to Buchholz Cut-1 — the rule, no target", () => {
+  it("X-SW-9 badminton Swiss default (rulebook §5): two level on points go to Buchholz Cut-1 — the rule and both Cut-1 values as shown, no target", () => {
     const cfg = badminton.configSchema.parse({});
     const b = badminton.matchPointsBounds(cfg);
     const order = badminton.defaultTiebreakers("swiss", cfg);
     expect(order.slice(0, 2), "premise: rulebook §5's chain, Cut-1 second").toEqual(["points", "buchholz_cut1"]);
-    const me = { ...row("me", 3, { sets_won: 5, sets_lost: 3, buchholz_cut1: 6 }, 2), points: 2 * b.winFloor };
-    const rv = { ...row("rv", 3, { sets_won: 4, sets_lost: 2, buchholz_cut1: 4 }, 2), points: 2 * b.winFloor };
+    expect([b.winFloor, cfg.bestOf], "premise: badminton's Swiss rule pays a win 2, best of 3").toEqual([2, 3]);
+    // Three rounds each, every card played (no unplayed round, so Cut-1 drops each one's LOWEST opponent; X-SW-7):
+    //   me met opponents now on 2, 4 and 2 points: Buchholz 8, Cut-1 drops a 2 → 6.
+    //   rv met opponents now on 0, 2 and 2 points: Buchholz 4, Cut-1 drops the 0 → 4.
+    // A whole-point table (badminton's unit) shows Buchholz unhalved, as an integer: "6" and "4" (X-SW-8, SW-L2).
+    const me = { ...row("me", 3, { sets_won: 5, sets_lost: 3, buchholz_cut1: 2 + 4 + 2 - 2 }, 2), points: 2 * b.winFloor };
+    const rv = { ...row("rv", 3, { sets_won: 4, sets_lost: 2, buchholz_cut1: 0 + 2 + 2 - 0 }, 2), points: 2 * b.winFloor };
     const got = tieWhatIf(me, rv, order, { winsOnly: b.winsOnly, primary: badminton.primaryTableKey });
-    expect([got?.kind, got?.key]).toEqual(["rule", "buchholz_cut1"]);
+    expect(got).toEqual({ kind: "rule", key: "buchholz_cut1", mine: "6", theirs: "4" });
     // The differential: the very same pair under the pinned pre-W3 order gets a set-ratio target.
     expect(tieWhatIf(me, rv, BADMINTON_SWISS, { winsOnly: b.winsOnly, primary: badminton.primaryTableKey })?.kind).toBe("target");
   });

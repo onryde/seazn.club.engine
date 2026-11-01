@@ -29,6 +29,7 @@
 // and a head-to-head step on a Swiss stage reads played games only: a forfeit is never a meeting, as `direct` already reads
 // it (the X-SW-9 block at the end, with its league control).
 import { describe, expect, it } from "vitest";
+import { EngineError } from "../core/errors.ts";
 import { AWARD_REASONS, MatchOutcome, OUTCOME_KINDS, type EntrantId, type StandingsDelta } from "../core/types.ts";
 import type { AnySportModule, TiebreakerKey } from "../sport/module.ts";
 import { boardgame } from "../sports/boardgame/index.ts"; // single-sport: S1–S4 are the rulebook's chess cases (C.07 is FIDE's); the every-sport test sweeps the registry
@@ -1066,16 +1067,19 @@ const splitKeys = (rows: readonly StandingsRow[], ids: readonly EntrantId[]): Re
 // unplayedSidesOf):
 //   R1: A v B, B forfeits (A is paid the win, W);  C v D, D forfeits (C is paid W).
 //   R2: C v A, A forfeits (C is paid W);           B beats D (played).
+//   `bSide` seats B for the round-1 forfeit: "away" (A v B, unplayed "away") or "home" (B v A, unplayed "home"), so the
+//   level pair's one forfeit is witnessed from both sides (T10 review m3).
 //   Points: A = W + 0 = W, B = 0 + W = W, C = 2W, D = 0 + the rule's played loss (0, or table tennis's 1). A and B are
 //   level in every sport (premise asserted, with W the rule's win), and between them stands only the round-1 forfeit.
 //   A head-to-head step on the class {A, B}: on a Swiss stage their mini-table has no meeting, so it cannot split them and
 //   lots decide (X-SW-7: a forfeit is not a meeting). On a league stage the forfeit IS their result (unchanged): A, paid the
 //   win against B, ranks above B on the step.
-function sceneH(m: AnySportModule, rawCfg: unknown, rule: PointsRule, cascade: readonly TiebreakerKey[]): Scene {
+function sceneH(m: AnySportModule, rawCfg: unknown, rule: PointsRule, cascade: readonly TiebreakerKey[], bSide: "home" | "away" = "away"): Scene {
+  const ab = bSide === "away" ? walkedOver(m, rawCfg, rule, 1, "A", "B", forfeit("A", "B")) : walkedOver(m, rawCfg, rule, 1, "B", "A", forfeit("A", "B"));
   return {
     rule, draw: swissDrawFactsOf(m, rawCfg), entrants: ["A", "B", "C", "D"], rounds: 2, cascade,
     fixtures: [
-      walkedOver(m, rawCfg, rule, 1, "A", "B", forfeit("A", "B")), walkedOver(m, rawCfg, rule, 1, "C", "D", forfeit("C", "D")),
+      ab, walkedOver(m, rawCfg, rule, 1, "C", "D", forfeit("C", "D")),
       walkedOver(m, rawCfg, rule, 2, "C", "A", forfeit("C", "A")), board(rule, 2, "B", "D", "h"),
     ],
   };
@@ -1091,6 +1095,8 @@ function sceneHPlayed(m: AnySportModule, rawCfg: unknown, rule: PointsRule, casc
     ],
   };
 }
+/** The two seats the forfeiting B can hold in round 1 (T10 review m3). */
+const B_SIDES = ["away", "home"] as const;
 /** The three head-to-head steps, each pinned behind points and before lots: an h2h block, "between two", direct encounter. */
 const H2H_CHAINS: readonly (readonly TiebreakerKey[])[] = [
   ["points", "h2h_points", "lots"],
@@ -1152,72 +1158,85 @@ describe("X-SW-9 the Swiss default chains on a real stage, and head-to-head on a
     expect(splitKeys(pre, ["A", "E", "B", "F"])).toEqual({ A: "set_ratio", E: "set_ratio", B: "set_ratio", F: "set_ratio" });
   });
 
-  it("X-SW-9 a forfeit is not a meeting for any head-to-head step: on a Swiss stage pinned to an h2h block, between-two or direct, two level on points whose only game was a forfeit are not split by it, and a played game between them still splits them (every sport; counted)", () => {
-    let checked = 0;
+  it("X-SW-9 a forfeit is not a meeting for any head-to-head step: on a Swiss stage pinned to an h2h block, between-two or direct, two level on points whose only game was a forfeit (the forfeiting side seated home or away) are not split by it, and a played game between them still splits them (every sport; counted)", () => {
+    let forfeits = 0;
+    let playedPairs = 0;
+    const perSide = new Map<string, number>();
     const perSport = new Map<string, number>();
     const n = forEachSport(({ module: m }) => {
       for (const { name, cfg } of declaredCfgs(m as never)) {
         const rule = m.tablePointsRule(m.configSchema.parse(cfg), "swiss");
         for (const cascade of H2H_CHAINS) {
-          const where = `${m.key}/${name} [${cascade.join(", ")}]`;
-          const s = sceneH(m, cfg, rule, cascade);
-          expect(s.fixtures.map((f) => f.unplayed), `${where}: premise, the producer marks the three forfeits`).toEqual(["away", "away", "away", undefined]);
-          const done = completeTableStage(stageOf(s), s.fixtures);
-          const rows = done.tables.overall ?? [];
-          const a = rows.find((r) => r.entrantId === "A");
-          const b = rows.find((r) => r.entrantId === "B");
-          expect(a?.points, `${where}: premise, A and B level on points`).toBe(b?.points);
-          expect(a?.points, `${where}: premise, at the win`).toBe(rule.win.regulation);
-          // differential: before X-SW-9 the h2h block and between-two read the forfeit as A's win: A above B, keyed to the step
-          expect(splitKeys(rows, ["A", "B"]), where).toEqual({ A: "lots", B: "lots" });
-          const lots = done.events.flatMap((e) => (e.type === "rank_lock_required" ? [[...e.group].sort()] : []));
-          expect(lots, `${where}: a drawing of lots decides them`).toEqual([["A", "B"]]);
+          for (const bSide of B_SIDES) {
+            const where = `${m.key}/${name} [${cascade.join(", ")}] B ${bSide}`;
+            const s = sceneH(m, cfg, rule, cascade, bSide);
+            expect(s.fixtures.map((f) => f.unplayed), `${where}: premise, the producer marks the three forfeits`).toEqual([bSide, "away", "away", undefined]);
+            const done = completeTableStage(stageOf(s), s.fixtures);
+            const rows = done.tables.overall ?? [];
+            const a = rows.find((r) => r.entrantId === "A");
+            const b = rows.find((r) => r.entrantId === "B");
+            expect(a?.points, `${where}: premise, A and B level on points`).toBe(b?.points);
+            expect(a?.points, `${where}: premise, at the win`).toBe(rule.win.regulation);
+            // differential: before X-SW-9 the h2h block and between-two read the forfeit as A's win: A above B, keyed to the step
+            expect(splitKeys(rows, ["A", "B"]), where).toEqual({ A: "lots", B: "lots" });
+            const lots = done.events.flatMap((e) => (e.type === "rank_lock_required" ? [[...e.group].sort()] : []));
+            expect(lots, `${where}: a drawing of lots decides them`).toEqual([["A", "B"]]);
+            forfeits++;
+            perSide.set(bSide, (perSide.get(bSide) ?? 0) + 1);
+            perSport.set(m.key, (perSport.get(m.key) ?? 0) + 1);
+          }
           // The positive pair: a PLAYED game between them is their meeting on the same Swiss stage, and the step splits it.
+          const where = `${m.key}/${name} [${cascade.join(", ")}] played`;
           const p = sceneHPlayed(m, cfg, rule, cascade);
-          expect(p.fixtures.map((f) => f.unplayed), `${where} played: premise, one forfeit (C v D)`).toEqual([undefined, "away", undefined, undefined]);
-          const played = completeTableStage(stageOf(p), p.fixtures);
-          const prow = played.tables.overall ?? [];
-          expect(prow.find((r) => r.entrantId === "A")?.points, `${where} played: premise, level`).toBe(prow.find((r) => r.entrantId === "B")?.points);
+          expect(p.fixtures.map((f) => f.unplayed), `${where}: premise, one forfeit (C v D)`).toEqual([undefined, "away", undefined, undefined]);
+          const prow = completeTableStage(stageOf(p), p.fixtures).tables.overall ?? [];
+          expect(prow.find((r) => r.entrantId === "A")?.points, `${where}: premise, level`).toBe(prow.find((r) => r.entrantId === "B")?.points);
           const pids = orderOf(prow);
-          expect(pids.indexOf("A"), `${where} played: A, who beat B, above B`).toBeLessThan(pids.indexOf("B"));
-          expect(splitKeys(prow, ["A", "B"]), `${where} played`).toEqual({ A: cascade[1], B: cascade[1] });
-          checked++;
-          perSport.set(m.key, (perSport.get(m.key) ?? 0) + 1);
+          expect(pids.indexOf("A"), `${where}: A, who beat B, above B`).toBeLessThan(pids.indexOf("B"));
+          expect(splitKeys(prow, ["A", "B"]), where).toEqual({ A: cascade[1], B: cascade[1] });
+          playedPairs++;
         }
       }
     });
     expect(n).toBe(builtinModules.length);
     expect(perSport.size, "every sport checked").toBe(n);
-    expect(checked).toBeGreaterThanOrEqual(n * H2H_CHAINS.length);
+    expect(playedPairs, "positive pairs checked").toBeGreaterThanOrEqual(n * H2H_CHAINS.length);
+    expect(forfeits).toBe(playedPairs * B_SIDES.length);
+    expect([perSide.get("away"), perSide.get("home")], "both forfeit sides, equally").toEqual([playedPairs, playedPairs]);
   });
 
-  it("X-SW-9 control: on a league stage the same forfeit IS their meeting, as before W3 — each head-to-head step ranks A, paid the win, above B (every sport; counted)", () => {
+  it("X-SW-9 control: on a league stage the same forfeit IS their meeting, as before W3 — each head-to-head step ranks A, paid the win, above B, the forfeiting side seated home or away (every sport; counted)", () => {
     let checked = 0;
+    const perSide = new Map<string, number>();
     const perSport = new Map<string, number>();
     const n = forEachSport(({ module: m }) => {
       for (const { name, cfg } of declaredCfgs(m as never)) {
         const rule = m.tablePointsRule(m.configSchema.parse(cfg), "league");
         for (const cascade of H2H_CHAINS) {
-          const where = `${m.key}/${name} [${cascade.join(", ")}]`;
-          const s = sceneH(m, cfg, rule, cascade);
-          expect(s.fixtures[0]?.unplayed, `${where}: premise, the fixture still says the forfeit was unplayed`).toBe("away");
-          const done = completeTableStage(leagueOf(s), s.fixtures);
-          const rows = done.tables.overall ?? [];
-          const a = rows.find((r) => r.entrantId === "A");
-          const b = rows.find((r) => r.entrantId === "B");
-          expect(a?.points, `${where}: premise, A and B level on points`).toBe(b?.points);
-          const ids = orderOf(rows);
-          expect(ids.indexOf("A"), `${where}: A above B`).toBeLessThan(ids.indexOf("B"));
-          expect(splitKeys(rows, ["A", "B"]), where).toEqual({ A: cascade[1], B: cascade[1] });
-          expect(done.events.some((e) => e.type === "rank_lock_required"), `${where}: no lots`).toBe(false);
-          checked++;
-          perSport.set(m.key, (perSport.get(m.key) ?? 0) + 1);
+          for (const bSide of B_SIDES) {
+            const where = `${m.key}/${name} [${cascade.join(", ")}] B ${bSide}`;
+            const s = sceneH(m, cfg, rule, cascade, bSide);
+            expect(s.fixtures[0]?.unplayed, `${where}: premise, the fixture still says the forfeit was unplayed`).toBe(bSide);
+            const done = completeTableStage(leagueOf(s), s.fixtures);
+            const rows = done.tables.overall ?? [];
+            const a = rows.find((r) => r.entrantId === "A");
+            const b = rows.find((r) => r.entrantId === "B");
+            expect(a?.points, `${where}: premise, A and B level on points`).toBe(b?.points);
+            const ids = orderOf(rows);
+            expect(ids.indexOf("A"), `${where}: A above B`).toBeLessThan(ids.indexOf("B"));
+            expect(splitKeys(rows, ["A", "B"]), where).toEqual({ A: cascade[1], B: cascade[1] });
+            expect(done.events.some((e) => e.type === "rank_lock_required"), `${where}: no lots`).toBe(false);
+            checked++;
+            perSide.set(bSide, (perSide.get(bSide) ?? 0) + 1);
+            perSport.set(m.key, (perSport.get(m.key) ?? 0) + 1);
+          }
         }
       }
     });
     expect(n).toBe(builtinModules.length);
     expect(perSport.size, "every sport checked").toBe(n);
-    expect(checked).toBeGreaterThanOrEqual(n * H2H_CHAINS.length);
+    expect(checked).toBeGreaterThanOrEqual(n * H2H_CHAINS.length * B_SIDES.length);
+    expect(perSide.get("home"), "both forfeit sides, equally").toBe(perSide.get("away"));
   });
 
   it("X-SW-9 guard: an unplayed result the table does not count (a copy, not the counted tuple) → CONFIG_INVALID, and so does one on a table with no Swiss ledger; the counted tuple itself ranks", () => {
@@ -1234,6 +1253,15 @@ describe("X-SW-9 the Swiss default chains on a real stage, and head-to-head on a
     const copy: FixtureResult = [{ ...forfeited[0] }, { ...forfeited[1] }];
     expect(refusal(rank(new Set([copy])))?.code).toBe("CONFIG_INVALID");
     expect(refusal(rank(new Set([copy])))?.message).toMatch(/not one of the table's counted results/);
+    // The refusal names the copied tuple by its seats: S2's round-1 board is A (home) v B (away), B forfeiting.
+    let thrown: unknown = null;
+    try {
+      rank(new Set([copy]))();
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(EngineError);
+    expect((thrown as EngineError).data).toEqual({ home: "A", away: "B" });
     expect(refusal(rank(new Set([forfeited])))).toBeNull();
     expect(refusal(rank(new Set()))).toBeNull();
     // A league or group table reads a forfeit as the meeting it was paid as (the control above): the set is Swiss-only.
