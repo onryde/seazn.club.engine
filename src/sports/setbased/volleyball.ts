@@ -155,8 +155,8 @@ export const volleyball = withSetBasedNaturalBreaks(makeSetBasedModule({
   // W2d (SPEC §5.10, VB-TB-1): FIVB V3 — matches won, then match points, set ratio, point ratio, the head-to-head,
   // lots (the product's own final step: FIVB's list ends at the h2h result, RB2B deviation).
   defaultTiebreakers: ["wins", "points", "set_ratio", "point_ratio", "h2h_points", "lots"],
-  // OC1: a Swiss stage keeps its pre-W2d order.
-  swissTiebreakers: ["points", "wins", "set_ratio", "point_ratio", "h2h_points"],
+  // W3 (rulebook-W3-swiss.md §5, X-SW-9, VB-TB-3): a Swiss stage takes the set-sport chain — Buchholz early, direct late.
+  swissTiebreakers: ["points", "buchholz_cut1", "buchholz", "set_ratio", "point_ratio", "direct", "lots"],
   primaryTableKey: "wins", // W2d (D11): FIVB V3-1 — the number of matches won comes first.
   officialLabel: { scorer: "Referee" }, // doc 13 §1
   coarseEventType: "set.summary",

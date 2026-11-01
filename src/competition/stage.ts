@@ -44,8 +44,9 @@ export interface TableFixture {
   awardDelta?: StandingsDelta;
   /** W3 (X-SW-7; FIDE C.07 (2026) 16.2.2 / 16.2.4): the side(s) of `result` that lost WITHOUT playing — "home"/"away" a
    *  forfeit with nothing played, "both" a double walkover — as `unplayedSidesOf` (points.ts) answers for the fixture's
-   *  outcome, the one authority the caller fills it from. Absent = played (a retirement after play included). Read only by
-   *  the Swiss ledger: a forfeit there is an unplayed round on both cards and no meeting (P-A2). */
+   *  outcome, the one authority the caller fills it from. Absent = played (a retirement after play included). Read only on
+   *  a Swiss stage: by the ledger, where a forfeit is an unplayed round on both cards and no meeting (P-A2), and by the
+   *  head-to-head steps, whose mini-table leaves it out (X-SW-9, `RankContext.unplayedResults`). */
   unplayed?: "home" | "away" | "both";
 }
 
@@ -288,9 +289,10 @@ export function completeTableStage(
   for (const pool of pools) {
     const poolFixtures = single ? fixtures : fixtures.filter((fixture) => poolOf(fixture) === pool);
     const entrants = entrantsOfPool(pool, fixtures, stage.entrants, single);
-    const results = poolFixtures
-      .filter((fixture) => COUNTS_FOR_STANDINGS.has(fixture.status) && fixture.result !== undefined)
-      .map((fixture) => fixture.result as FixtureResult);
+    const counted = poolFixtures.filter((fixture) => COUNTS_FOR_STANDINGS.has(fixture.status) && fixture.result !== undefined);
+    const results = counted.map((fixture) => fixture.result as FixtureResult);
+    // W3 (X-SW-9): the counted results nothing was played in — the same tuples — for a Swiss stage's head-to-head steps.
+    const unplayedResults = new Set(counted.filter((fixture) => fixture.unplayed !== undefined).map((fixture) => fixture.result as FixtureResult));
     const awardDeltas = poolFixtures
       .filter((fixture) => COUNTS_FOR_STANDINGS.has(fixture.status) && fixture.awardDelta !== undefined)
       .map((fixture) => fixture.awardDelta as StandingsDelta);
@@ -319,7 +321,9 @@ export function completeTableStage(
       ...(stage.seeds === undefined ? {} : { seeds: stage.seeds }),
       ...(stage.rngSeed === undefined ? {} : { rngSeed: stage.rngSeed }),
       ...(stage.h2hScope === undefined ? {} : { h2hScope: stage.h2hScope }),
-      ...(stage.swiss === true ? { swiss: swissLedgerOf(stage, entrants, poolFixtures), pointsUnit: stage.rules.points.unit } : {}),
+      ...(stage.swiss === true
+        ? { swiss: swissLedgerOf(stage, entrants, poolFixtures), pointsUnit: stage.rules.points.unit, unplayedResults }
+        : {}),
       // ST-G12 reads a round robin's schedule; a Swiss stage pairs round by round and has none (Swiss stays W3, D7 —
       // and production's one competition, a Swiss one, does not move, B1).
       ...(stage.scheduledPairs === undefined || stage.kind === "swiss" ? {} : { scheduledPairs: stage.scheduledPairs }),

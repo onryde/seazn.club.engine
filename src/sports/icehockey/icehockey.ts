@@ -263,8 +263,8 @@ export const icehockey = withPeriodNaturalBreaks(makePeriodModule({
   // W2d (SPEC §5.10, IH-TB-1): IIHF — points, then the head-to-head block among the tied, re-applied to any smaller
   // group still level, then overall goal difference and goals for, the seed, then lots.
   defaultTiebreakers: ["points", "h2h_points", "h2h_diff", "h2h_for", "h2h_reapply", "diff", "for", "seed", "lots"],
-  // OC1: a Swiss stage keeps its pre-W2d order.
-  swissTiebreakers: ["points", "h2h_points", "h2h_diff", "h2h_for", "diff", "for", "seed"],
+  // W3 (rulebook-W3-swiss.md §5, X-SW-9, IH-TB-3): a Swiss stage takes the goals chain (UEFA CL art. 18's shape).
+  swissTiebreakers: ["points", "diff", "for", "wins", "buchholz", "opp_diff", "direct", "lots"],
   // W2d (SPEC §5.6 "ST-G12", IH-TB-2): "if the tied teams have not all met" — a tied class whose mini-schedule is still
   // incomplete — IIHF ranks by fewest games played, goal difference, goals for, then the seed (RBG:349-350), then lots.
   partialScheduleOrder: ["fewest_played", "diff", "for", "seed", "lots"],

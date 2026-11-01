@@ -255,6 +255,16 @@ export interface RankContext {
   // `swiss` (CONFIG_INVALID otherwise): the ranked row's Buchholz and SB columns
   // are in the table's own points, so half-points are halved only when "half".
   pointsUnit?: "whole" | "half";
+  // W3 (X-SW-9; X-SW-7's "a forfeit is not a meeting"): the members of `results`
+  // — the same tuples, by identity — whose side or sides lost WITHOUT playing (a
+  // forfeit, a double walkover: `TableFixture.unplayed`). On a Swiss table a
+  // head-to-head step (an h2h block, `h2h_two`) builds its mini-table from the
+  // other results only, as `direct` reads only played cards of the ledger. Read
+  // only beside `swiss` (CONFIG_INVALID otherwise: on a league or group table a
+  // forfeit stays the meeting it was paid as); a member that is not one of
+  // `results` is refused (CONFIG_INVALID), since it would skip nothing. Absent ⇒
+  // every result was played.
+  unplayedResults?: ReadonlySet<FixtureResult>;
   // Entrant seeds for the `seed` comparator and deterministic residual-tie
   // ordering; lower number = higher seed.
   seeds?: ReadonlyMap<EntrantId, number>;
@@ -825,7 +835,10 @@ function miniTable(
   run: RunContext,
 ): { rows: StandingsRow[]; back: (mini: readonly StandingsRow[]) => StandingsRow[] } {
   const ids = cls.map((row) => row.entrantId);
-  const rows = foldResults(ids, resultsAmong(new Set(ids), run.results ?? []));
+  const among = resultsAmong(new Set(ids), run.results ?? []);
+  // W3 (X-SW-9): on a Swiss table a forfeit is no meeting (rankStandings admits the set only beside `swiss`).
+  const unplayed = run.unplayedResults;
+  const rows = foldResults(ids, unplayed === undefined ? among : among.filter((result) => !unplayed.has(result)));
   const byId = new Map(cls.map((row) => [row.entrantId, row]));
   return { rows, back: (mini) => mini.map((row) => byId.get(row.entrantId) as StandingsRow) };
 }
@@ -1029,6 +1042,22 @@ export function rankStandings(rows: readonly StandingsRow[], ctx: RankContext): 
   }
   if (ctx.swiss !== undefined && ctx.pointsUnit === undefined) {
     throw new EngineError("CONFIG_INVALID", "a Swiss table names its pointsUnit: its Buchholz and SB columns are in the table's own points", {});
+  }
+  if (ctx.unplayedResults !== undefined) {
+    // W3 (X-SW-9): a forfeit is skipped as a meeting only on a Swiss table; elsewhere it is the result it was paid as.
+    if (ctx.swiss === undefined) {
+      throw new EngineError("CONFIG_INVALID", "unplayedResults is read only on a Swiss table: on a league or group table a forfeit is the meeting it was paid as", {});
+    }
+    // Read by identity: a copy of a counted result would match nothing, and skip nothing, silently.
+    const counted = new Set(ctx.results);
+    for (const result of ctx.unplayedResults) {
+      if (!counted.has(result)) {
+        throw new EngineError("CONFIG_INVALID", "an unplayed result is not one of the table's counted results (the same tuple, by identity)", {
+          home: result[0].entrantId,
+          away: result[1].entrantId,
+        });
+      }
+    }
   }
   const steps = parseCascade(ctx.cascade);
   const partial = ctx.partialScheduleOrder === undefined ? undefined : parsePartialOrder(ctx.partialScheduleOrder);

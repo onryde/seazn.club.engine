@@ -2,23 +2,29 @@
 // FB-TB-4, HK-PT-2, BG-PT-1, BG-TB-1, BG-TB-2) — the sweep of every sport's signed default order and its stage presets.
 //
 // Expected values come from the signed table (SPEC §5.10, typed below) and from the engine's own declarations
-// (`primaryTableKey`, `reachableOutcomes`, `validateCascade`), never from `defaultTiebreakers` itself. The Swiss orders are
-// the pre-W2d lists (OC1: "Swiss stages keep their current per-sport orders"), typed from the plan's Anchors row
-// (main@e97823e4d8 `defaultTiebreakers`), so a Swiss order the lane changed by accident reds here.
+// (`primaryTableKey`, `reachableOutcomes`, `validateCascade`), never from `defaultTiebreakers` itself. W3 Task 10 (SW-H4;
+// RB3-8; ruling 252; rule rows X-SW-9 and the eleven sport rows BD-TB-2 … BG-TB-4): the Swiss orders are
+// rulebook-W3-swiss.md §5's chains, one per sport FAMILY, typed below from the rulebook's table (Buchholz early, direct
+// encounter late, lots last), so a Swiss order that drifts from the rulebook reds here. The pre-W3 lists (OC1's, the plan's
+// Anchors row main@e97823e4d8) stay typed beside them: a stage pinned to one still ranks by it (X-TB-2).
 //
 // Sequence (TEST-STRATEGY rule 1): every sport × every declared cfg × every table kind, Swiss counted apart; the empty
 // case first (an order of nothing is refused, so the sweep can never pass on an empty default); a second call; football
 // with fair play off (PS-7c).
 import { describe, expect, it } from "vitest";
-import { DRAW_KINDS } from "../core/types.ts";
+import { DRAW_KINDS, MatchOutcome, type EntrantId, type StandingsDelta } from "../core/types.ts";
 import type { AnySportModule, TableStageKind, TiebreakerKey } from "../sport/module.ts";
 // single-sport: football is the one sport whose cfg carries `fairPlay` (D8), the cfg PS-7c's default reads
 import { football } from "../sports/football/index.ts";
+import { builtinModules } from "../sports/index.ts";
 import { declaredCfgs } from "../testkit/declared-cfgs.ts";
 import { forEachSport } from "../testkit/for-each-sport.ts";
-import { validateCascade } from "./cascade-rules.ts";
-import { coverage, PointsRule, reachableOutcomes } from "./points.ts";
-import { resolveTableRules } from "./table-rules.ts";
+import { isHeadToHeadKey, validateCascade } from "./cascade-rules.ts";
+import { decidedInFor } from "./decided-in.ts";
+import { coverage, payout, PointsRule, reachableOutcomes, setsToWinOf, swissDrawFactsOf } from "./points.ts";
+import { completeTableStage, type TableFixture } from "./stage.ts";
+import type { FixtureResult } from "./standings.ts";
+import { resolveTableRules, type TableRulesPin } from "./table-rules.ts";
 
 // The kinds that keep a table — the engine's own declaration (`DRAW_KINDS`): league, group, swiss, americano.
 const TABLE_KINDS = [...DRAW_KINDS] as TableStageKind[];
@@ -42,8 +48,33 @@ const SIGNED: Readonly<Record<string, Order>> = {
   generic: ["points", "diff", "for", "h2h_points", "lots"],
 };
 
-// OC1: the Swiss orders before W2d (plan Anchors row, main@e97823e4d8), unchanged.
+// W3 (rulebook-W3-swiss.md §5, RB3-8; ruling 252): the default for a `swiss` stage, by sport family, typed from the
+// rulebook's table: "direct encounter" is `direct`, "Buchholz" (opponents' collective points) `buchholz`, Cut-1
+// `buchholz_cut1`, "opponents' collective GD" `opp_diff`. Chess is the chain the engine already shipped (BG-TB-4).
+const CHESS_SWISS: Order = ["points", "buchholz_cut1", "buchholz", "sberger", "direct", "wins", "lots"];
+const SET_SWISS: Order = ["points", "buchholz_cut1", "buchholz", "set_ratio", "point_ratio", "direct", "lots"];
+const TENNIS_SWISS: Order = ["points", "buchholz_cut1", "buchholz", "set_ratio", "game_ratio", "direct", "lots"];
+const GOALS_SWISS: Order = ["points", "diff", "for", "wins", "buchholz", "opp_diff", "direct", "lots"];
+const CRICKET_SWISS: Order = ["points", "wins", "nrr", "buchholz_cut1", "buchholz", "direct", "lots"];
+const CARROM_SWISS: Order = ["points", "buchholz_cut1", "buchholz", "set_ratio", "board_ratio", "point_ratio", "direct", "lots"];
+const GENERIC_SWISS: Order = ["points", "buchholz_cut1", "buchholz", "diff", "for", "direct", "lots"];
 const SWISS: Readonly<Record<string, Order>> = {
+  football: GOALS_SWISS,
+  hockey: GOALS_SWISS,
+  icehockey: GOALS_SWISS,
+  boardgame: CHESS_SWISS,
+  cricket: CRICKET_SWISS,
+  volleyball: SET_SWISS,
+  badminton: SET_SWISS,
+  tabletennis: SET_SWISS,
+  tennis: TENNIS_SWISS,
+  carrom: CARROM_SWISS,
+  generic: GENERIC_SWISS,
+};
+
+// OC1: the Swiss orders before W3 (plan Anchors row, main@e97823e4d8), which W2d kept. A stage pinned to one still ranks
+// by its pin (X-TB-2): production's Swiss stage was pinned to the badminton one by the W2d migration (B1).
+const PRE_W3_SWISS: Readonly<Record<string, Order>> = {
   football: FIFA2026,
   hockey: ["points", "diff", "for", "h2h_points", "seed"],
   icehockey: ["points", "h2h_points", "h2h_diff", "h2h_for", "diff", "for", "seed"],
@@ -115,7 +146,7 @@ describe("W2d T11 — every sport's signed default order (spec §5.10, §13.4)",
       const signed = SIGNED[module.key];
       const swissOrder = SWISS[module.key];
       expect(signed, `${module.key}: SPEC §5.10 names its default`).toBeDefined();
-      expect(swissOrder, `${module.key}: the plan's Anchors row names its Swiss order`).toBeDefined();
+      expect(swissOrder, `${module.key}: rulebook §5 names its Swiss order`).toBeDefined();
       // Every declared cfg, and each again with fair play switched off (FB-TB-4, PS-7c): no declared cfg turns it off, so
       // without the second set the sweep could never see a default that kept a step its division does not track. A sport
       // whose schema has no `fairPlay` strips the key, and its expected order has no fair_play step to drop.
@@ -138,7 +169,7 @@ describe("W2d T11 — every sport's signed default order (spec §5.10, §13.4)",
           const rules = resolveTableRules({ module, stageKind: kind, mergedCfg: cfg, stageOwn: { points: null, tiebreakers: null, crossGroup: null }, divisionTiebreakers: null, pinned: null });
           expect(validateCascade(rules.crossGroup, { ...ctx, crossGroup: true }), `${label} cross-group`).toEqual([]);
           if (kind === "swiss") {
-            expect(order, `${label}: OC1, the Swiss order is unchanged`).toEqual(expectSwiss);
+            expect(order, `${label}: X-SW-9, rulebook §5's chain`).toEqual(expectSwiss);
             swiss++;
           } else {
             expect(order, `${label}: SPEC §5.10`).toEqual(expectSigned);
@@ -179,22 +210,22 @@ describe("W2d T11 — every sport's signed default order (spec §5.10, §13.4)",
       checked++;
     });
     expect(checked).toBe(Object.keys(SWISS).length);
-    // Read off the typed Swiss lists: hockey, ice hockey and cricket end on seed; volleyball, badminton and tennis start
-    // with points where they rank on wins; table tennis ends on h2h_points. Football, chess, carrom and generic fit.
-    expect(shapeBroken, "anti-vacuity: Swiss orders the shape rule would refuse").toBe(7);
+    // Read off the typed Swiss lists (rulebook §5): every chain starts with points and ends in lots, so only the sports whose
+    // table ranks on wins first (D11: volleyball, badminton, tennis) break the shape, at step 0. The other eight fit.
+    expect(shapeBroken, "anti-vacuity: Swiss orders the shape rule would refuse").toBe(3);
   });
 
-  it("PS-7c FB-TB-4 football: the default omits fair_play when the division's cfg does not track it and holds it when it does; both pass validateCascade", () => {
+  it("PS-7c FB-TB-4 football: a table default omits fair_play when the division's cfg does not track it and holds it when it does, and the Swiss default holds none either way (FB-TB-5); all pass validateCascade", () => {
     // single-sport: football is the one sport whose cfg carries `fairPlay` (D8); SPEC §5.10's fifa2026 row with and without
-    // its fair-play step.
+    // its fair-play step, and rulebook §5's goals chain, which has no fair-play step, on a Swiss stage.
     const withFairPlay: Order = ["points", "h2h_points", "h2h_diff", "h2h_for", "diff", "for", "fair_play", "lots"];
     const withoutFairPlay: Order = ["points", "h2h_points", "h2h_diff", "h2h_for", "diff", "for", "lots"];
     const on = football.configSchema.parse({ fairPlay: true });
     const off = football.configSchema.parse({ fairPlay: false });
     let checked = 0;
     for (const kind of TABLE_KINDS) {
-      expect(defaultOrder(football, kind, on), `${kind} on`).toEqual(withFairPlay);
-      expect(defaultOrder(football, kind, off), `${kind} off`).toEqual(withoutFairPlay);
+      expect(defaultOrder(football, kind, on), `${kind} on`).toEqual(kind === "swiss" ? GOALS_SWISS : withFairPlay);
+      expect(defaultOrder(football, kind, off), `${kind} off`).toEqual(kind === "swiss" ? GOALS_SWISS : withoutFairPlay);
       expect(validateCascade(defaultOrder(football, kind, on), { module: football, cfg: on, stageKind: kind, crossGroup: false })).toEqual([]);
       expect(validateCascade(defaultOrder(football, kind, off), { module: football, cfg: off, stageKind: kind, crossGroup: false })).toEqual([]);
       checked++;
@@ -202,7 +233,7 @@ describe("W2d T11 — every sport's signed default order (spec §5.10, §13.4)",
     expect(checked).toBe(TABLE_KINDS.length);
   });
 
-  it("PS-7c the football default and validateCascade read fair play the ONE way: over cfgs a hand-written `cfg.fairPlay` test would read differently (raw partial, schema-refused, truthy non-boolean), the default holds fair_play exactly when the validator accepts it", () => {
+  it("PS-7c the football default and validateCascade read fair play the ONE way: over cfgs a hand-written `cfg.fairPlay` test would read differently (raw partial, schema-refused, truthy non-boolean), a table default holds fair_play exactly when the validator accepts it, and the Swiss default never does (FB-TB-5)", () => {
     // single-sport: football is the one sport whose cfg carries `fairPlay` (D8).
     // Each cfg is one where a second, hand-written reading would disagree with the validator's (`tracksFairPlay`: parsed
     // through the schema when it parses, else read as given, and only `true` counts):
@@ -219,6 +250,7 @@ describe("W2d T11 — every sport's signed default order (spec §5.10, §13.4)",
       { label: "parsed off", cfg: football.configSchema.parse({ fairPlay: false }), tracks: false },
     ];
     let checked = 0;
+    let swiss = 0;
     for (const { label, cfg, tracks } of cfgs) {
       // The premise: the schema really parses or refuses each as described.
       const parses = football.configSchema.safeParse(cfg).success;
@@ -228,11 +260,17 @@ describe("W2d T11 — every sport's signed default order (spec §5.10, §13.4)",
         const order = football.defaultTiebreakers(kind, cfg as never);
         const accepted = validateCascade(FIFA2026, { module: football, cfg, stageKind: kind, crossGroup: false }).length === 0;
         expect(accepted, `${label} ${kind}: the validator`).toBe(tracks);
-        expect(order.includes("fair_play"), `${label} ${kind}: the default`).toBe(accepted);
+        // W3 (FB-TB-5): rulebook §5's goals chain has no fair-play step, so a Swiss default holds none whatever the cfg says.
+        expect(order.includes("fair_play"), `${label} ${kind}: the default`).toBe(kind !== "swiss" && accepted);
+        if (kind === "swiss") {
+          expect(order, `${label} swiss`).toEqual(GOALS_SWISS);
+          swiss++;
+        }
         checked++;
       }
     }
     expect(checked).toBe(cfgs.length * TABLE_KINDS.length);
+    expect(swiss, "every cfg asked on a Swiss stage too").toBe(cfgs.length);
   });
 });
 
@@ -306,5 +344,207 @@ describe("W2d T11 — the stage presets (spec §5.10; tablePresets)", () => {
       }
     }
     expect(checked).toBe(3 * TABLE_KINDS.length);
+  });
+});
+
+/** The registered module of one sport key (a test that names its sport says why, `// single-sport:`). */
+function moduleOf(key: string): AnySportModule {
+  const module = builtinModules.find((m) => m.key === key);
+  if (module === undefined) throw new Error(`${key} is not registered`);
+  return module;
+}
+
+/** One sport's row: its Swiss default under every declared cfg, through the one resolver, is `want` (rulebook §5's chain for
+ *  its family, typed above) and valid on the sport (validateCascade). Returns the cfgs checked; none is a failure. */
+function swissRowOf(key: string, want: Order): number {
+  const module = moduleOf(key);
+  let checked = 0;
+  for (const { name, cfg } of declaredCfgs(module)) {
+    const order = defaultOrder(module, "swiss", cfg);
+    expect(order, `${key} ${name}`).toEqual(want);
+    expect(validateCascade(order, { module, cfg, stageKind: "swiss", crossGroup: false }), `${key} ${name}`).toEqual([]);
+    checked++;
+  }
+  expect(checked, `${key}: declared cfgs checked`).toBeGreaterThan(0);
+  return checked;
+}
+
+/** Rulebook §5 "h2h late": every head-to-head step (rule 4's keys, `isHeadToHeadKey`) after the last Buchholz step, and at
+ *  least one Buchholz step. */
+function h2hLate(order: Order): boolean {
+  const lastBuchholz = Math.max(order.lastIndexOf("buchholz"), order.lastIndexOf("buchholz_cut1"));
+  const firstH2h = order.findIndex((key) => isHeadToHeadKey(key));
+  return lastBuchholz >= 0 && (firstH2h === -1 || firstH2h > lastBuchholz);
+}
+
+/** A played badminton board: `games` [home, away] (BWF: two games win the match), each game 21-15 to its winner, as the
+ *  sides' game and rally ledgers; paid by the stage rule through the real payout. */
+function bwfBoard(module: AnySportModule, cfg: unknown, rule: PointsRule, round: number, home: EntrantId, away: EntrantId, games: readonly [number, number]): TableFixture {
+  const [hs, as] = games;
+  const rallies = (won: number, lost: number) => 21 * won + 15 * lost;
+  const side = (id: EntrantId, won: boolean, sw: number, sl: number): StandingsDelta => ({
+    entrantId: id, played: 1, won: won ? 1 : 0, drawn: 0, lost: won ? 0 : 1, points: 0,
+    metrics: { sets_won: sw, sets_lost: sl, points_won: rallies(sw, sl), points_lost: rallies(sl, sw) },
+  });
+  const homeWon = hs > as;
+  const raw: FixtureResult = [side(home, homeWon, hs, as), side(away, !homeWon, as, hs)];
+  const outcome = MatchOutcome.parse({ kind: "win", winner: homeWon ? home : away, loser: homeWon ? away : home });
+  const result = payout(outcome, decidedInFor(module, outcome), raw, true, rule, module.awardScoreKeys, setsToWinOf(module, cfg));
+  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "decided", result };
+}
+
+describe("W3 T10 — the Swiss default chains (rulebook-W3-swiss.md §5, SW-H4, RB3-8; ruling 252)", () => {
+  it("X-SW-9 every sport's Swiss default is rulebook §5's chain for its family (counted, a second call equal)", () => {
+    let cfgs = 0;
+    const n = forEachSport(({ module }) => {
+      const want = SWISS[module.key];
+      expect(want, `${module.key}: rulebook §5 names its family's chain`).toBeDefined();
+      for (const { name, cfg } of declaredCfgs(module)) {
+        const parsed = module.configSchema.parse(cfg);
+        const first = module.defaultTiebreakers("swiss", parsed);
+        expect(first, `${module.key} ${name}`).toEqual(want);
+        const second = module.defaultTiebreakers("swiss", parsed);
+        expect(second, `${module.key} ${name}: a second call`).toEqual(first);
+        expect(second, `${module.key} ${name}: a fresh list (the caller owns it)`).not.toBe(first);
+        cfgs++;
+      }
+    });
+    expect(n, "rulebook §5's eleven sports").toBe(11);
+    expect(Object.keys(SWISS)).toHaveLength(n);
+    expect(cfgs, "declared cfgs checked").toBeGreaterThanOrEqual(n);
+  });
+
+  it("X-SW-9 every Swiss default passes validateCascade on its own sport (the sport records every step)", () => {
+    // Rule 2 (the sport records the step's ledger) and rule 3 (Buchholz and opp_diff need a Swiss stage) run on the
+    // rulebook's chain as typed, under every declared cfg; its cross-group order (the chain without its head-to-head
+    // steps, §5.9) passes rule 4 too.
+    let checked = 0;
+    const n = forEachSport(({ module }) => {
+      const chain = SWISS[module.key]!;
+      for (const { name, cfg } of declaredCfgs(module)) {
+        const ctx = { module, cfg, stageKind: "swiss", crossGroup: false } as const;
+        expect(validateCascade(chain, ctx), `${module.key} ${name}`).toEqual([]);
+        const cross = chain.filter((key) => !isHeadToHeadKey(key));
+        expect(cross.length, `${module.key}: the cross-group order drops direct only`).toBe(chain.length - 1);
+        expect(validateCascade(cross, { ...ctx, crossGroup: true }), `${module.key} ${name} cross-group`).toEqual([]);
+        checked++;
+      }
+    });
+    expect(n).toBe(11);
+    expect(checked, "sport × declared cfg cells checked").toBeGreaterThanOrEqual(n);
+  });
+
+  it("X-SW-9 no Swiss default puts a head-to-head step before Buchholz (rulebook §5 'h2h late')", () => {
+    // SW-H4: a tied pair in a Swiss usually never met, so a head-to-head step early decides ties by an empty comparison.
+    // The pre-W3 orders are the negative pair: the set sports' had h2h_points and no Buchholz at all.
+    let checked = 0;
+    let withH2h = 0;
+    const n = forEachSport(({ module }) => {
+      const order = module.defaultTiebreakers("swiss", declaredCfgs(module)[0]!.cfg);
+      expect(h2hLate(order), `${module.key}: [${order.join(", ")}]`).toBe(true);
+      expect(order.at(-1), `${module.key}: lots last`).toBe("lots");
+      expect(order.filter((key) => key === "lots"), `${module.key}: lots once`).toHaveLength(1);
+      if (order.some((key) => isHeadToHeadKey(key))) withH2h++;
+      checked++;
+    });
+    expect(n).toBe(11);
+    expect(checked).toBe(n);
+    // Every rulebook chain ends "direct encounter, lots", so every one has a head-to-head step for the rule to place.
+    expect(withH2h, "anti-vacuity: chains with a head-to-head step").toBe(n);
+    expect(h2hLate(PRE_W3_SWISS.badminton!), "the pre-W3 set-sport order fails the rule").toBe(false);
+    expect(h2hLate(PRE_W3_SWISS.icehockey!), "the pre-W3 ice hockey order fails the rule").toBe(false);
+  });
+
+  it("X-SW-9 a stage pinned to the pre-W3 badminton chain still ranks by its pin (X-TB-2; Review Focus 5)", () => {
+    // single-sport: production's one Swiss stage is a badminton one, pinned by the W2d migration to this order (B1)
+    const module = moduleOf("badminton");
+    const cfg = module.configSchema.parse({});
+    const rule = module.tablePointsRule(cfg, "swiss");
+    const pre = PRE_W3_SWISS.badminton!;
+    expect(pre, "premise: the pre-W3 order, typed from the plan's Anchors row").toEqual(["points", "wins", "set_ratio", "point_ratio", "h2h_points"]);
+    const pin: TableRulesPin = {
+      points: rule, tiebreakers: pre, crossGroup: pre.filter((key) => !isHeadToHeadKey(key)),
+      sources: { points: "migrated", tiebreakers: "migrated", crossGroup: "migrated" },
+    };
+    const input = { module, stageKind: "swiss", mergedCfg: cfg, stageOwn: { points: null, tiebreakers: null, crossGroup: null }, divisionTiebreakers: null } as const;
+    const pinned = resolveTableRules({ ...input, pinned: pin });
+    expect(pinned, "a pin is returned whole: the engine never merges the new default into it").toBe(pin);
+    const live = resolveTableRules({ ...input, pinned: null });
+    expect(live.tiebreakers, "an unpinned stage takes rulebook §5's chain").toEqual(SET_SWISS);
+    // Ranked: R = 2, badminton's Swiss rule pays any win 2 and a loss 0 (premise below).
+    //   R1: A beats B 2-0, C beats D 2-1.   R2: A beats C 2-0, D beats B 2-0.   Points: A 4, B 0, C 2, D 2.
+    //   C and D are level on points and wins (one each).
+    //   The new default: Buchholz Cut-1 drops each one's lowest opponent: C {D 2, A 4} → 4, D {C 2, B 0} → 2: C above D.
+    //   The pin: set ratio, C 2-1 + 0-2 = 2/3, D 1-2 + 2-0 = 3/2: D above C.
+    expect([rule.win.regulation, rule.loss.regulation], "premise: badminton's Swiss rule pays a win 2, a loss 0").toEqual([2, 0]);
+    const fixtures: TableFixture[] = [
+      bwfBoard(module, cfg, rule, 1, "A", "B", [2, 0]), bwfBoard(module, cfg, rule, 1, "C", "D", [2, 1]),
+      bwfBoard(module, cfg, rule, 2, "A", "C", [2, 0]), bwfBoard(module, cfg, rule, 2, "D", "B", [2, 0]),
+    ];
+    const rank = (rules: TableRulesPin) =>
+      completeTableStage({ id: "sw", kind: "swiss", swiss: true, swissDraw: swissDrawFactsOf(module, cfg), entrants: ["A", "B", "C", "D"], rules, rngSeed: 7, rounds: 2 }, fixtures)
+        .tables.overall ?? [];
+    const byPin = rank(pinned);
+    const byDefault = rank(live);
+    expect(byPin.map((r) => r.points), "premise: the hand points").toEqual([4, 2, 2, 0]);
+    expect(byPin.map((r) => r.entrantId)).toEqual(["A", "D", "C", "B"]);
+    expect(byPin.filter((r) => r.entrantId === "C" || r.entrantId === "D").map((r) => r.tieBreak?.key)).toEqual(["set_ratio", "set_ratio"]);
+    expect(byDefault.map((r) => r.entrantId)).toEqual(["A", "C", "D", "B"]);
+    expect(byDefault.filter((r) => r.entrantId === "C" || r.entrantId === "D").map((r) => r.tieBreak?.key)).toEqual(["buchholz_cut1", "buchholz_cut1"]);
+  });
+
+  it("BD-TB-2 badminton's Swiss default: points, Buchholz Cut-1, Buchholz, set ratio, point ratio, direct encounter, lots", () => {
+    // single-sport: BD-TB-2 is badminton's own row; the X-SW-9 sweep above holds every sport
+    swissRowOf("badminton", SET_SWISS);
+  });
+
+  it("TT-TB-2 table tennis's Swiss default: points, Buchholz Cut-1, Buchholz, set ratio, point ratio, direct encounter, lots", () => {
+    // single-sport: TT-TB-2 is table tennis's own row; the X-SW-9 sweep above holds every sport
+    swissRowOf("tabletennis", SET_SWISS);
+  });
+
+  it("VB-TB-3 volleyball's Swiss default: points, Buchholz Cut-1, Buchholz, set ratio, point ratio, direct encounter, lots", () => {
+    // single-sport: VB-TB-3 is volleyball's own row; the X-SW-9 sweep above holds every sport
+    swissRowOf("volleyball", SET_SWISS);
+  });
+
+  it("TN-TB-3 tennis's Swiss default: points, Buchholz Cut-1, Buchholz, set ratio, game ratio, direct encounter, lots", () => {
+    // single-sport: TN-TB-3 is tennis's own row; the X-SW-9 sweep above holds every sport
+    swissRowOf("tennis", TENNIS_SWISS);
+  });
+
+  it("FB-TB-5 football's Swiss default: points, goal difference, goals for, wins, Buchholz, opponents' collective goal difference, direct encounter, lots", () => {
+    // single-sport: FB-TB-5 is football's own row; the X-SW-9 sweep above holds every sport
+    swissRowOf("football", GOALS_SWISS);
+  });
+
+  it("HK-TB-3 hockey's Swiss default: points, goal difference, goals for, wins, Buchholz, opponents' collective goal difference, direct encounter, lots", () => {
+    // single-sport: HK-TB-3 is hockey's own row; the X-SW-9 sweep above holds every sport
+    swissRowOf("hockey", GOALS_SWISS);
+  });
+
+  it("IH-TB-3 ice hockey's Swiss default: points, goal difference, goals for, wins, Buchholz, opponents' collective goal difference, direct encounter, lots", () => {
+    // single-sport: IH-TB-3 is ice hockey's own row; the X-SW-9 sweep above holds every sport
+    swissRowOf("icehockey", GOALS_SWISS);
+  });
+
+  it("CK-TB-2 cricket's Swiss default: points, wins, net run rate, Buchholz Cut-1, Buchholz, direct encounter, lots", () => {
+    // single-sport: CK-TB-2 is cricket's own row; the X-SW-9 sweep above holds every sport
+    swissRowOf("cricket", CRICKET_SWISS);
+  });
+
+  it("CA-TB-2 carrom's Swiss default: points, Buchholz Cut-1, Buchholz, set ratio, board ratio, point ratio, direct encounter, lots", () => {
+    // single-sport: CA-TB-2 is carrom's own row; the X-SW-9 sweep above holds every sport
+    swissRowOf("carrom", CARROM_SWISS);
+  });
+
+  it("GN-TB-2 generic's Swiss default: points, Buchholz Cut-1, Buchholz, score difference, score for, direct encounter, lots", () => {
+    // single-sport: GN-TB-2 is generic's own row; the X-SW-9 sweep above holds every sport
+    swissRowOf("generic", GENERIC_SWISS);
+  });
+
+  it("BG-TB-4 chess's Swiss default: points, Buchholz Cut-1, Buchholz, Sonneborn-Berger, direct encounter, wins, lots", () => {
+    // single-sport: BG-TB-4 is chess's own row; the X-SW-9 sweep above holds every sport
+    swissRowOf("boardgame", CHESS_SWISS);
   });
 });

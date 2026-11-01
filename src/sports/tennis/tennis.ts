@@ -74,8 +74,8 @@ const nestedTennis = makeNestedModule({
   // W2d (SPEC §5.10, TN-TB-1): 4.01 C.3 — matches won, then matches played, then for each of set and game ratio the
   // two-way head-to-head first; then the seed, then lots (the product's own final step).
   defaultTiebreakers: ["wins", "matches_played", "h2h_two", "set_ratio", "h2h_two", "game_ratio", "h2h_two", "seed", "lots"],
-  // OC1: a Swiss stage keeps its pre-W2d order.
-  swissTiebreakers: ["points", "set_ratio", "game_ratio", "h2h_points", "seed"],
+  // W3 (rulebook-W3-swiss.md §5, X-SW-9, TN-TB-3): a Swiss stage takes the tennis chain — Buchholz early, direct late.
+  swissTiebreakers: ["points", "buchholz_cut1", "buchholz", "set_ratio", "game_ratio", "direct", "lots"],
   primaryTableKey: "wins", // W2d (D11): ATP C.3-1 — the number of matches won comes first.
   officialLabel: { scorer: "Chair Umpire" }, // ITF App VII
   // Jul3/07 §3 — unlocked by W4's optional `server`/`winner` on the point.

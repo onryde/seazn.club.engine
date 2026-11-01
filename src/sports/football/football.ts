@@ -2992,9 +2992,9 @@ export const football: SportModule<FootballCfg, FootballEv, FootballState> = {
   ],
   // W2c X-PT-1 (gap a): football's goal ledger (`sideMetrics`, `footballForfeitCredit`) is gf / ga / gd.
   awardScoreKeys: { for: "gf", against: "ga", diff: "gd" },
-  // Module default = fifa2026 (spec 04 §1.6, §5.10) for every table kind (the Swiss order is the same list, unchanged,
-  // OC1), its fair-play step only while the cfg tracks fair play; `uefa` and `classic` are stage presets.
-  defaultTiebreakers: (_kind, cfg) => footballDefaultOrder(cfg),
+  // Round robin: fifa2026 (spec 04 §1.6, §5.10), fair play only while tracked (`uefa`, `classic`: presets). Swiss: §5's goals
+  // chain (rulebook-W3-swiss.md, X-SW-9, FB-TB-5; UEFA CL art. 18's shape), never fair play.
+  defaultTiebreakers: (kind, cfg) => (kind === "swiss" ? ["points", "diff", "for", "wins", "buchholz", "opp_diff", "direct", "lots"] : footballDefaultOrder(cfg)),
   tablePresets: () => ({
     points: [],
     tiebreakers: (["fifa2026", "uefa", "classic"] as const).map((id) => ({ id, keys: [...FOOTBALL_TIEBREAKERS[id]] })),

@@ -6,6 +6,9 @@
 // rule, consistent with X-SW-7's "a forfeit is not a meeting"; the T10 row records it. Higher ranks first. Swiss only
 // (validateCascade rule 3) and only on a sport that records a goal difference (rule 2). It is no points unit, so it is
 // never halved.
+// W3 Task 10 (X-SW-9; FB-TB-5, HK-TB-3, IH-TB-3): the goals family's Swiss DEFAULT, rulebook §5's full chain (points,
+// goal difference, goals for, wins, Buchholz, opp_diff, direct encounter, lots), reaches opp_diff on a real stage in each
+// of the three sports (Scene G, the last block).
 //
 // Every expected number is derived by hand from those rules and from FB-WO-1 ("Football walkover = 3-0", FDC 2025 Art.
 // 28.1) in the comment beside its scene, never from the engine. Everything ranks through the real consumer,
@@ -30,6 +33,7 @@ import { DERIVED_METRICS, derivedMetricText } from "./display.ts";
 import { payout, setsToWinOf, swissDrawFactsOf, unplayedSidesOf, type PointsRule } from "./points.ts";
 import { completeTableStage, type TableFixture, type TableStage } from "./stage.ts";
 import type { FixtureResult, StandingsRow } from "./standings.ts";
+import { resolveTableRules } from "./table-rules.ts";
 import { tieKeyValue } from "./tie-what-if.ts";
 import { buildSwissLedger, DIFF_KEYS, rankStandings, type SwissTable } from "./tiebreakers.ts";
 
@@ -453,3 +457,71 @@ function playedWin(m: AnySportModule, cfg: unknown): FixtureResult | null {
   }
   return null;
 }
+
+// Scene G (X-SW-9; FB-TB-5, HK-TB-3, IH-TB-3): the goals family's full Swiss default reaches opp_diff. In each goals sport,
+// every board a played regulation win (a win pays 3, premise asserted), R = 2, six entrants, nobody unplayed:
+//   R1: X 1-0 P, Y 1-0 R, S 1-0 Q.   R2: Q 1-0 X, S 1-0 Y, P 5-0 R.
+//   Points: S 6; X, Y, P, Q 3 each; R 0.
+//   Goals for − against: X 1−1 = 0, Y 1−1 = 0, P 5−1 = +4, Q 1−1 = 0, R 0−6 = −6, S 2−0 = +2.   Wins: S 2, R 0, others 1.
+//   Buchholz (opponents' points): X = P 3 + Q 3 = 6, Y = R 0 + S 6 = 6, Q = S 6 + X 3 = 9, P = X 3 + R 0 = 3,
+//     S = Q 3 + Y 3 = 6, R = Y 3 + P 3 = 6.
+//   opp_diff (opponents' final goal difference, every card played): X = P +4 + Q 0 = +4, Y = R −6 + S +2 = −4,
+//     P = X 0 + R −6 = −6, Q = S +2 + X 0 = +2, S = Q 0 + Y 0 = 0, R = Y 0 + P +4 = +4.
+//   The chain on {X, Y, P, Q}: goal difference lifts P (+4); X, Y, Q are level on it (0), on goals for (1) and on wins
+//   (1); Buchholz lifts Q (9); X and Y are level on Buchholz (6) and split on opp_diff, X above Y. No direct encounter
+//   (X and Y never met) or lots is reached.
+//   Order: S, P, Q, X, Y, R.
+//   differential: a chain without opp_diff leaves X and Y to direct encounter, which has no game between them, and so to
+//   lots.
+const GOALS_G: readonly (readonly [number, EntrantId, EntrantId, number, number])[] = [
+  [1, "X", "P", 1, 0], [1, "Y", "R", 1, 0], [1, "S", "Q", 1, 0],
+  [2, "Q", "X", 1, 0], [2, "S", "Y", 1, 0], [2, "P", "R", 5, 0],
+];
+
+describe("X-SW-9 the goals family's full Swiss default reaches opp_diff (rulebook-W3 §5; FB-TB-5, HK-TB-3, IH-TB-3)", () => {
+  it("FB-TB-5 HK-TB-3 IH-TB-3 X-SW-9 the full goals Swiss default reaches opp_diff: level on points, goal difference, goals for, wins and Buchholz, X and Y split on their opponents' goal difference (each goals sport; counted)", () => {
+    let checked = 0;
+    for (const key of GOALS_FAMILY) {
+      const m = builtinModules.find((x) => x.key === key);
+      if (m === undefined) throw new Error(`${key} is not registered`);
+      const raw = (declaredCfgs(m)[0] as { cfg: unknown }).cfg;
+      const cfg = m.configSchema.parse(raw);
+      const rule = m.tablePointsRule(cfg, "swiss");
+      // The stage ranks by the sport's DECLARED Swiss default, through the one resolver (no order of its own, no pin).
+      const tiebreakers = resolveTableRules({
+        module: m, stageKind: "swiss", mergedCfg: cfg, stageOwn: { points: null, tiebreakers: null, crossGroup: null }, divisionTiebreakers: null, pinned: null,
+      }).tiebreakers;
+      // A played board: the sport's own standingsDelta over its state at full time holding the score, paid by the rule.
+      const board = ([round, home, away, hg, ag]: readonly [number, EntrantId, EntrantId, number, number]): TableFixture => {
+        const state = { ...m.init(cfg, seats(home, away)), goals: { home: hg, away: ag } };
+        const outcome = MatchOutcome.parse({ kind: "win", winner: hg > ag ? home : away, loser: hg > ag ? away : home, method: "regulation" });
+        const deltas = m.standingsDelta(outcome, cfg, { kind: "swiss" }, state as never) as FixtureResult;
+        const result = payout(outcome, decidedInFor(m, outcome), deltas, true, rule, m.awardScoreKeys, setsToWinOf(m, cfg));
+        return { id: `r${round}-${home}-${away}`, roundNo: round, status: "decided", result };
+      };
+      const stage = (order: readonly TiebreakerKey[]): TableStage => ({
+        id: "sw", kind: "swiss", swiss: true, swissDraw: swissDrawFactsOf(m, raw), entrants: ["X", "Y", "P", "Q", "R", "S"],
+        rules: tableRulesOf(order, rule), rngSeed: 7, rounds: 2,
+      });
+      const fixtures = GOALS_G.map(board);
+      const rows = completeTableStage(stage(tiebreakers), fixtures).tables.overall ?? [];
+      expect(rows, `${key}: anti-vacuity, one row per entrant`).toHaveLength(6);
+      const alias = DIFF_KEYS.find((k) => m.metrics.some((metric) => metric.key === k));
+      if (alias === undefined) throw new Error(`${key} records no goal difference`);
+      expect(rule.win.regulation, `${key}: premise, a regulation win pays 3`).toBe(3);
+      expect(column(rows, (r) => r.points), `${key}: premise, the hand points`).toEqual({ S: 6, X: 3, Y: 3, P: 3, Q: 3, R: 0 });
+      expect(column(rows, (r) => r.metrics[alias]), `${key}: premise, the hand goal difference (${alias})`).toEqual({ S: 2, X: 0, Y: 0, P: 4, Q: 0, R: -6 });
+      expect(column(rows, (r) => r.metrics["buchholz"]), key).toEqual({ S: 6, X: 6, Y: 6, P: 3, Q: 9, R: 6 });
+      expect(column(rows, oppDiff), key).toEqual({ S: 0, X: 4, Y: -4, P: -6, Q: 2, R: 4 });
+      expect(rows.map((r) => r.entrantId), key).toEqual(["S", "P", "Q", "X", "Y", "R"]);
+      expect(Object.fromEntries(rows.filter((r) => r.entrantId !== "S" && r.entrantId !== "R").map((r) => [r.entrantId, r.tieBreak?.key])), key).toEqual({
+        P: "diff", Q: "buchholz", X: "opp_diff", Y: "opp_diff",
+      });
+      // differential: the same chain without opp_diff hands X and Y to direct encounter, then to lots
+      const without = completeTableStage(stage(tiebreakers.filter((k) => k !== "opp_diff")), fixtures).tables.overall ?? [];
+      expect(without.filter((r) => r.entrantId === "X" || r.entrantId === "Y").map((r) => r.tieBreak?.key), key).toEqual(["lots", "lots"]);
+      checked++;
+    }
+    expect(checked, "the goals family").toBe(GOALS_FAMILY.length);
+  });
+});

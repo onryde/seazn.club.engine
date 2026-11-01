@@ -546,8 +546,8 @@ describe("offerableKeys — '+ Add step' (spec §9)", () => {
       const cfgs: unknown[] = [firstCfg(module)];
       if (module.key === "football") cfgs.push(football.configSchema.parse({ fairPlay: false }));
       // The empty order, the minimal valid one, one with an h2h block, and the sport's two defaults as they stand: the
-      // league one (signed and shape-valid since Task 11) and the Swiss one, which keeps its pre-W2d order (OC1) and so is,
-      // for most sports, an INVALID order under every non-Swiss kind — one the editor can still be asked to extend.
+      // league one (signed and shape-valid since Task 11) and the Swiss one (rulebook-W3 §5's chain, X-SW-9), which holds
+      // Buchholz and so is an INVALID order under every non-Swiss kind — one the editor can still be asked to extend.
       const orders: TiebreakerKey[][] = [
         [],
         [module.primaryTableKey, "lots"],

@@ -69,8 +69,8 @@ export const badminton = withSetBasedNaturalBreaks(makeSetBasedModule({
   // to the game DIFFERENCE (16.2.3), then the point difference (16.2.4), each falling back to the two-way h2h when
   // it leaves two level; then lots. Games are the kernel's sets.
   defaultTiebreakers: ["wins", "h2h_two", "set_diff", "h2h_two", "point_diff", "h2h_two", "lots"],
-  // OC1: a Swiss stage keeps its pre-W2d order.
-  swissTiebreakers: ["points", "wins", "set_ratio", "point_ratio", "h2h_points"],
+  // W3 (rulebook-W3-swiss.md §5, X-SW-9, BD-TB-2): a Swiss stage takes the set-sport chain — Buchholz early, direct late.
+  swissTiebreakers: ["points", "buchholz_cut1", "buchholz", "set_ratio", "point_ratio", "direct", "lots"],
   primaryTableKey: "wins", // W2d (D11): BWF 16.2.1 — the number of matches won comes first.
   officialLabel: { scorer: "Umpire" }, // doc 13 §1
   coarseEventType: "game.summary",
