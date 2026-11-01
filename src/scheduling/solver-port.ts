@@ -14,6 +14,35 @@ export interface SolveBuildInput {
      *  unconstrained by round order on the service side, not round 0. */
     roundNo?: number;
     /**
+     * X-SW-31 (W3 T10b, controller ruling 2026-10-31) — how this fixture's
+     * round sequence is ordered. THE CONTRACT for any solver behind this port:
+     *
+     *  - Absent or `"start"`: the round-order START floor the service already
+     *    places (C1): for two round-bearing fixtures of one sequence with
+     *    `roundNo` i < j, j's day is not before i's, and on one day j does not
+     *    start before i.
+     *  - `"end"` (a Swiss stage): additionally, j does not START before i
+     *    ENDS: `start_j >= start_i + constraints.matchMinutes`. Equality is
+     *    legal. Read for movable fixtures and, through
+     *    {@link SolveBuildInput.existing}'s `roundBarrier`, for pin rows: a
+     *    pin of a later round caps when an earlier round's fixtures may end,
+     *    a pin of an earlier round floors when a later round's may start. Two
+     *    pins are never ordered against each other (pin-pin exempt).
+     *  - The sequence on the wire is the division (`divisionId`), as for
+     *    `roundNo`: `build.ts` strips a division's rounds, and so its barrier,
+     *    whenever its rounds span more than one stage or pool, and sends this
+     *    only beside a `roundNo` it forwards. Constant across a sequence
+     *    (`build.ts` refuses a mixed one CONFIG_INVALID before asking).
+     *  - `build.ts` sends only `"end"`; a start-floor sequence carries no key.
+     *
+     * The model is NOT in this repository (onryde/seazn.club.placement, behind
+     * onryde/seazn.club's `@seazn/scheduler` adapter). Until it reads this
+     * field, `build.ts`'s verifier gate refuses any board that breaks the
+     * barrier (`round_order_end` is a blocking `order` row) and ships the
+     * greedy board, which honours it.
+     */
+    roundBarrier?: "start" | "end";
+    /**
      * C10 (2026-08-16, wire person indices) — person ids, straight from
      * {@link SchedulableFixture.people} — resolved through a SEPARATE index
      * space than {@link entrantIds}; see `Fixture.person_indices`'s own
@@ -103,6 +132,10 @@ export interface SolveBuildInput {
      * index on the wire for the service to re-verify it against.
      */
     roundNo?: number;
+    /** X-SW-31 (W3 T10b) — the barrier of the sequence this pin's `roundNo`
+     *  is forwarded into; set only beside a forwarded `roundNo`. Same contract
+     *  as {@link SolveBuildInput.fixtures}' `roundBarrier`. */
+    roundBarrier?: "start" | "end";
   }[];
   dependencies: { beforeFixtureId: string; afterFixtureId: string }[];
   /**

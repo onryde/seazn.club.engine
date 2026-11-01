@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { canonConflictDetail, type ConflictDetail, type ConflictDetailKind } from "./conflict-detail.ts";
 import { conflictKey, type Conflict } from "./calendar.ts";
 
-// The 28-kind table, field-for-field, written out explicitly rather than
+// The 29-kind table, field-for-field, written out explicitly rather than
 // generated so it reads beside the design doc's table and a missing kind is a
 // `Record<ConflictDetailKind, …>` type error rather than a silently skipped
 // row — the same reasoning `RULE_BY_REASON` uses for `ConflictReason`.
@@ -73,6 +73,9 @@ const FULL_DETAIL: Record<ConflictDetailKind, ConflictDetail> = {
     otherDay: "2026-08-09",
   },
   round_order_same_day: { kind: "round_order_same_day", roundNo: 3, otherRoundNo: 2, day: "2026-08-10" },
+  // W3 T10b's 29th kind (X-SW-31): the Swiss end barrier. `otherEndAt` is the
+  // earlier round's last end, epoch ms.
+  round_order_end: { kind: "round_order_end", roundNo: 3, otherRoundNo: 2, otherEndAt: 1786183200000 },
   no_slot_lattice: { kind: "no_slot_lattice" },
   no_slot_budget: { kind: "no_slot_budget" },
 };
@@ -99,13 +102,14 @@ const ALT_VALUE: { [K in keyof Omit<ConflictDetail, "kind">]-?: NonNullable<Conf
   ruleType: "not_after",
   roundNo: 5,
   otherRoundNo: 4,
+  otherEndAt: 1786185000000,
   minutes: 25,
   requiredMinutes: 45,
   count: 6,
   requiredCount: 3,
 };
 
-describe("canonConflictDetail — per-kind field participation (all 28 kinds)", () => {
+describe("canonConflictDetail — per-kind field participation (all 29 kinds)", () => {
   for (const kind of ALL_KINDS) {
     const base = FULL_DETAIL[kind];
     const fields = Object.keys(base).filter((k) => k !== "kind") as (keyof Omit<ConflictDetail, "kind">)[];

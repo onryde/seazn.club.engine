@@ -5,6 +5,7 @@
 // aware (doc 06 §4.3): it accepts sibling divisions' assignments as fixed court
 // occupancy and warns on per-person overlaps. No wall-clock reads — all times
 // are injected (the same unit throughout, e.g. epoch ms); durations are minutes.
+import { EngineError } from "../core/errors.ts";
 import type { EntrantId } from "../core/types.ts";
 import type {
   ConstraintScope,
@@ -101,6 +102,10 @@ export interface SchedulableFixture {
    *  fixture belongs to — see `Assignment.stageId` below for why this exists
    *  and what it disambiguates. */
   stageId?: string;
+  /** X-SW-31 (W3 T10b): how this fixture's round sequence is ordered — see
+   *  `Assignment.roundBarrier` below. Read by the placer (`slotFixtures`) and
+   *  forwarded to the solver by `build.ts`. */
+  roundBarrier?: RoundBarrier;
   locked?: { court: string; startAt: number }; // pinned assignment — honoured as-is
   /**
    * #622 — the courts THIS fixture may be placed on, a subset of
@@ -165,7 +170,28 @@ export interface Assignment {
    *  either). A pin/locked card is `false`; pin-pin round-order pairs are
    *  exempt (design doc), pin-movable pairs are enforced. */
   movable?: boolean;
+  /** X-SW-31 (W3 T10b, controller ruling 2026-10-31). How this row's round
+   *  SEQUENCE — `(divisionId, stageId, poolId)`, the key `roundOrderConflicts`
+   *  groups by — is ordered. Absent or `"start"`: the round-order START floor
+   *  above, today's rule and every round robin's (its pairings are fixed in
+   *  advance, so two rounds may run side by side). `"end"`: a Swiss stage's
+   *  barrier — round r+1 is paired from round r's results, so no board of
+   *  round r+1 may start before the LAST board of round r has ended (a start
+   *  exactly at that end is legal). The start floor still applies too.
+   *
+   *  Per row, constant per sequence: a sequence whose rows disagree is
+   *  CONFIG_INVALID (`roundBarrierBySequence`), checked by the placer, the
+   *  verifier and the build alike. Read only beside `roundNo`: a row with no
+   *  round is in no sequence. Carried through by `slotFixtures`' `commit` and
+   *  `build.ts`'s `assignmentOf` for the same reason `roundNo` is — a board
+   *  that lost it would re-verify as a start floor. Every caller that builds
+   *  Assignments for a Swiss stage must set it on every row, the two widening
+   *  delta-gate callers' siblings included. */
+  roundBarrier?: RoundBarrier;
 }
+
+/** X-SW-31: see `Assignment.roundBarrier`. */
+export type RoundBarrier = "start" | "end";
 
 /** The rest an entrant owes between two matches, in minutes — the strictest of
  *  every source that can demand one:
@@ -843,6 +869,27 @@ export function slotFixtures(input: SlotInput): SlotResult {
     return null;
   };
 
+  // X-SW-31 (W3 T10b). The Swiss end barrier, as two bounds on a movable card
+  // of an `"end"` sequence: it starts no earlier than every board of an
+  // earlier round of its sequence has ENDED, and it ends no later than any
+  // board of a later round starts. Placed in round order, the second bound
+  // comes from a PIN (or from a later round a feed dependency pulled ahead in
+  // the order below). Both read `placed` (this run's own pins and placements)
+  // and never `existing`: `roundOrderConflicts` scans the board it is handed
+  // and nothing else, so a placer that read further would hold a card for a
+  // breach nobody reports. A pin is never placed here, so pin-pin pairs stay
+  // exempt on this side as on the verifier's. A card that cannot meet the
+  // upper bound is refused (`no_slot`), never placed into a breach. Undefined
+  // for every sequence that is not "end", so a start-floor board is placed
+  // exactly as before. A mixed sequence throws CONFIG_INVALID here, before
+  // anything is placed.
+  const barrierBySequence = roundBarrierBySequence(input.fixtures);
+  const endSequenceOf = (f: SchedulableFixture): { key: string; round: number } | undefined => {
+    if (f.roundNo === undefined) return undefined;
+    const key = roundSequenceKey(f);
+    return barrierBySequence.get(key) === "end" ? { key, round: f.roundNo } : undefined;
+  };
+
   const ordered = [...input.fixtures].sort((a, b) => {
     const ra = a.roundNo ?? 0;
     const rb = b.roundNo ?? 0;
@@ -946,6 +993,9 @@ export function slotFixtures(input: SlotInput): SlotResult {
       // signal in scope that already answers "did THIS run choose where
       // this sits".
       ...(f.roundNo !== undefined ? { roundNo: f.roundNo } : {}),
+      // X-SW-31. Carried through for the same reason as `roundNo`: the
+      // verifier reads the sequence's barrier off the Assignment.
+      ...(f.roundBarrier !== undefined ? { roundBarrier: f.roundBarrier } : {}),
       movable: f.locked === undefined,
     };
     bookings.push(assignment);
@@ -1002,6 +1052,18 @@ export function slotFixtures(input: SlotInput): SlotResult {
       if (end !== undefined) ready = Math.max(ready, end);
     }
     for (const k of restKeysOf(f)) ready = Math.max(ready, (lastEnd.get(k) ?? -Infinity) + restF);
+    // X-SW-31: the end barrier's two bounds (`endSequenceOf` above). A tie is
+    // legal both ways: start AT an earlier round's last end, end AT a later
+    // round's first start.
+    let roundDeadline = Infinity;
+    const endSequence = endSequenceOf(f);
+    if (endSequence !== undefined) {
+      for (const p of placed) {
+        if (p.roundNo === undefined || roundSequenceKey(p) !== endSequence.key) continue;
+        if (p.roundNo < endSequence.round) ready = Math.max(ready, p.endAt);
+        else if (p.roundNo > endSequence.round) roundDeadline = Math.min(roundDeadline, p.startAt);
+      }
+    }
 
     let best: { court: string; start: number } | null = null;
     let windowBound = false;
@@ -1057,6 +1119,10 @@ export function slotFixtures(input: SlotInput): SlotResult {
         windowBound = true;
         continue;
       }
+      // X-SW-31: `start` is this court's earliest, and a later one only ends
+      // later, so a card that would overrun a later round's start cannot use
+      // this court at all.
+      if (start + durMs > roundDeadline) continue;
       if (best === null || start < best.start) best = { court, start };
       else if (start === best.start && c?.fieldFairness !== undefined && c.fieldFairness !== "off") {
         // soft objective (Jul3/04 §3): among equal-time candidates prefer the
@@ -2083,11 +2149,21 @@ export function validateAssignments(
  * since the wire has no pool index at all — see `build.ts`'s own comment on
  * the mixed-sequence guard).
  *
- * Absent `tz` skips the whole family, same convention `slotFixtures`' typed-
- * rule block already uses: a calendar day cannot be derived without one, and
- * reporting a violation the organiser never expressed (bucketed in UTC) is
+ * Absent `tz` skips the day/same-day rows, same convention `slotFixtures`'
+ * typed-rule block already uses: a calendar day cannot be derived without one,
+ * and reporting a violation the organiser never expressed (bucketed in UTC) is
  * worse than reporting none. `dayKeyInTz` is the ONE shared day-derivation
  * helper both TS sides already import — no second copy.
+ *
+ * X-SW-31 (W3 T10b, controller ruling 2026-10-31): a sequence whose rows say
+ * `roundBarrier: "end"` (a Swiss stage) ALSO gets the end barrier — no board
+ * of a later round starts before the last board of an earlier round has ended
+ * (`roundEndConflicts`, kind `round_order_end`). It compares instants, so it
+ * runs with or without `tz`. Same sequence key, same pin-pin exemption, same
+ * `reason`/`direct`, same blame, and it rides the same widening seams: the two
+ * delta-gate callers that run this function on their widened set get it with
+ * no change of their own, provided the siblings they widen with carry the
+ * flag (a sibling that lost it makes a mixed sequence, refused by name).
  *
  * EXPORTED, standalone (C1 fix-loop): the delta gate's checked-set widening
  * (`moveFixture`/`applySchedule`'s partial-apply path, joint multi-division
@@ -2108,13 +2184,25 @@ export function roundOrderConflicts(
   tz: string | undefined,
 ): Conflict[] {
   const conflicts: Conflict[] = [];
-  if (tz === undefined) return conflicts;
+  // X-SW-31 (W3 T10b). The guard first, and ahead of the zone check: a
+  // sequence whose rows disagree on their barrier is a caller bug whatever
+  // the clock, and reporting either reading of it would be a guess.
+  const barrierBySequence = roundBarrierBySequence(assignments);
   const bySequence = new Map<string, Assignment[]>();
   for (const a of assignments) {
     if (a.roundNo === undefined) continue;
-    const key = `${a.divisionId ?? ""}|${a.stageId ?? ""}|${a.poolId ?? ""}`;
+    const key = roundSequenceKey(a);
     (bySequence.get(key) ?? bySequence.set(key, []).get(key)!).push(a);
   }
+  // X-SW-31. The end barrier compares two INSTANTS, so unlike the start
+  // floor's day/same-day rows below it needs no zone and is not skipped
+  // without one. Appended after them, so a start-floor board's rows come out
+  // exactly as before.
+  const endBarrier: Conflict[] = [];
+  for (const [key, group] of bySequence) {
+    if (barrierBySequence.get(key) === "end") endBarrier.push(...roundEndConflicts(group));
+  }
+  if (tz === undefined) return endBarrier.map(withRule);
   for (const group of bySequence.values()) {
     for (const a of group) {
       for (const b of group) {
@@ -2153,5 +2241,97 @@ export function roundOrderConflicts(
       }
     }
   }
+  conflicts.push(...endBarrier);
   return conflicts.map(withRule);
+}
+
+/**
+ * X-SW-31 (W3 T10b): the end barrier over ONE sequence's round-bearing rows.
+ * For each board b and each earlier round r of its sequence, b may not start
+ * before the latest end among round r's boards that b answers to — every one
+ * of them when b may move, only the movable ones when b is a pin (the start
+ * floor's pin-pin exemption, which is per PAIR, lifted to the max). A start
+ * exactly at that end is legal. One row per (b, earlier round), blamed on b,
+ * the later round: `reason: "order"`, `direct: true`, so it blocks the way the
+ * start floor's rows do. `otherEndAt` is the instant b had to wait for.
+ */
+function roundEndConflicts(group: readonly Assignment[]): Conflict[] {
+  const endAll = new Map<number, number>();
+  const endMovable = new Map<number, number>();
+  for (const a of group) {
+    if (a.roundNo === undefined) continue;
+    endAll.set(a.roundNo, Math.max(endAll.get(a.roundNo) ?? -Infinity, a.endAt));
+    if (a.movable !== false) endMovable.set(a.roundNo, Math.max(endMovable.get(a.roundNo) ?? -Infinity, a.endAt));
+  }
+  const rounds = [...endAll.keys()].sort((x, y) => x - y);
+  const out: Conflict[] = [];
+  for (const b of group) {
+    if (b.roundNo === undefined) continue;
+    const ends = b.movable === false ? endMovable : endAll;
+    for (const round of rounds) {
+      if (round >= b.roundNo) break;
+      const otherEndAt = ends.get(round);
+      if (otherEndAt === undefined || b.startAt >= otherEndAt) continue;
+      out.push({
+        fixtureId: b.fixtureId,
+        reason: "order",
+        details: { kind: "round_order_end", roundNo: b.roundNo, otherRoundNo: round, otherEndAt },
+        direct: true,
+      });
+    }
+  }
+  return out;
+}
+
+/** The round-order SEQUENCE a row belongs to: `(divisionId, stageId, poolId)`
+ *  (`roundOrderConflicts`' own comment says why each part is there). ONE
+ *  spelling, read by the verifier, the placer and `build.ts`'s wire — two
+ *  copies of a grouping key is how a placer and a verifier fork. */
+export function roundSequenceKey(row: { divisionId?: string; stageId?: string; poolId?: string }): string {
+  return `${row.divisionId ?? ""}|${row.stageId ?? ""}|${row.poolId ?? ""}`;
+}
+
+/**
+ * X-SW-31 (W3 T10b): each round-bearing sequence's barrier, absent read as
+ * `"start"`. The flag is per row but the rule is per sequence, so a sequence
+ * whose rows disagree — `"end"` beside `"start"` or beside an absent flag — is
+ * refused CONFIG_INVALID rather than read either way: half a Swiss stage
+ * ordered by its end and half by its start is no rule anyone wrote, and the
+ * likeliest cause is a caller seam that forgot to set it. A value outside the
+ * two is refused the same way. Rows with no `roundNo` are in no sequence and
+ * are skipped. Called by `slotFixtures`, `roundOrderConflicts` and
+ * `buildSchedule`, so all three refuse the same input.
+ */
+export function roundBarrierBySequence(
+  rows: readonly {
+    roundNo?: number;
+    roundBarrier?: RoundBarrier;
+    divisionId?: string;
+    stageId?: string;
+    poolId?: string;
+  }[],
+): Map<string, RoundBarrier> {
+  const out = new Map<string, RoundBarrier>();
+  for (const row of rows) {
+    if (row.roundNo === undefined) continue;
+    const key = roundSequenceKey(row);
+    const barrier = row.roundBarrier ?? "start";
+    if (barrier !== "start" && barrier !== "end") {
+      throw new EngineError(
+        "CONFIG_INVALID",
+        `round order: roundBarrier must be "start" or "end", got ${JSON.stringify(barrier)}`,
+        { sequence: key, roundBarrier: barrier },
+      );
+    }
+    const seen = out.get(key);
+    if (seen === undefined) out.set(key, barrier);
+    else if (seen !== barrier) {
+      throw new EngineError(
+        "CONFIG_INVALID",
+        `round order: sequence "${key}" mixes roundBarrier "${seen}" and "${barrier}"; a sequence is ordered one way`,
+        { sequence: key, roundBarriers: [seen, barrier] },
+      );
+    }
+  }
+  return out;
 }

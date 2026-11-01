@@ -95,6 +95,8 @@ import {
   effectiveHard,
   entityKeysFor,
   isBlockingConflict,
+  roundBarrierBySequence,
+  roundSequenceKey,
   scopeCoversFixture,
   slotFixtures,
   validateAssignments,
@@ -1164,6 +1166,11 @@ export function buildSchedule(input: BuildInput): Promise<BuildResult> {
   // throw, so the function never throws where its callers `.catch`.
   try {
     assertEnginePorts(input, "buildSchedule");
+    // X-SW-31 (W3 T10b): a round sequence with mixed `roundBarrier` values is
+    // CONFIG_INVALID. Checked here, inside this `try`, because the queue-cap
+    // and size-gate exits below build the greedy board SYNCHRONOUSLY, and
+    // `slotFixtures` would throw the same refusal from there.
+    roundBarrierBySequence(input.fixtures);
   } catch (e) {
     return Promise.reject(e instanceof Error ? e : new TypeError(String(e)));
   }
@@ -1703,6 +1710,10 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
       // went to `fixtures` or `existing` on the wire in the first place, so
       // asking it again here cannot disagree with that split.
       ...(f?.roundNo !== undefined ? { roundNo: f.roundNo } : {}),
+      // X-SW-31 (W3 T10b). Carried through for the same reason as `roundNo`:
+      // this helper's output is what the gate below re-verifies, and a solver
+      // board that lost the flag would be judged by the start floor only.
+      ...(f?.roundBarrier !== undefined ? { roundBarrier: f.roundBarrier } : {}),
       movable: !pinnedFixtureIds.has(fixtureId),
     };
   };
@@ -1995,13 +2006,49 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
   // the first stage's movable rounds as if they were one sequence — the
   // pin-path version of the bug `multiPoolContaminated`/`stageId` already
   // fixed on the movable-movable path.
-  const roundBearingSequenceOf = (f: { divisionId?: string; stageId?: string; poolId?: string }): string =>
-    `${f.divisionId ?? ""}|${f.stageId ?? ""}|${f.poolId ?? ""}`;
+  //
+  // The key is `calendar.ts`'s own `roundSequenceKey`, not a second spelling of
+  // it: the verifier groups by that function, and so does the barrier lookup
+  // just below.
+  const roundBearingSequenceOf = roundSequenceKey;
   const roundBearingSequences = new Set(
     freeFixtures.flatMap((f) => (roundBearingFor(f) !== undefined ? [roundBearingSequenceOf(f)] : [])),
   );
   const singleRoundRobinSequence =
     roundBearingSequences.size === 1 ? [...roundBearingSequences][0] : undefined;
+
+  // X-SW-31 (W3 T10b). The Swiss end barrier rides beside the round it orders,
+  // and ONLY beside a round this request actually forwards: a division whose
+  // rounds were stripped above takes its barrier with them (a barrier with no
+  // round is an order the service cannot place), and a start-floor sequence
+  // sends no key at all, so every round-robin request is byte-identical to the
+  // pre-W3 wire. Read per SEQUENCE (`buildSchedule` already refused a mixed
+  // one), never off the row, so a pin row is judged by the sequence it is
+  // forwarded into. The service model lives outside this repo: until it reads
+  // the field, a board that breaks the barrier is refused by the gate below
+  // (`round_order_end` is a blocking `order` row) and the greedy board, which
+  // honours it, ships instead.
+  const barrierBySequence = roundBarrierBySequence(fixtures);
+  const endBarrierOnWire = (roundNo: number | undefined, sequence: string): { roundBarrier?: "end" } =>
+    roundNo !== undefined && barrierBySequence.get(sequence) === "end" ? { roundBarrier: "end" } : {};
+
+  // C1 (2026-08-12 round-order design). See `singleRoundRobinSequence`'s
+  // own comment above for why a pin's round is only ever forwarded in
+  // the one-round-robin-sequence case: `PinnedRow` has nowhere on the
+  // wire to carry a division (let alone a stage or pool), so this is the
+  // only condition under which the model comparing this pin's round
+  // against every OTHER round-bearing movable fixture is still
+  // guaranteed correct — the pin's OWN (division, stage, pool) must
+  // match the single clean sequence, not merely its division (C1
+  // fix-loop round 2, Item B). A function (W3 T10b) only because the
+  // pin row's barrier reads the same answer.
+  const pinRoundOf = (a: Assignment): number | undefined =>
+    a.roundNo !== undefined &&
+    singleRoundRobinSequence !== undefined &&
+    roundBearingSequenceOf(a) === singleRoundRobinSequence &&
+    !contaminatedDivisions.has(a.divisionId ?? "")
+      ? a.roundNo
+      : undefined;
 
   const placementInput: SolveBuildInput = {
     // The wire index space, not the placement domain (that's `grid.slots`
@@ -2019,6 +2066,7 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
       entrantIds: [f.home, f.away].filter((e): e is string => e !== undefined),
       divisionId: f.divisionId ?? "",
       roundNo: roundBearingFor(f),
+      ...endBarrierOnWire(roundBearingFor(f), roundBearingSequenceOf(f)),
       // C10 (2026-08-16, wire person indices). Same derivation `assignmentOf`
       // (above) and `encodeBuild`'s own `rowOf`/`asAssignment` (z3 path) use
       // for `Assignment.people` — carried through, not dropped, so an
@@ -2063,29 +2111,18 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
     // is `a.entrants` verbatim: exactly what closes #447's "two pinned rows
     // sharing an entrant are invisible to each other" gap, once the C1 model
     // half reads it.
-    existing: [...existing, ...pinnedAssignments].map((a) => ({
-      fixtureId: a.fixtureId,
-      court: a.court,
-      startAtMs: a.startAt,
-      entrantIds: a.entrants,
-      ruleGroupIndices: ruleGroupSet.indicesFor(a),
-      // C1 (2026-08-12 round-order design). See `singleRoundRobinSequence`'s
-      // own comment above for why a pin's round is only ever forwarded in
-      // the one-round-robin-sequence case: `PinnedRow` has nowhere on the
-      // wire to carry a division (let alone a stage or pool), so this is the
-      // only condition under which the model comparing this pin's round
-      // against every OTHER round-bearing movable fixture is still
-      // guaranteed correct — the pin's OWN (division, stage, pool) must
-      // match the single clean sequence, not merely its division (C1
-      // fix-loop round 2, Item B).
-      roundNo:
-        a.roundNo !== undefined &&
-        singleRoundRobinSequence !== undefined &&
-        roundBearingSequenceOf(a) === singleRoundRobinSequence &&
-        !contaminatedDivisions.has(a.divisionId ?? "")
-          ? a.roundNo
-          : undefined,
-    })),
+    existing: [...existing, ...pinnedAssignments].map((a) => {
+      const roundNo = pinRoundOf(a);
+      return {
+        fixtureId: a.fixtureId,
+        court: a.court,
+        startAtMs: a.startAt,
+        entrantIds: a.entrants,
+        ruleGroupIndices: ruleGroupSet.indicesFor(a),
+        roundNo,
+        ...endBarrierOnWire(roundNo, roundBearingSequenceOf(a)),
+      };
+    }),
     // Filtered to pairs where BOTH ends are fixtures placement is actually being
     // asked to place: `fixtureIndexOf` throws `invalid_request` for an id
     // that names an `existing`/pinned row instead (positional identity has no

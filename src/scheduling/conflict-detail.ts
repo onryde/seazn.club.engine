@@ -63,10 +63,20 @@
 // retroactively refusing an assignment on a since-archived court, and
 // surfacing a conflict is not refusing it.
 
+// `round_order_end` (W3 T10b, X-SW-31, controller ruling 2026-10-31) is the
+// 29th. A Swiss sequence (`roundBarrier: "end"`) may not start a round before
+// the previous round's LAST board has ended; the start floor's two kinds above
+// it cannot say that, because a round-2 board starting at 10:00 beside a
+// round-1 board that started at 10:00 is a legal start tie. `otherEndAt` is
+// that last board's end, an instant (epoch ms); the client formats it in the
+// org zone. BLOCKING, like the start floor's kinds (`reason: "order"`,
+// `direct: true`).
+
 /** One member per family template. The design doc's own table enumerates 25;
  *  a 26th (`court_tag_mismatch`), a 27th (`outside_court_hours`) and a 28th
- *  (`stranded_fixture`) have since been added by owner ruling — closed at
- *  exactly these 28, and a 29th needs the same, not a cast. */
+ *  (`stranded_fixture`) have since been added by owner ruling, and a 29th
+ *  (`round_order_end`) by the W3 controller ruling of 2026-10-31 — closed at
+ *  exactly these 29, and a 30th needs the same, not a cast. */
 export type ConflictDetailKind =
   | "person_double_booking"
   | "locked_slot_clash"
@@ -94,6 +104,7 @@ export type ConflictDetailKind =
   | "order_inside_feeder_rest"
   | "round_order_day"
   | "round_order_same_day"
+  | "round_order_end"
   | "no_slot_lattice"
   | "no_slot_budget";
 
@@ -122,6 +133,8 @@ export interface ConflictDetail {
   ruleType?: string;
   roundNo?: number;
   otherRoundNo?: number;
+  /** `round_order_end` only: when the earlier round's last board ends, epoch ms. */
+  otherEndAt?: number;
   minutes?: number;
   requiredMinutes?: number;
   count?: number;
@@ -153,6 +166,7 @@ const FIELD_ORDER_WITNESS: Record<Exclude<keyof ConflictDetail, "kind">, true> =
   ruleType: true,
   roundNo: true,
   otherRoundNo: true,
+  otherEndAt: true,
   minutes: true,
   requiredMinutes: true,
   count: true,
