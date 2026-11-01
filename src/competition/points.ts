@@ -774,3 +774,10 @@ export function pointsRuleBounds(rule: PointsRule, reachable: ReadonlySet<Outcom
     winsOnly,
   };
 }
+
+/** W3 (X-SW-7, X-SW-8; rulebook-W3-swiss.md §4 "Non-chess scaling") — a draw's points under a Swiss stage's rule: the
+ *  unit of the dummy cap "draw points × rounds" (FIDE C.07 (2026) 16.4.2) and of a 16.2.5 round read as a draw (16.3.2).
+ *  The rule's `draw`, else half its win: the Standard-Points midpoint (C.07 7.7) for a sport with no draw. */
+export function swissDrawPoints(rule: PointsRule): number {
+  return rule.draw ?? rule.win.regulation / 2;
+}

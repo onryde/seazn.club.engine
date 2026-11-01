@@ -25,7 +25,7 @@ import { payout, setsToWinOf } from "./points.ts";
 import { completeTableStage, type TableFixture } from "./stage.ts";
 import type { FixtureResult, StandingsRow } from "./standings.ts";
 import { resolveTableRules, type TableRulesPin } from "./table-rules.ts";
-import { buildSwissTable, lotSeed, rankStandings } from "./tiebreakers.ts";
+import { buildSwissLedger, lotSeed, rankStandings } from "./tiebreakers.ts";
 
 const moduleOf = (key: string): AnySportModule => {
   const m = builtinModules.find((x) => x.key === key);
@@ -99,6 +99,8 @@ interface Scene {
   readonly pinned?: TableRulesPin;
   /** The stage's circular-H2H mode for ≥3-way ties (Jul3/05 §5): default the mini-table. */
   readonly h2hScope?: "mini_table" | "overall";
+  /** A Swiss scene's round of each decided match, in `decided` order (W3: a counted Swiss fixture names its round). */
+  readonly roundNos?: readonly number[];
 }
 
 /** The stage's own path: every match paid through the sport's rule, ranked by the resolved order (or `order`), with the
@@ -111,7 +113,10 @@ function rank(s: Scene): readonly StandingsRow[] {
   });
   const entrants = [...new Set([...s.decided.flatMap((m) => [m.home, m.away]), ...s.pending.flat()])].sort();
   const fixtures: TableFixture[] = [
-    ...s.decided.map((m, i): TableFixture => ({ id: `d${i}`, status: "decided", result: paid(s.module, cfg, m, resolved) })),
+    ...s.decided.map((m, i): TableFixture => {
+      const roundNo = s.roundNos?.[i];
+      return { id: `d${i}`, status: "decided", result: paid(s.module, cfg, m, resolved), ...(roundNo === undefined ? {} : { roundNo }) };
+    }),
     ...s.pending.map((_, i): TableFixture => ({ id: `p${i}`, status: "scheduled" })),
   ];
   const all = [...s.decided.map((m) => [m.home, m.away] as const), ...s.pending];
@@ -460,6 +465,8 @@ const SWISS_ROUND: Scene = {
     sets("z", "y", 2, 0, 42, 20), sets("d", "z", 2, 0, 42, 20), sets("y", "e", 2, 0, 42, 20),
     sets("x", "f", 2, 0, 42, 20), sets("g", "x", 2, 0, 42, 20),
   ],
+  // Round 1: z beat y, x beat f. Round 2: d beat z, y beat e, g beat x. Round 3 pairs y and x.
+  roundNos: [1, 2, 2, 1, 2],
   pending: [["y", "x"]],
 };
 const xyz = (rows: readonly StandingsRow[]): EntrantId[] => ids(rows).filter((id) => id === "x" || id === "y" || id === "z");
@@ -536,7 +543,7 @@ describe("W2d T12 — the guards (assumptions are guards)", () => {
     const run = (swiss: boolean, scheduledPairs: readonly (readonly [EntrantId, EntrantId])[]) => () =>
       rankStandings(rows, {
         cascade: ["points", "h2h_points", "lots"], results: [], scheduledPairs,
-        ...(swiss ? { swiss: buildSwissTable(["A", "B"], [], []) } : {}),
+        ...(swiss ? { swiss: buildSwissLedger(["A", "B"], [], { rounds: undefined, drawPoints: 0 }), pointsUnit: "whole" as const } : {}),
       });
     expect(run(true, [["A", "B"]])).toThrow(expect.objectContaining({ code: "CONFIG_INVALID" }));
     expect(run(true, [["A", "B"]])).toThrow(/Swiss/);

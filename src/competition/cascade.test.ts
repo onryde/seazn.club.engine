@@ -7,7 +7,7 @@ import type { TiebreakerKey } from "../sport/module.ts";
 import { football } from "../sports/football/index.ts";
 import { validateCascade, type CascadeContext } from "./cascade-rules.ts";
 import { foldResults, type FixtureResult, type StandingsRow } from "./standings.ts";
-import { buildSwissTable, rankStandings } from "./tiebreakers.ts";
+import { buildSwissLedger, rankStandings } from "./tiebreakers.ts";
 
 // The two football presets under test (spec 04 §1.6): H2H-first vs GD-first.
 const FIFA2026: TiebreakerKey[] = ["points", "h2h_points", "h2h_diff", "h2h_for", "diff", "for", "fair_play", "lots"];
@@ -218,8 +218,9 @@ describe("buchholz / direct comparators from the Swiss ledger", () => {
       bg("B", "Y", "home"), // B 2, Y 0
     ];
     const rows = foldResults(entrants, results);
-    const swiss = buildSwissTable(entrants, results);
-    const order = rankStandings(rows, { cascade: ["points", "buchholz", "direct", "wins", "lots"], results, swiss, rngSeed: 1 }).rows.map((r) => r.entrantId);
+    // Rounds 1-3 in the order listed; every game played, so no unplayed round reads the stage's rounds or draw points.
+    const swiss = buildSwissLedger(entrants, results.map((result, i) => ({ round: i + 1, result })), { rounds: 3, drawPoints: 1 });
+    const order = rankStandings(rows, { cascade: ["points", "buchholz", "direct", "wins", "lots"], results, swiss, pointsUnit: "half", rngSeed: 1 }).rows.map((r) => r.entrantId);
     expect(order).toEqual(["A", "X", "B", "Y"]);
   });
 });

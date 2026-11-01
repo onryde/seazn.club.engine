@@ -29,7 +29,8 @@ const BYE: MatchOutcome = MatchOutcome.parse({ kind: "award", winner: WINNER, lo
 /** FIDE C.04.1: a pairing-allocated bye scores a win, 1 point; in boardgame's half-points (chess.md §2) that is 2. */
 const FIDE_BYE_HALF_POINTS = 2;
 /** The values a stored cfg can hold: the old default (2, FIDE's full-point bye), the half-point bye an organiser could
- *  set (1), and 0. The two below the win are the differential: a reader that still honoured the key would pay them. */
+ *  set (1), and 0. The parse strips the key before any reader sees it, so the two below the win bite only on a schema
+ *  that lets it through: a strict one rejects them, and a loose one with a reader that honoured the key would pay them. */
 const STORED_BYE_SCORES = [2, 1, 0] as const;
 
 /** The paid bye, step for step as awardByeDelta builds it, with the winner in `seat`. */

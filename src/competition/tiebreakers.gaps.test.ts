@@ -16,7 +16,7 @@ import {
   DIFF_KEYS,
   FOR_KEYS,
   buchholz,
-  buildSwissTable,
+  buildSwissLedger,
   directEncounter,
   metricKeyOf,
   metricOf,
@@ -48,7 +48,7 @@ function delta(entrantId: string, points: number, won = 0): StandingsDelta {
 
 describe("Swiss ledger error paths", () => {
   const table: SwissTable = [
-    { entrant: "A", score: 2, games: [{ opponent: "ghost", result: "win", scored: 2 }] },
+    { entrant: "A", score: 2, games: [{ round: 1, opponent: "ghost", result: "win", scored: 2 }] },
   ];
 
   it("rejects a tiebreak query for an entrant outside the table", () => {
@@ -61,7 +61,7 @@ describe("Swiss ledger error paths", () => {
 
   it("rejects building a ledger from results outside the entrant set", () => {
     const results: FixtureResult[] = [[delta("A", 2, 1), delta("Z", 0)]];
-    expect(() => buildSwissTable(["A"], results)).toThrow(/outside the entrant set/);
+    expect(() => buildSwissLedger(["A"], results.map((result) => ({ round: 1, result })), { rounds: 1, drawPoints: 1 })).toThrow(/outside the entrant set/);
   });
 
   // The AWARDS loop's own guard, not the results loop's above. Both throw the
@@ -75,7 +75,7 @@ describe("Swiss ledger error paths", () => {
   // the caller assembled a bye against a foreign roster — the Buchholz /
   // Sonneborn-Berger virtual opponent would otherwise be computed from it.
   it("rejects building a ledger from an AWARD outside the entrant set", () => {
-    expect(() => buildSwissTable(["A"], [], [delta("Z", 1, 1)])).toThrow(
+    expect(() => buildSwissLedger(["A"], [{ round: 1, award: delta("Z", 1, 1) }], { rounds: 1, drawPoints: 1 })).toThrow(
       /"Z" outside the entrant set/,
     );
   });
@@ -83,9 +83,10 @@ describe("Swiss ledger error paths", () => {
   // The positive pair: the guard refuses a FOREIGN award, not every award.
   // Without this, `throw` on every award would pass the case above.
   it("accepts an award for an entrant inside the set, as an unplayed card", () => {
-    const table = buildSwissTable(["A"], [], [delta("A", 1, 1)]);
+    // A one-round stage with a draw of 1: the bye's 16.4.2 cap is 1 × 1 = 1 (C.07 2026 art. 16).
+    const table = buildSwissLedger(["A"], [{ round: 1, award: delta("A", 1, 1) }], { rounds: 1, drawPoints: 1 });
     expect(table).toEqual([
-      { entrant: "A", score: 1, games: [{ opponent: null, result: "win", scored: 1, unplayed: true }] },
+      { entrant: "A", score: 1, games: [{ round: 1, opponent: null, result: "win", scored: 1, unplayed: "bye", cap: 1 }] },
     ]);
   });
 });
@@ -96,19 +97,19 @@ describe("directEncounter branches", () => {
       entrant: "A",
       score: 2,
       games: [
-        { opponent: "B", result: "win", scored: 2 },
-        { opponent: "C", result: "loss", scored: 0 },
+        { round: 1, opponent: "B", result: "win", scored: 2 },
+        { round: 2, opponent: "C", result: "loss", scored: 0 },
       ],
     },
     {
       entrant: "B",
       score: 0,
-      games: [{ opponent: "A", result: "loss", scored: 0 }],
+      games: [{ round: 1, opponent: "A", result: "loss", scored: 0 }],
     },
     {
       entrant: "C",
       score: 2,
-      games: [{ opponent: "A", result: "win", scored: 2 }],
+      games: [{ round: 2, opponent: "A", result: "win", scored: 2 }],
     },
     { entrant: "D", score: 0, games: [] },
   ];
@@ -148,6 +149,7 @@ describe("`direct` refinement outside a Swiss stage", () => {
     const ranked = rankStandings([row("b", 3), row("a", 3)], {
       cascade: ["points", "direct"],
       swiss: [],
+      pointsUnit: "whole",
     });
     // Nobody separable by direct — the seed→id fallback keeps a total order.
     expect(ranked.rows.map((entry) => entry.entrantId)).toEqual(["a", "b"]);
