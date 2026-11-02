@@ -190,9 +190,14 @@
     },
     "draws-4": {
       "mutants": 407,
-      "wallSeconds": 5740,
-      "dryRunSeconds": 87,
-      "phaseSeconds": 5620
+      "wallSeconds": 9467,
+      "dryRunSeconds": 168,
+      "phaseSeconds": 9273,
+      "run": {
+        "id": 41382686419,
+        "job": 125076735711,
+        "sha": "372911098"
+      }
     },
     "sports-cricket-1": {
       "mutants": 368,
@@ -220,9 +225,14 @@
     },
     "sports-cricket-5": {
       "mutants": 367,
-      "wallSeconds": 3825,
-      "dryRunSeconds": 114,
-      "phaseSeconds": 3683
+      "wallSeconds": 4511,
+      "dryRunSeconds": 131,
+      "phaseSeconds": 4360,
+      "run": {
+        "id": 41382692422,
+        "job": 125076751833,
+        "sha": "372911098"
+      }
     },
     "sports-cricket-6": {
       "mutants": 350,
@@ -278,9 +288,14 @@
     },
     "sports-cricket-13": {
       "mutants": 349,
-      "wallSeconds": 5119,
-      "dryRunSeconds": 120,
-      "phaseSeconds": 4970
+      "wallSeconds": 8587,
+      "dryRunSeconds": 226,
+      "phaseSeconds": 8334,
+      "run": {
+        "id": 41382697720,
+        "job": 125076798628,
+        "sha": "372911098"
+      }
     },
     "sports-cricket-14": {
       "mutants": 406,
@@ -414,10 +429,15 @@
       }
     },
     "sports-setbased-2": {
-      "mutants": 398,
-      "wallSeconds": 6777,
-      "dryRunSeconds": 165,
-      "phaseSeconds": 6580
+      "mutants": 419,
+      "wallSeconds": 9109,
+      "dryRunSeconds": 237,
+      "phaseSeconds": 8845,
+      "run": {
+        "id": 41382708864,
+        "job": 125076804380,
+        "sha": "372911098"
+      }
     },
     "sports-setbased-3": {
       "mutants": 394,
@@ -443,25 +463,25 @@
       }
     },
     "sports-setbased-6": {
-      "mutants": 456,
-      "wallSeconds": 2430,
-      "dryRunSeconds": 168,
-      "phaseSeconds": 2236,
+      "mutants": 549,
+      "wallSeconds": 3679,
+      "dryRunSeconds": 238,
+      "phaseSeconds": 3418,
       "run": {
-        "id": 40613525109,
-        "job": 122570606038,
-        "sha": "651d2a735"
+        "id": 41382714574,
+        "job": 125076826493,
+        "sha": "372911098"
       }
     },
     "sports-nested-1": {
       "mutants": 281,
-      "wallSeconds": 2949,
-      "dryRunSeconds": 121,
-      "phaseSeconds": 2803,
+      "wallSeconds": 6104,
+      "dryRunSeconds": 243,
+      "phaseSeconds": 5834,
       "run": {
-        "id": 41153914062,
-        "job": 124396462379,
-        "sha": "db07ec539"
+        "id": 41382703170,
+        "job": 125076796534,
+        "sha": "372911098"
       }
     },
     "sports-nested-2": {
