@@ -53,23 +53,41 @@ export interface SolveBuildInput {
      * `roundBarrier`). The division's minimum rest, carried by the round
      * because an unpaired slot has no people for person rest to reach. Sent
      * only beside `roundBarrier: "end"` and only when above 0; absent = no gap.
-     * Constant across a sequence (`build.ts` refuses a mixed one first).
+     * Constant across a sequence (`build.ts` refuses a mixed one first). A gap
+     * on a sequence under any other barrier is IGNORED by the engine — never
+     * sent, never placed by, never verified — and the service ignores it too
+     * (controller ruling, T10c fix round 1).
      */
     roundGapMinutes?: number;
     /**
-     * W3 T10c (owner ruling 256; proto `Fixture.rounds_per_day_cap`) — an
-     * `"end"` sequence's cap on ROUNDS per calendar day: the distinct rounds
-     * with at least one fixture on one `dayIndex`, pins counted, are at most
-     * this (the division's per-player daily match cap — in a Swiss each player
-     * plays once per round). Paired fixtures and unpaired slots alike. Sent
-     * only beside `roundBarrier: "end"`, only when above 0, and only when the
-     * build has a zone: without one every slot's `dayIndex` is 0 and the cap
-     * would bind the whole schedule. Absent = no cap. Constant across a
-     * sequence.
+     * W3 T10c (owner ruling 256; proto `Fixture.rounds_per_day_cap`) — a
+     * round sequence's cap on ROUNDS per calendar day (the division's
+     * per-player daily match cap — in a Swiss each player plays once per
+     * round). Paired fixtures and unpaired slots alike.
+     *
+     * THE RULE (fix round 1, I1 — the service's, which the engine's placer and
+     * verifier now share): the cap counts the rounds MOVABLE fixtures ADD to a
+     * day. On one `dayIndex`, with `R_pin` the distinct rounds of the pins on
+     * it (`existing` rows with a forwarded round, counted on their
+     * `existing[].dayIndex`) and `R_mov` those of the movable fixtures placed
+     * on it: `|R_mov \ R_pin| <= max(0, cap - |R_pin|)`. So a movable fixture
+     * whose round a pin already put on that day is always admitted, however
+     * many rounds the pins put there; a day over the cap by pins alone is NOT
+     * infeasible, it just takes no new round. Pins are never constrained.
+     *
+     * Under ANY barrier (controller ruling, T10c fix round 1): `"end"`,
+     * `"start"` or absent alike. Sent beside a forwarded `roundNo`, only when
+     * above 0, and only when the build has a zone: without one every slot's
+     * `dayIndex` is 0 and the cap would bind the whole schedule. Absent = no
+     * cap. Constant across a sequence.
      *
      * Pin rows carry neither limit: a pin's round is forwarded only when the
      * request holds exactly one round sequence, so a pin binds by that
-     * sequence's limits, read off its fixtures.
+     * sequence's limits, read off its fixtures. (A request holding TWO Swiss
+     * sequences therefore forwards no pin round at all, so the service caps
+     * and gaps such a joint build without its played rounds; the build gate
+     * judges the reply against them and ships greedy when it breaks one — an
+     * accepted limit, fix round 1, m3.)
      */
     roundsPerDayCap?: number;
     /**
@@ -82,7 +100,10 @@ export interface SolveBuildInput {
      * fixture with neither entrants nor people. `build.ts` sets it ONLY beside
      * a round it forwards: a slot whose round was stripped goes out unflagged
      * (and is refused, so greedy ships), never flagged without a round, which
-     * the service would refuse for the whole request.
+     * the service would refuse for the whole request. That greedy fallback is
+     * deliberate, not a defect to "fix" by flagging stripped slots (fix round
+     * 1, m4). A HALF-seated fixture (one entrant known, no people) is not
+     * unpaired: flagging it would drop its entrant's person constraints.
      */
     unpairedRoundSlot?: boolean;
     /**
@@ -179,6 +200,24 @@ export interface SolveBuildInput {
      *  is forwarded into; set only beside a forwarded `roundNo`. Same contract
      *  as {@link SolveBuildInput.fixtures}' `roundBarrier`. */
     roundBarrier?: "start" | "end";
+    /**
+     * W3 T10c fix round 1 (I2; proto `PinnedRow.day_index`, field 7,
+     * `optional int32`, placement 9bd5335) — the CALENDAR day this pin counts
+     * on for `fixtures[].roundsPerDayCap`, in the SAME index space as
+     * `grid.slots[].dayIndex`: the index of the slots that share the pin
+     * start's org-zone calendar day. A pin earlier than the lattice's first
+     * slot on that same day (a round played this morning, handed over to a
+     * rebuild whose lattice starts now) gets that slot's index, so it fills
+     * today's cap. Absent when no slot falls on the pin's day (no movable
+     * fixture can land there, so the pin can crowd none; the service then
+     * counts it on the day whose slot range holds its start, which is none,
+     * the same answer). Never negative: the service refuses a negative value
+     * by name, and an index read off the slots' own days cannot be one. And
+     * absent unless this row carries a forwarded round (any barrier) whose
+     * sequence sends a cap, so every other request is byte-identical to
+     * T10b's.
+     */
+    dayIndex?: number;
   }[];
   dependencies: { beforeFixtureId: string; afterFixtureId: string }[];
   /**
