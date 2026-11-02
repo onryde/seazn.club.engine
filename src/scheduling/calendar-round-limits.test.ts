@@ -27,6 +27,8 @@ import {
   deltaConflicts,
   isBlockingConflict,
   roundOrderConflicts,
+  roundRulesBySequence,
+  roundSequenceRows,
   slotFixtures,
   validateAssignments,
   type Assignment,
@@ -428,26 +430,40 @@ describe("X-SW-31 rulings 255-256: unpaired round slots, the round gap and round
       ["m3", "no_slot", { kind: "no_slot_rounds_per_day", roundNo: 3, requiredCount: 2 }],
     ]);
 
-    // The admission is a PIN's alone (`movable === false`). The same four rounds as `existing` rows that are NOT pins
-    // (no `movable: false`: boards, not played rounds) put day 1 over the cap with movable boards, every one of which
-    // the verifier blames — so a round-3 board joining them would be blamed too, and the placer does not admit it.
-    // It fits at +90 (C1 is free +90..+120) but for the cap; +840 overruns round 4's +300: refused, naming the cap.
-    const unpinned = [
-      row("e1", 1, "C1", 0, 30, { ...END, ...cap(2) }),
-      row("e2", 2, "C1", 60, 90, { ...END, ...cap(2) }),
-      row("e3", 3, "C1", 120, 150, { ...END, ...cap(2) }),
-      row("e4", 4, "C1", 300, 330, { ...END, ...cap(2) }),
-    ];
-    const besideBoards = slotFixtures({ fixtures: [m3], config, existing: unpinned });
-    expect(slots(besideBoards.assignments)).toEqual({});
-    expect(besideBoards.conflicts.map((c) => [c.fixtureId, c.reason, c.details])).toEqual([
-      ["m3", "no_slot", { kind: "no_slot_rounds_per_day", roundNo: 3, requiredCount: 2 }],
-    ]);
-    expect(
-      orderRows([...unpinned, row("m3", 3, "C2", 90, 120, { ...END, ...cap(2) })], config)
-        .map((c) => [c.fixtureId, c.measuredCount])
-        .sort(),
-    ).toEqual([["e1", 4], ["e2", 4], ["e3", 4], ["e4", 4], ["m3", 4]]);
+    // I3 (re-review 1, reviewer probe P6; controller ruling: fixed in the engine). The same four rounds handed over as
+    // PLAYED rows in `existing` WITHOUT `movable: false` — the app's shape today (`movable: !schedule_locked`), or no
+    // flag at all — are pins all the same: a played round never moves, and the solver request sends every `existing`
+    // row as a PinnedRow, which the service treats as a pin. So the placer admits m3 beside e3's round at +90 (C1 is
+    // free +90..+120), exactly as beside p3 above, and the build's gate passes the service's legal board (C2@+90)
+    // instead of refusing it and shipping greedy with m3 unplaced (P6 before the fix: `verifier_rejected`, greedy,
+    // no m3). That reply ties the seed on every rung (the played rows are not on the ladder), so `already_optimal`
+    // ships the greedy board — a status the gate reaches only after accepting the reply — with no error logged.
+    for (const flag of [{}, { movable: true }] as const) {
+      const label = JSON.stringify(flag);
+      const played = [
+        row("e1", 1, "C1", 0, 30, { ...END, ...cap(2), ...flag }),
+        row("e2", 2, "C1", 60, 90, { ...END, ...cap(2), ...flag }),
+        row("e3", 3, "C1", 120, 150, { ...END, ...cap(2), ...flag }),
+        row("e4", 4, "C1", 300, 330, { ...END, ...cap(2), ...flag }),
+      ];
+      const besidePlayed = slotFixtures({ fixtures: [m3], config, existing: played });
+      expect(slots(besidePlayed.assignments), label).toEqual({ m3: "C1@+90" });
+      expect(besidePlayed.conflicts, label).toEqual([]);
+      const p6Log = recordingLogger();
+      const p6 = await buildSchedule({
+        fixtures: [m3],
+        config,
+        existing: played,
+        solve: resolvingSolver(proved([{ fixtureId: "m3", court: "C2", startAtMs: T0 + 90 * MIN }])),
+        log: p6Log.log,
+      });
+      expect(p6Log.lines.filter((l) => l.level === "error"), label).toEqual([]);
+      expect([p6.status, p6.engine, slots(p6.assignments)], label).toEqual(["already_optimal", "greedy", { m3: "C1@+90" }]);
+      // Read as the placer and the gate read them (`roundSequenceRows`), they are pins: the widened board is clean.
+      const asPins = roundSequenceRows(roundRulesBySequence([m3]), played);
+      expect(asPins.map((a) => a.movable), label).toEqual([false, false, false, false]);
+      expect(orderRows([...asPins, row("m3", 3, "C2", 90, 120, { ...END, ...cap(2) })], config), label).toEqual([]);
+    }
   });
 
   it("X-SW-31 ruling 256 fix round 1: the cap's day is the START's calendar day, and the push to the next day always advances (DST at midnight)", () => {
@@ -505,8 +521,8 @@ describe("X-SW-31 rulings 255-256: unpaired round slots, the round gap and round
     expect(gapLog.lines.filter((l) => l.level === "error").map((l) => l.fields)).toEqual([{ rejected: ["r2-a:order"] }]);
 
     // (b) The cap: rounds 1 and 2 played on day 1, the seated round 3 with cap 2. The reply C3@+60 puts a third round
-    //     on day 1. Widened, every board on that day is blamed: the reply's r3-a, then the four played rows. Greedy
-    //     opens day 2: ready +60, day 1 full → +1440, C1 first.
+    //     on day 1. Widened, the played rows are pins (`roundSequenceRows`, I3), never blamed: the reply's r3-a alone.
+    //     Greedy opens day 2: ready +60, day 1 full → +1440, C1 first.
     const played12 = [
       row("r1-a", 1, "C1", 0, 30, { ...END, ...cap(2) }),
       row("r1-b", 1, "C2", 0, 30, { ...END, ...cap(2) }),
@@ -523,9 +539,7 @@ describe("X-SW-31 rulings 255-256: unpaired round slots, the round gap and round
     });
     expect([capBuilt.status, capBuilt.engine]).toEqual(["verifier_rejected", "greedy"]);
     expect(slots(capBuilt.assignments)).toEqual({ "r3-a": "C1@+1440" });
-    expect(capLog.lines.filter((l) => l.level === "error").map((l) => l.fields)).toEqual([
-      { rejected: ["r3-a:order", "r1-a:order", "r1-b:order", "r2-a:order", "r2-b:order"] },
-    ]);
+    expect(capLog.lines.filter((l) => l.level === "error").map((l) => l.fields)).toEqual([{ rejected: ["r3-a:order"] }]);
 
     // (c) The same as (a) with the played rows written by an older build: no limits and no barrier of their own. A
     //     sibling joins its sequence by KEY and is judged by the sequence's rules, read off this build's fixtures —

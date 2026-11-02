@@ -2585,6 +2585,17 @@ export function roundSequenceKey(row: { divisionId?: string; stageId?: string; p
  * no cap returns no row, exactly as before T10c. Rows with no round are in no
  * sequence. ONE filter for both readers that need it: the placer
  * (`slotFixtures`) and `build.ts`'s verifier gate.
+ *
+ * Every row comes back a PIN (`movable: false`), whatever its own flag (T10c
+ * re-review 1, I3; controller ruling). These are played or otherwise fixed
+ * boards that no build and no apply-gate edit moves, and the solver request
+ * sends every `existing` row as a PinnedRow, which the service treats as a
+ * pin. Keeping a row's own `movable: true` (the app's `!schedule_locked`)
+ * made the placer and the gate count a played round as a movable board — on
+ * a day over the cap through played rounds, the engine refused the service's
+ * legal board (reviewer probe P6). As pins, an existing-existing pair is also
+ * pin-pin exempt from the end barrier, as such pairs already cancel in every
+ * delta gate.
  */
 export function roundSequenceRows(
   rulesBySequence: ReadonlyMap<string, RoundSequenceRules>,
@@ -2595,7 +2606,7 @@ export function roundSequenceRows(
     const rules = rulesBySequence.get(roundSequenceKey(a));
     if (rules === undefined || (rules.barrier !== "end" && rules.roundsPerDayCap === 0)) return [];
     const { roundGapMinutes: _ownGap, roundsPerDayCap: _ownCap, ...row } = a;
-    return [{ ...row, roundBarrier: rules.barrier, ...roundLimitFields(rules) }];
+    return [{ ...row, roundBarrier: rules.barrier, ...roundLimitFields(rules), movable: false }];
   });
 }
 
