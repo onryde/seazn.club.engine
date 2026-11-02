@@ -7,7 +7,7 @@ import { RULE_ID, type RuleRow } from "../src/testkit/rules-reference.ts";
 
 const W2B_DATE = "2026-10-08";
 export const signed = (ruling: number, date = W2B_DATE) => `signed ${ruling} ${date}`;
-const deviation = (ruling: number) => `deviation ${ruling} ${W2B_DATE}`;
+const deviation = (ruling: number, date = W2B_DATE) => `deviation ${ruling} ${date}`;
 /** Orchestrator pre-flight rulings are no owner signature (AGENTS.md class 17): their rows stay open until the owner signs. */
 export const OPEN = "⬜ open";
 /** The rows W2b adds, by rules file, each with the status it must carry. Typed from spec
@@ -38,7 +38,10 @@ export const OPEN = "⬜ open";
  *  - CK-WO-2 carries owner ruling 125 (2026-10-13), which signed PF-6's row as built (its text unchanged);
  *  - X-PS-1 carries owner ruling 127 (2026-10-13), which amends it after 115: a withdrawal counts as a match in players'
  *    stats if and only if play was recorded before it, still with no personal W/L. Appendix A carries the same text, so
- *    it is not in AMENDED_TEXT. */
+ *    it is not in AMENDED_TEXT;
+ *  - BG-WO-1 carries owner ruling 254 (W3, 2026-11-01) as a recorded deviation: a chess forfeit after play began (a
+ *    retirement) takes no colour, where FIDE C.07 counts that game in colour history. Its text is Appendix A's, so it is
+ *    not in AMENDED_TEXT; the ruling-86 signing moved to its citation. */
 export const W2B_ROWS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   "cross-sport.md": {
     "X-RS-1": signed(118, "2026-10-12"), "X-RS-2": signed(83), "X-RS-3": signed(83),
@@ -57,7 +60,7 @@ export const W2B_ROWS: Readonly<Record<string, Readonly<Record<string, string>>>
   "tennis.md": { "TN-WO-1": signed(86), "TN-RT-1": signed(87) },
   "badminton.md": { "BD-WO-1": signed(86), "BD-WO-2": deviation(86), "BD-RT-1": deviation(87) },
   "cricket.md": { "CK-WO-1": signed(86), "CK-AB-1": signed(88), "CK-AB-2": signed(88), "CK-WO-2": signed(125, "2026-10-13") },
-  "boardgame.md": { "BG-WO-1": signed(86), "BG-DW-1": signed(84), "BG-WO-2": signed(90), "BG-WO-3": signed(99, "2026-10-09") },
+  "boardgame.md": { "BG-WO-1": deviation(254, "2026-11-01"), "BG-DW-1": signed(84), "BG-WO-2": signed(90), "BG-WO-3": signed(99, "2026-10-09") },
   "carrom.md": { "CA-WO-1": signed(86), "CA-RT-1": signed(87), "CA-AB-1": signed(88) },
   "generic.md": { "GN-WO-1": signed(86), "GN-RT-1": signed(124, "2026-10-13"), "GN-AB-1": signed(88) },
 };
