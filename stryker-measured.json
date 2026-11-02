@@ -88,13 +88,13 @@
     },
     "core-2": {
       "mutants": 888,
-      "wallSeconds": 9202,
-      "dryRunSeconds": 252,
-      "phaseSeconds": 8925,
+      "wallSeconds": 11270,
+      "dryRunSeconds": 333,
+      "phaseSeconds": 10910,
       "run": {
-        "id": 41361562348,
-        "job": 125012863285,
-        "sha": "081f7de3c"
+        "id": 41153932848,
+        "job": 124396562181,
+        "sha": "49fd3dbd7"
       }
     },
     "core-3": {
