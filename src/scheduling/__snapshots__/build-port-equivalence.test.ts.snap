@@ -17,6 +17,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
         "existing": [
           {
             "court": "C1",
+            "dayIndex": 0,
             "entrantIds": [
               "E1",
               "E2",
@@ -27,6 +28,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
           },
           {
             "court": "C2",
+            "dayIndex": 0,
             "entrantIds": [
               "E3",
               "E4",
@@ -915,6 +917,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
         "existing": [
           {
             "court": "C1",
+            "dayIndex": 0,
             "entrantIds": [
               "E9",
               "E10",
@@ -1347,6 +1350,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
         "existing": [
           {
             "court": "C1",
+            "dayIndex": 0,
             "entrantIds": [
               "E1",
               "E2",

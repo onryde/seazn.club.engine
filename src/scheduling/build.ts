@@ -2093,9 +2093,11 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
   // here, beside a round `roundBearingFor` actually forwards with its "end"
   // barrier: a stripped round takes the flag with it, because the service
   // refuses a flagged slot with no round — the whole request, so greedy ships.
-  // Pin rows keep T10b's shape (round and barrier): a pin's round is forwarded
-  // only when the request holds exactly one round sequence, so its limits are
-  // that sequence's. Every round-robin request is byte-identical to T10b's.
+  // Pin rows carry no limits (round and barrier, as in T10b, plus their
+  // calendar day, `pinDayOnWire` below): a pin's round is forwarded only when
+  // the request holds exactly one round sequence, so its limits are that
+  // sequence's. A round-robin request with no pin rows is byte-identical to
+  // T10b's; one with pins differs only by each pin's `dayIndex`.
   // A joint build of TWO Swiss sequences therefore forwards no played round,
   // and the service gaps and caps it without them; the gate below judges the
   // reply against `existing` and ships greedy when it breaks a limit. An
@@ -2120,17 +2122,17 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
       ...(end && unpaired ? { unpairedRoundSlot: true as const } : {}),
     };
   };
-  // Fix round 1 (I2). A pin counts against the cap on its CALENDAR day, as
-  // the placer and verifier count it. The service sees only the lattice, so a
-  // pin row of a capped round names its day in the slots' own index space: a
-  // round played this morning, before a rebuild's lattice starts at now,
-  // still fills today's cap. Only beside a forwarded round whose sequence
-  // sends a cap (so with a zone; any barrier, like the cap), and absent when
-  // no slot falls on that day — no movable fixture can land there for it to
-  // crowd.
-  const pinDayOnWire = (roundNo: number | undefined, sequence: string, startAt: number): { dayIndex?: number } => {
-    const rules = rulesBySequence.get(sequence);
-    if (roundNo === undefined || rules === undefined || rules.roundsPerDayCap <= 0 || tz === undefined) return {};
+  // Fix round 1 (I2). A pin counts on its CALENDAR day, as the placer and
+  // verifier count it. The service sees only the lattice, so EVERY pin row
+  // names its day in the slots' own index space (controller ruling after fix
+  // round 1: not only a capped round's — the service also counts a person's
+  // `max_fixtures_per_day` on `day_index`, so a same-day rebuild's morning
+  // matches must be on today for that cap too). A round played this morning,
+  // before a rebuild's lattice starts at now, still fills today. Absent with
+  // no zone (no calendar day) and when no slot falls on the pin's day — an
+  // earlier day, or one the grid skips: no movable fixture can land there for
+  // it to crowd, and absent is never read as 0.
+  const pinDayOnWire = (startAt: number): { dayIndex?: number } => {
     const dayIndex = dayIndexIfSlotted(startAt);
     return dayIndex === undefined ? {} : { dayIndex };
   };
@@ -2228,7 +2230,7 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
         ruleGroupIndices: ruleGroupSet.indicesFor(a),
         roundNo,
         ...endBarrierOnWire(roundNo, roundBearingSequenceOf(a)),
-        ...pinDayOnWire(roundNo, roundBearingSequenceOf(a), a.startAt),
+        ...pinDayOnWire(a.startAt),
       };
     }),
     // Filtered to pairs where BOTH ends are fixtures placement is actually being

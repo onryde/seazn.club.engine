@@ -892,18 +892,54 @@ describe("X-SW-31 rulings 255-256: unpaired round slots, the round gap and round
     expect([late.status, late.engine, slots(late.assignments)]).toEqual(["verifier_rejected", "greedy", { "r4-a": "C1@+840" }]);
     expect(lateLog.lines.filter((l) => l.level === "error").map((l) => l.fields)).toEqual([{ rejected: ["r4-a:order"] }]);
 
-    // The day rides only where the cap does: with no cap, or no zone, every pin row keeps T10b's shape.
-    for (const [label, input] of [
-      ["no cap", { fixtures: withoutLimits(fixtures), config, existing }],
-      ["no zone", { fixtures, config: { ...config, tz: undefined }, existing }],
-    ] as const) {
-      const bare = await wireOf(input);
-      expect(bare.existing.map(wireRoundFields), label).toEqual([
-        { fixtureId: "r1-a", roundNo: 1, roundBarrier: "end" },
-        { fixtureId: "r2-a", roundNo: 2, roundBarrier: "end" },
-        { fixtureId: "r3-a", roundNo: 3, roundBarrier: "end" },
-      ]);
-    }
+    // The day does not ride with the cap (controller ruling after fix round 1: the service counts a person's
+    // max_fixtures_per_day on it too): with no cap the morning's pins still name today. Only no zone — no calendar
+    // day at all — sends none.
+    expect((await wireOf({ fixtures: withoutLimits(fixtures), config, existing })).existing.map(wireRoundFields), "no cap").toEqual([
+      { fixtureId: "r1-a", roundNo: 1, roundBarrier: "end" },
+      { fixtureId: "r2-a", roundNo: 2, roundBarrier: "end", dayIndex: 0 },
+      { fixtureId: "r3-a", roundNo: 3, roundBarrier: "end", dayIndex: 0 },
+    ]);
+    expect((await wireOf({ fixtures, config: { ...config, tz: undefined }, existing })).existing.map(wireRoundFields), "no zone").toEqual([
+      { fixtureId: "r1-a", roundNo: 1, roundBarrier: "end" },
+      { fixtureId: "r2-a", roundNo: 2, roundBarrier: "end" },
+      { fixtureId: "r3-a", roundNo: 3, roundBarrier: "end" },
+    ]);
+  });
+
+  it("X-SW-31 ruling 256 controller ruling after fix round 1: EVERY pin on a grid day carries dayIndex — an uncapped league round's and a round-less obstacle's too — and a request with no pins is unchanged", async () => {
+    // A same-day rebuild of a LEAGUE (round-robin, no barrier, no cap) at 13:00 local (+180) on 2026-08-08: round 1
+    // was played this morning (+0, 10:00 local), round 2 is to place. Another division's card sits at 11:00 local
+    // (+60, no round). The service counts a person's max_fixtures_per_day on `day_index`, so both pins must name today
+    // (index 0, the first slot's day) or the morning's matches vanish from that cap.
+    const now = 180;
+    const config = cfg({ courts: ["C1", "C2"], startAt: T0 + now * MIN, window: { from: T0 + now * MIN, to: T0 + 3 * DAY * MIN } });
+    const league = (id: string, roundNo: number, home: string, away: string): SchedulableFixture => ({ id, roundNo, divisionId: "D1", stageId: "S1", home, away });
+    const fixtures = [league("l2-a", 2, "A", "C"), league("l2-b", 2, "B", "D")];
+    const { roundNo: _noRound, stageId: _noStage, ...obstacle } = row("x-1", 1, "C2", 60, 90, { movable: false, entrants: ["A", "Z"] });
+    const existing: Assignment[] = [row("l1-a", 1, "C1", 0, 30, { movable: false, entrants: ["A", "B"] }), { ...obstacle, divisionId: "D9" }];
+    expect(localDay(T0 + now * MIN, TZ)).toBe("2026-08-08");
+    const wire = await wireOf({ fixtures, config, existing });
+    // The league round is forwarded (one round sequence) with no barrier and no cap; the obstacle has no round.
+    expect(wire.fixtures.map(wireRoundFields)).toEqual([
+      { fixtureId: "l2-a", roundNo: 2 },
+      { fixtureId: "l2-b", roundNo: 2 },
+    ]);
+    expect(wire.existing.map(wireRoundFields)).toEqual([
+      { fixtureId: "l1-a", roundNo: 1, dayIndex: 0 },
+      { fixtureId: "x-1", dayIndex: 0 },
+    ]);
+    expect(wire.grid.slots[0]!.dayIndex).toBe(0);
+    expect(localDay(wire.grid.slots[0]!.startAtMs, TZ)).toBe("2026-08-08");
+    // Without a zone there is no calendar day: absent, never 0.
+    const noZone = await wireOf({ fixtures, config: { ...config, tz: undefined }, existing });
+    expect(noZone.existing.every((p) => !("dayIndex" in p)), "no zone: no pin carries the key").toBe(true);
+
+    // A request with NO pins is unchanged: no `existing` row means no `dayIndex` anywhere outside the grid's slots,
+    // and the request is the same bytes whether or not the pins' sequence would have sent one.
+    const bare = await wireOf({ fixtures, config });
+    expect(bare.existing).toEqual([]);
+    expect(JSON.stringify({ ...bare, grid: undefined })).not.toContain("dayIndex");
   });
 
   it("X-SW-31 ruling 256 fix round 1 (I2): a pin from yesterday goes out WITHOUT dayIndex, never 0, and a pin's day is its calendar day in the request's zone, not UTC's", async () => {
@@ -1179,9 +1215,11 @@ const CORPUS_SIZE = 240;
  *  Re-measured 2026-11-02 after T10c fix round 1 (identical over three runs): 541 capped days (a board now joins its
  *  pinned round's day, I1); 66 cap refusals, the m5 precedence naming the cap where it pushed a card off a fit that
  *  the barrier then refused, so that floor rises to 53; 3,006 wire fixtures with the over-cap cases (the floor stays
- *  on the main corpus's 2,528). The over-cap sub-sweep (seeds 1-80): 282 pin rows naming their day, 38 START-floor
+ *  on the main corpus's 2,528). The over-cap sub-sweep (seeds 1-80): 38 START-floor
  *  cases, 14 of them built clean, 356 movable boards admitted beside their pinned round on the over-cap day and 113
- *  boards of a round the pins do not hold (kept off that day, by the limits judge). */
+ *  boards of a round the pins do not hold (kept off that day, by the limits judge). Pin rows naming their day, over
+ *  both: 447 once every pin on a grid day carries one (controller ruling after fix round 1; 282 when only capped
+ *  rounds' did). */
 const GAP_PAIRS_FLOOR = 2100;
 const CAP_DAYS_FLOOR = 430;
 const GAP_BITES_FLOOR = 80;
@@ -1196,7 +1234,7 @@ const WIRE_CAP_FLOOR = 770;
 const OVER_CAP_SIZE = 80;
 const OVER_CAP_START_FLOOR = 30;
 const OVER_CAP_START_BUILT_FLOOR = 11;
-const WIRE_PIN_DAYS_FLOOR = 225;
+const WIRE_PIN_DAYS_FLOOR = 358;
 const OVER_CAP_ADMITS_FLOOR = 285;
 const OVER_CAP_PUSHES_FLOOR = 90;
 
@@ -1289,8 +1327,8 @@ function wireContract(
     if (w.roundsPerDayCap !== undefined) capN++;
     checked++;
   }
-  // Fix round 1, I2: a pin row names its calendar day in the slots' index space exactly when its round is forwarded
-  // into a sequence (any barrier) whose cap is on the wire, and a slot falls on that day.
+  // Fix round 1, I2 (and the controller ruling after it): EVERY pin row names its calendar day in the slots' index
+  // space, round or no round, capped or not, exactly when there is a zone and a slot falls on that day.
   const slotDay = new Map<string, number>();
   for (const s of wire.grid.slots) {
     if (tz === undefined) break;
@@ -1298,10 +1336,9 @@ function wireContract(
     expect(slotDay.get(day) ?? s.dayIndex, `${label}: slot day ${day}`).toBe(s.dayIndex);
     slotDay.set(day, s.dayIndex);
   }
-  const capOnWire = wire.fixtures.some((w) => w.roundsPerDayCap !== undefined);
   let pinDays = 0;
   for (const p of wire.existing) {
-    const want = p.roundNo !== undefined && capOnWire && tz !== undefined ? slotDay.get(localDay(p.startAtMs, tz)) : undefined;
+    const want = tz !== undefined ? slotDay.get(localDay(p.startAtMs, tz)) : undefined;
     expect(p.dayIndex, `${label}: pin ${p.fixtureId} day`).toBe(want);
     // The service refuses a negative `PinnedRow.day_index` by name (placement 9bd5335): never sent.
     if (p.dayIndex !== undefined) {

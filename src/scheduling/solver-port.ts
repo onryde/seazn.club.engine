@@ -203,7 +203,8 @@ export interface SolveBuildInput {
     /**
      * W3 T10c fix round 1 (I2; proto `PinnedRow.day_index`, field 7,
      * `optional int32`, placement 9bd5335) — the CALENDAR day this pin counts
-     * on for `fixtures[].roundsPerDayCap`, in the SAME index space as
+     * on, for `fixtures[].roundsPerDayCap` and for a person's
+     * `max_fixtures_per_day` alike, in the SAME index space as
      * `grid.slots[].dayIndex`: the index of the slots that share the pin
      * start's org-zone calendar day. A pin earlier than the lattice's first
      * slot on that same day (a round played this morning, handed over to a
@@ -212,10 +213,10 @@ export interface SolveBuildInput {
      * fixture can land there, so the pin can crowd none; the service then
      * counts it on the day whose slot range holds its start, which is none,
      * the same answer). Never negative: the service refuses a negative value
-     * by name, and an index read off the slots' own days cannot be one. And
-     * absent unless this row carries a forwarded round (any barrier) whose
-     * sequence sends a cap, so every other request is byte-identical to
-     * T10b's.
+     * by name, and an index read off the slots' own days cannot be one. Sent
+     * on EVERY pin row with a zone whose day has a slot, round or no round,
+     * capped or not (controller ruling after fix round 1); absent without a
+     * zone. A request with no pin rows is byte-identical to T10b's.
      */
     dayIndex?: number;
   }[];
