@@ -266,10 +266,15 @@
       }
     },
     "sports-cricket-12": {
-      "mutants": 384,
-      "wallSeconds": 10232,
-      "dryRunSeconds": 104,
-      "phaseSeconds": 10098
+      "mutants": 462,
+      "wallSeconds": 2261,
+      "dryRunSeconds": 134,
+      "phaseSeconds": 2107,
+      "run": {
+        "id": 41361608559,
+        "job": 125012999354,
+        "sha": "081f7de3c"
+      }
     },
     "sports-cricket-13": {
       "mutants": 349,
@@ -342,13 +347,13 @@
     },
     "sports-period-3": {
       "mutants": 506,
-      "wallSeconds": 11971,
-      "dryRunSeconds": 255,
-      "phaseSeconds": 11688,
+      "wallSeconds": 7942,
+      "dryRunSeconds": 168,
+      "phaseSeconds": 7754,
       "run": {
-        "id": 41153902780,
-        "job": 124396433164,
-        "sha": "db07ec539"
+        "id": 41361596060,
+        "job": 125012965218,
+        "sha": "081f7de3c"
       }
     },
     "sports-period-4": {
@@ -427,14 +432,14 @@
       "phaseSeconds": 11774
     },
     "sports-setbased-5": {
-      "mutants": 508,
-      "wallSeconds": 10207,
+      "mutants": 614,
+      "wallSeconds": 11130,
       "dryRunSeconds": 179,
-      "phaseSeconds": 9999,
+      "phaseSeconds": 10928,
       "run": {
-        "id": 40613517378,
-        "job": 122570600941,
-        "sha": "651d2a735"
+        "id": 41361626556,
+        "job": 125013049017,
+        "sha": "081f7de3c"
       }
     },
     "sports-setbased-6": {
@@ -461,13 +466,13 @@
     },
     "sports-nested-2": {
       "mutants": 473,
-      "wallSeconds": 7839,
-      "dryRunSeconds": 204,
-      "phaseSeconds": 7611,
+      "wallSeconds": 8465,
+      "dryRunSeconds": 216,
+      "phaseSeconds": 8223,
       "run": {
-        "id": 41153921831,
-        "job": 124396492073,
-        "sha": "db07ec539"
+        "id": 41361589837,
+        "job": 125012943928,
+        "sha": "081f7de3c"
       }
     },
     "sports-nested-3": {
@@ -700,7 +705,7 @@
       }
     },
     "sports-period-9": {
-      "mutants": 409,
+      "mutants": 482,
       "lost": 1,
       "parts": {
         "sports-period-9": {
@@ -740,15 +745,15 @@
           }
         },
         "sports-period-12": {
-          "mutants": 181,
+          "mutants": 254,
           "basis": "measured",
-          "wallSeconds": 6937,
-          "dryRunSeconds": 151,
-          "phaseSeconds": 6758,
+          "wallSeconds": 1944,
+          "dryRunSeconds": 237,
+          "phaseSeconds": 1683,
           "run": {
-            "id": 37532673771,
-            "job": 112505800301,
-            "sha": "0920dbf5e"
+            "id": 41361620879,
+            "job": 125013037165,
+            "sha": "081f7de3c"
           }
         }
       },
@@ -809,7 +814,7 @@
       }
     },
     "sports-football-7": {
-      "mutants": 381,
+      "mutants": 448,
       "lost": 1,
       "parts": {
         "sports-football-7": {
@@ -837,15 +842,15 @@
           }
         },
         "sports-football-9": {
-          "mutants": 126,
+          "mutants": 193,
           "basis": "measured",
-          "wallSeconds": 5078,
-          "dryRunSeconds": 135,
-          "phaseSeconds": 4913,
+          "wallSeconds": 927,
+          "dryRunSeconds": 180,
+          "phaseSeconds": 726,
           "run": {
-            "id": 37532565988,
-            "job": 112505454296,
-            "sha": "0920dbf5e"
+            "id": 41361614553,
+            "job": 125013018811,
+            "sha": "081f7de3c"
           }
         }
       }
