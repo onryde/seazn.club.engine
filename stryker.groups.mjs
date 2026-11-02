@@ -39,6 +39,10 @@ export const STRYKER_SPLITS = {
   "src/sports/carrom/carrom.ts": ["applyBoard", "carrom"],
   "src/sports/cricket/cricket.ts": ["CricketFollowOn", "closeOpenInnings", "DeliveryCtx", "finishDelivery", "boundaryCount", "requireOpenInnings", "generateBall", "withArrivals", "padSpec", "padSpec.interruptionAction", "padSpec.twoInnings", "cricket.variants", "cricket.outcome", "cricket.arbitraryEvent.roll"],
   "src/sports/cricket/scorecard.ts": ["InningsAccumulator.onRetire"],
+  // football-7 and football-8 (the parts from `football.arbitraryEvent` up to `if#11`) mutate NOTHING by design: every one of their mutants
+  // (126 and 129, lines 3191-3452) sits inside `// Stryker disable all` around arbitraryEvent (W2b ruling 109), so a run counts them and tests 0
+  // (cold run 41361638454: 126 counted, 0 run, 2 min). They stay legs because the sizing tests tile the file and keep the first run's
+  // split record; dropping them needs a cold re-measure of a neighbour and a ruling on that record (owner, 2026-11-02: leave as is).
   "src/sports/football/football.ts": ["fairPlayPoints", "applySinBinStart", "applyAbandon", "liftSide", "football.variants", "football.arbitraryEvent", "football.arbitraryEvent.if#7", "football.arbitraryEvent.if#11"],
   "src/sports/generic/generic.ts": ["applyScore", "generic"],
   "src/sports/hockey/hockey.ts": ["hockey"],
