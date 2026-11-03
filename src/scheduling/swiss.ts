@@ -235,6 +235,18 @@ function* floaterChoices(
   yield* combinations(ordered, fc);
 }
 
+/**
+ * Pairs one Swiss round: a `SwissRound` (`ok: true`) or a `SwissRefusal` (`ok: false`), as the file header describes.
+ *
+ * Cost (final review m4): the call runs synchronously, and `budget` bounds it in search nodes: the pairing search, the
+ * reason probe and the look-ahead (`constraints.lookAhead`) all count against it. A round that spends the whole budget,
+ * a `search_limit` refusal or a look-ahead that ends `"unknown"`, is the worst case. At the default 1,000,000 nodes that
+ * took 1.9 to 2.8 s for chess at n = 42 on a development laptop, with the look-ahead on as the app sets it there (up to
+ * 3.5 s on a loaded laptop). The final review measured about 2 to 2.5 s, and the look-ahead at about twice the cost of
+ * a round without it: its nodes cost more each, so the time is not a fixed multiple of the nodes. The caller holds
+ * whatever lock it holds for that long. A server caller inside a request may pass a smaller budget: the cost scales
+ * with it, and running out is still a `search_limit` refusal or `nextRound: "unknown"`, never a wrong pairing.
+ */
 export function pairRound(
   standings: readonly SwissStanding[],
   history: SwissHistory,
