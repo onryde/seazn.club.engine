@@ -494,6 +494,55 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
     expect(verdicts.slice(0, 3)).toEqual(["pairable", "pairable", "pairable"]);
   });
 
+  it("X-SW-1 chess: a lower score group that needs the full carry of floaters gets it from the score-group pass, so the round floats as few as P-Q1 asks and none from a top group that pairs within itself (the colour-count carry bound at its edge)", () => {
+    // Chess only: the bound under test counts the colour limits, and outside chess there are none to count.
+    // Each scene: score group A (a1–a4) pairs within itself only as a1 v a2 and a3 v a4 (a2 and a4 have met, so the fold
+    // pairing a1 v a3 would leave them a rematch); group B (b1–b7) may take either colour; below them, groups whose
+    // entrants may take one colour only (BB: White only; WW: Black only), so no two of one such group can meet (P-A5).
+    // Each of those sits on a board with someone from another score group, and such a board is one float.
+    //  - "last": C (c1–c5, BB) at the bottom: five boards at the least cross score groups, so 5 floats at the least.
+    //  - "middle": C (c1–c10, BB) above D (d1–d5, WW): no board holds two of C, so 10 floats at the least.
+    // Both minima are reached: B floats five to C, and in "middle" C floats five to D. So P-Q1 ("floats are few"; FIDE
+    // C.04.3 [C6]) asks for exactly that count, with none from A. The score-group pass must carry five into C, and in
+    // "middle" float five more out of it. A pass refused there hands the round to the complete search, which pairs
+    // top-down: a1 v a3 first, then floats a2 and a4 for the rematch that leaves (7 and 12 floats).
+    expect([colourCompatible(["B", "B"], ["B", "B"]), colourCompatible(["W", "W"], ["W", "W"]), colourCompatible(["B", "B"], ["W", "W"])])
+      .toEqual([false, false, true]); // the premise, by the oracle's own P-A5
+    type Group = { prefix: string; size: number; history: (i: number) => Colour[] };
+    const alternating = (i: number): Colour[] => (i % 2 === 0 ? ["W", "B"] : ["B", "W"]);
+    const top: Group[] = [{ prefix: "a", size: 4, history: alternating }, { prefix: "b", size: 7, history: alternating }];
+    const scenes: { name: string; groups: Group[]; fewest: number }[] = [
+      { name: "last", groups: [...top, { prefix: "c", size: 5, history: () => ["B", "B"] }], fewest: 5 },
+      { name: "middle", groups: [...top, { prefix: "c", size: 10, history: () => ["B", "B"] }, { prefix: "d", size: 5, history: () => ["W", "W"] }], fewest: 10 },
+    ];
+    let checked = 0;
+    for (const scene of scenes) {
+      const standings: SwissStanding[] = [];
+      const colours = new Map<string, Colour[]>();
+      scene.groups.forEach((g, gi) => {
+        for (let i = 0; i < g.size; i++) {
+          const id = `${g.prefix}${i + 1}`;
+          standings.push({ entrantId: id, score: scene.groups.length - 1 - gi, rank: standings.length + 1 });
+          colours.set(id, g.history(i));
+        }
+      });
+      const played = new Set([pairKey("a2", "a4")]);
+      const r = pairRound(standings, { played, colours }, { chess: true });
+      expect(r.ok, scene.name).toBe(true);
+      if (!r.ok) continue;
+      const round: OracleRound = { field: standings.map((s) => ({ id: s.entrantId, score: s.score })), played: [["a2", "a4"]], colours };
+      expect(seatedRoundViolations(round, r), scene.name).toEqual([]); // P-A1, P-A3, P-A5 as seated
+      const scoreOf = new Map(standings.map((s) => [s.entrantId, s.score]));
+      expect(r.pairings.filter((p) => scoreOf.get(p.home) !== scoreOf.get(p.away)), scene.name).toHaveLength(scene.fewest);
+      expect(r.floated, scene.name).toHaveLength(scene.fewest);
+      expect(r.floated.filter((id) => id.startsWith("a")), scene.name).toEqual([]);
+      expect(r.pairings.map((p) => pairKey(p.home, p.away)), scene.name).toEqual(expect.arrayContaining([pairKey("a1", "a2"), pairKey("a3", "a4")]));
+      expect(pairRound(standings, { played, colours }, { chess: true }), scene.name).toEqual(r); // a second call: the same round
+      checked++;
+    }
+    expect(checked).toBe(2); // anti-vacuity: both scenes paired and judged
+  });
+
   it("X-SW-1 X-SW-10 with lookAhead on every round keeps the invariant, and each round's nextRound is the next round's own outcome: 'pairable' is followed by a paired round, 'unpairable' by a refusal, as the oracle judges; boards move only when the plain seating dead-ends the next round (n 6–12, 5 rounds up to past the hard maximum, chess on and off, counted)", () => {
     const runs = RUNS.lookAhead;
     const t = newTally();
