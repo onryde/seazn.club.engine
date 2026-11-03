@@ -1577,8 +1577,8 @@ export interface SetBasedPreset {
   // shared comparator registry (PROMPT-08) resolves them uniformly.
   unitLabel: { one: string; many: string };
   defaultTiebreakers: TiebreakerKey[];
-  // W2d (spec §5.10, OC1) — a Swiss stage's order, unchanged by W2d (W3 owns Swiss orders); `defaultTiebreakers` above is
-  // the round-robin, league and group order. Required, so a new sport states both.
+  // W3 (rulebook-W3-swiss.md §5, X-SW-9) — a Swiss stage's order, its sport family's chain; `defaultTiebreakers` above is
+  // the round-robin, league and group order (W2d spec §5.10). Required, so a new sport states both.
   swissTiebreakers: TiebreakerKey[];
   // W2d (D11; X-TB-3) — the module's `primaryTableKey`; stated per sport (volleyball and badminton rank on wins).
   primaryTableKey: "points" | "wins";

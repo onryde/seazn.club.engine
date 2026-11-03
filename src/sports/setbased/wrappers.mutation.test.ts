@@ -40,9 +40,10 @@ describe("set-based wrappers — declared labels and cascade", () => {
     expect(checked).toBe(3);
   });
 
-  it("a Swiss stage declares the points → wins → set ratio → point ratio → h2h cascade; a table stage its sport's signed order", () => {
-    // spec 04 §3.4 (volleyball), §4 (badminton), §5 (table tennis) — the same five keys, in order, which a Swiss stage
-    // keeps (W2d OC1). W2d asks the order per stage kind: a table stage takes its sport's SPEC §5.10 signed row.
+  it("a Swiss stage declares rulebook-W3 §5's set-sport chain (points → Buchholz Cut-1 → Buchholz → set ratio → point ratio → direct → lots); a table stage its sport's signed order", () => {
+    // W3 (rulebook-W3-swiss.md §5, X-SW-9; BD-TB-2, TT-TB-2, VB-TB-3): the three set sports share one Swiss chain, the
+    // pre-W3 spec 04 five-key order replaced. W2d asks the order per stage kind: a table stage takes its sport's SPEC
+    // §5.10 signed row.
     const signed: Record<ModKey, readonly string[]> = {
       volleyball: ["wins", "points", "set_ratio", "point_ratio", "h2h_points", "lots"],
       badminton: ["wins", "h2h_two", "set_diff", "h2h_two", "point_diff", "h2h_two", "lots"],
@@ -53,10 +54,12 @@ describe("set-based wrappers — declared labels and cascade", () => {
       const cfg = mod.configSchema.parse({});
       expect(mod.defaultTiebreakers("swiss", cfg), mod.key).toEqual([
         "points",
-        "wins",
+        "buchholz_cut1",
+        "buchholz",
         "set_ratio",
         "point_ratio",
-        "h2h_points",
+        "direct",
+        "lots",
       ]);
       for (const kind of ["league", "group", "americano"] as const) {
         expect(mod.defaultTiebreakers(kind, cfg), `${mod.key} ${kind}`).toEqual(signed[mod.key as ModKey]);

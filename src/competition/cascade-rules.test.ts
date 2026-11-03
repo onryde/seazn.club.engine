@@ -40,7 +40,7 @@ const VOCABULARY: Record<TiebreakerKey, true> = {
   set_ratio: true, game_ratio: true, board_ratio: true, point_ratio: true, buchholz: true, buchholz_cut1: true,
   sberger: true, direct: true, fair_play: true, seed: true, lots: true, set_diff: true, point_diff: true, h2h_two: true,
   h2h_wins: true, h2h_set_ratio: true, h2h_point_ratio: true, h2h_reapply: true, h2h_exclusion: true,
-  matches_played: true, field_goals: true,
+  matches_played: true, field_goals: true, opp_diff: true,
 };
 const KEYS = Object.keys(VOCABULARY) as TiebreakerKey[];
 const SPORTS = builtinModules.length;
@@ -69,6 +69,8 @@ const LEDGER: Partial<Record<TiebreakerKey, readonly (readonly string[])[]>> = {
   board_ratio: RATIO_LEDGERS.board_ratio.map((m) => [m]),
   field_goals: [["gf"], ["goals_pc"], ["goals_stroke"]],
   fair_play: [["fair_play"]],
+  // W3 (rulebook-W3 §5 T10): each played opponent's goal difference, by alias.
+  opp_diff: [DIFF_KEYS],
 };
 
 const firstCfg = (module: AnySportModule): unknown => (declaredCfgs(module)[0] as { cfg: unknown }).cfg;
@@ -544,8 +546,8 @@ describe("offerableKeys — '+ Add step' (spec §9)", () => {
       const cfgs: unknown[] = [firstCfg(module)];
       if (module.key === "football") cfgs.push(football.configSchema.parse({ fairPlay: false }));
       // The empty order, the minimal valid one, one with an h2h block, and the sport's two defaults as they stand: the
-      // league one (signed and shape-valid since Task 11) and the Swiss one, which keeps its pre-W2d order (OC1) and so is,
-      // for most sports, an INVALID order under every non-Swiss kind — one the editor can still be asked to extend.
+      // league one (signed and shape-valid since Task 11) and the Swiss one (rulebook-W3 §5's chain, X-SW-9), which holds
+      // Buchholz and so is an INVALID order under every non-Swiss kind — one the editor can still be asked to extend.
       const orders: TiebreakerKey[][] = [
         [],
         [module.primaryTableKey, "lots"],

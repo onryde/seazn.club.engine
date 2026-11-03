@@ -787,7 +787,9 @@ export const generic: SportModule<GenericCfg, GenericEv, GenericState> = {
   ],
   // W2c X-PT-1 (gap a): generic's own ledger IS the generic for / against / diff.
   awardScoreKeys: { for: "for", against: "against", diff: "diff" },
-  defaultTiebreakers: () => ["points", "diff", "for", "h2h_points", "lots"],
+  // W3 (rulebook-W3-swiss.md §5, X-SW-9, GN-TB-2): a Swiss stage takes the generic chain — Buchholz early, direct late.
+  defaultTiebreakers: (kind) =>
+    kind === "swiss" ? ["points", "buchholz_cut1", "buchholz", "diff", "for", "direct", "lots"] : ["points", "diff", "for", "h2h_points", "lots"],
   primaryTableKey: "points", // W2d (D11): the table ranks on points first.
 
   // X-DR-1 (ruling 78): an allow-list — draws only where nobody must advance,

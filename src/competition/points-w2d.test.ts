@@ -209,11 +209,11 @@ describe("W2d payout (SPEC §5.3)", () => {
     expect(pts(payout(award("H", "withdrew"), null, sets(3, 1), true, rule, undefined, undefined))).toEqual([2, 0]);
   });
 
-  it("a bye pays the forfeit row if set, else the clean-sweep win; never awardScore", () => {
+  it("a bye pays the clean-sweep win, forfeit row or not (ruling 251, X-SW-5); never awardScore", () => {
     const byePair: FixtureResult = [side("H", 1, 0, 0, { gf: 0, ga: 0, gd: 0 }), side("__bye__", 0, 0, 1, {})];
     const withRow = FB({ forfeit: { winnerPoints: 1, loserPoints: 0, awardScore: [5, 0] } });
     const [h] = payout(BYE, null, byePair, false, withRow, { for: "gf", against: "ga", diff: "gd" }, undefined);
-    expect(h.points).toBe(1);
+    expect(h.points).toBe(3); // differential: before ruling 251 the row's 1
     expect(h.metrics).toEqual({ gf: 0, ga: 0, gd: 0 }); // never the award score
     expect(payout(BYE, null, byePair, false, FB(), undefined, undefined)[0].points).toBe(3);
     // a set sport's clean sweep: the bye's credited 3-0 is paid its own pair, and never loss.unplayed for the empty seat

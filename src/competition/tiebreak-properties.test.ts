@@ -16,7 +16,7 @@ import { lotSeed, rankStandings, type MembersKey, type RankContext, type Ranking
 const PLAIN: readonly TiebreakerKey[] = [
   "points", "wins", "diff", "for", "nrr", "set_ratio", "game_ratio", "board_ratio", "point_ratio", "buchholz",
   "buchholz_cut1", "sberger", "fair_play", "seed", "set_diff", "point_diff", "matches_played", "field_goals", "direct",
-  "h2h_two",
+  "h2h_two", "opp_diff",
 ];
 const BLOCK: readonly TiebreakerKey[] = ["h2h_points", "h2h_diff", "h2h_for", "h2h_wins", "h2h_set_ratio", "h2h_point_ratio"];
 const MODIFIERS = ["h2h_reapply", "h2h_exclusion"] as const;

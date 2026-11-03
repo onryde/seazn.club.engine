@@ -391,7 +391,10 @@ describe("W2b rows (spec §6, Appendix A; plan PF-6, PF-7, PF-13; rulings 108, 1
     // Appendix A's 53 are signed or deviation, X-WD-6 since ruling 113 and PF-6's CK-WO-2 since ruling 125: none is open.
     const open = Object.values(W2B_ROWS).flatMap((ids) => Object.entries(ids)).filter(([, s]) => s === OPEN).map(([id]) => id);
     expect(open.sort()).toEqual([]);
-    expect(Object.values(W2B_ROWS).flatMap((ids) => Object.values(ids)).filter((s) => s.startsWith("signed ")).length, "signed rows").toBe(53);
+    // Three are recorded deviations: BD-WO-2 (86), BD-RT-1 (87) and, since owner ruling 254 (W3, 2026-11-01), BG-WO-1; the other 52 are signed.
+    const statuses = Object.values(W2B_ROWS).flatMap((ids) => Object.values(ids));
+    expect(statuses.filter((s) => s.startsWith("signed ")).length, "signed rows").toBe(52);
+    expect(statuses.filter((s) => s.startsWith("deviation ")).length, "deviation rows").toBe(3);
     expect(w2bProblems(allRows())).toEqual([]);
   });
 

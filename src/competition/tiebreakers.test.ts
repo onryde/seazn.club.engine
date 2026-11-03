@@ -4,12 +4,15 @@
 // everyone once) with a strict hierarchy A > B > C > D > E > F. A round-robin
 // makes every tiebreak hand-verifiable: each player's opponents are ALL other
 // players, so Buchholz = (Σ all scores) − own score, and Sonneborn-Berger is the
-// sum of beaten opponents' scores. All values are exact integers (half-points;
-// SB in quarter-points) — no floats anywhere (PROMPT-07 acceptance).
+// sum of beaten opponents' scores. The golden's values are exact integers (half-points; SB in quarter-points). An
+// art. 16 dummy can be x.5 (½ x win points), still exact: multiples of ½ add exactly in IEEE-754 (PROMPT-07).
 import { describe, expect, it } from "vitest";
+import type { StandingsDelta } from "../core/types.ts";
+import type { FixtureResult } from "./standings.ts";
 import {
   buchholz,
   buchholzCut1,
+  buildSwissLedger,
   colorHistory,
   directEncounter,
   sonnebornBerger,
@@ -23,6 +26,7 @@ import {
 // win = 2 half-points, loss = 0. Colours cycle W,B,… per player's card.
 function card(entrant: string, results: Array<[opp: string, won: boolean]>): SwissRow {
   const games: SwissGame[] = results.map(([opp, won], i) => ({
+    round: i + 1,
     opponent: opp,
     result: won ? "win" : "loss",
     scored: won ? 2 : 0,
@@ -108,29 +112,35 @@ describe("Swiss cross-table golden (6-player round-robin)", () => {
   });
 });
 
-describe("FIDE virtual opponent for unplayed games (Handbook C.07)", () => {
-  // X: R1 beat Y, R2 bye (unplayed, full point), R3 beat Z. 3 rounds.
-  // Virtual opponent for the R2 bye = scoreBefore (2) + (rounds 3 − index 1) = 4.
-  const withBye: SwissTable = [
-    {
-      entrant: "X",
-      score: 6,
-      games: [
-        { opponent: "Y", result: "win", scored: 2, color: "W" },
-        { opponent: null, result: "win", scored: 2, unplayed: true }, // bye
-        { opponent: "Z", result: "win", scored: 2, color: "W" },
-      ],
-    },
-    { entrant: "Y", score: 3, games: [] },
-    { entrant: "Z", score: 1, games: [] },
-  ];
+describe("C.07 2026 art. 16: an own unplayed round is scored against a dummy at the player's own score, capped (rulebook-W3 §4)", () => {
+  // Half-points (win 2, draw 1, loss 0), R = 3 rounds, so D = 1 and the dummy cap is D × R = 3 (16.4.2).
+  // X: R1 beat Y, R2 a pairing-allocated bye (16.2.1, the win: X-SW-5), R3 beat Z. The others: R2 Y drew Z, R3 Y beat V.
+  // Scores: X 2+2+2 = 6, Y 0+1+2 = 3, Z 1+0 = 1, V 0. No 16.2.5 round, so every adjusted score is the score (16.3).
+  // X's bye scores a dummy at X's own 6, capped at 3: min(6, 3) = 3. (The superseded A6 virtual opponent of the old
+  // engine gave the score before the round plus ½ a point per round to the end: 2 + (3 − 1) = 4.)
+  const side = (entrantId: string, r: "w" | "d" | "l"): StandingsDelta => ({
+    entrantId, played: 1, won: r === "w" ? 1 : 0, drawn: r === "d" ? 1 : 0, lost: r === "l" ? 1 : 0, points: r === "w" ? 2 : r === "d" ? 1 : 0, metrics: {},
+  });
+  const game = (home: string, away: string, r: "h" | "d"): FixtureResult => (r === "h" ? [side(home, "w"), side(away, "l")] : [side(home, "d"), side(away, "d")]);
+  const ledger: SwissTable = buildSwissLedger(
+    ["X", "Y", "Z", "V"],
+    [
+      { round: 1, result: game("X", "Y", "h") },
+      { round: 2, award: { ...side("X", "w"), played: 1 } },
+      { round: 2, result: game("Y", "Z", "d") },
+      { round: 3, result: game("X", "Z", "h") },
+      { round: 3, result: game("Y", "V", "h") },
+    ],
+    { rounds: 3, drawPoints: 1 },
+  );
 
-  it("uses the virtual-opponent score for the bye round", () => {
-    // Buchholz = score(Y) 3 + virtual 4 + score(Z) 1 = 8.
-    expect(buchholz(withBye, "X")).toBe(8);
-    // Cut-1 drops the lowest opponent (Z = 1) → 3 + 4 = 7.
-    expect(buchholzCut1(withBye, "X")).toBe(7);
-    // SB counts the win vs the virtual opponent too: 2·(3 + 4 + 1) = 16.
-    expect(sonnebornBerger(withBye, "X")).toBe(16);
+  it("scores the bye round against min(own score, draw points × rounds)", () => {
+    expect(ledger.map((r) => [r.entrant, r.score])).toEqual([["X", 6], ["Y", 3], ["Z", 1], ["V", 0]]);
+    // Buchholz = Y 3 + dummy 3 + Z 1 = 7 (A6: 8).
+    expect(buchholz(ledger, "X")).toBe(7);
+    // Cut-1 drops the lowest contribution (Z 1) → 3 + 3 = 6 (A6: 7).
+    expect(buchholzCut1(ledger, "X")).toBe(6);
+    // SB counts the bye as a win against the same dummy, each win weighted 2: 2·(3 + 3 + 1) = 14 (A6: 16).
+    expect(sonnebornBerger(ledger, "X")).toBe(14);
   });
 });

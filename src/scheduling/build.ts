@@ -95,6 +95,10 @@ import {
   effectiveHard,
   entityKeysFor,
   isBlockingConflict,
+  roundOrderConflicts,
+  roundRulesBySequence,
+  roundSequenceKey,
+  roundSequenceRows,
   scopeCoversFixture,
   slotFixtures,
   validateAssignments,
@@ -1164,6 +1168,12 @@ export function buildSchedule(input: BuildInput): Promise<BuildResult> {
   // throw, so the function never throws where its callers `.catch`.
   try {
     assertEnginePorts(input, "buildSchedule");
+    // X-SW-31 (W3 T10b): a round sequence with mixed `roundBarrier` values is
+    // CONFIG_INVALID (and, T10c, mixed or impossible round limits). Checked
+    // here, inside this `try`, because the queue-cap and size-gate exits below
+    // build the greedy board SYNCHRONOUSLY, and `slotFixtures` would throw the
+    // same refusal from there.
+    roundRulesBySequence(input.fixtures);
   } catch (e) {
     return Promise.reject(e instanceof Error ? e : new TypeError(String(e)));
   }
@@ -1241,16 +1251,55 @@ export function buildSchedule(input: BuildInput): Promise<BuildResult> {
  * 0: the verifier skips day-cap counting entirely without a zone, and
  * `buildRuleGroups` pairs this with leaving `max_fixtures_per_day` unset on
  * every group it emits, so a cap never binds against a fabricated day.
+ *
+ * For a SLOT of `slots` only. Every slot's own day is in the index by
+ * construction (the index is built from these very slots), so an instant
+ * with no day in it is not a slot of this grid: refused by name (T10c fix
+ * round 1), never sent as a day. An instant that need not be a slot — a pin
+ * row, a locked card off the lattice — reads `buildDayIndexLookup` instead,
+ * which answers `undefined` there.
  */
 function buildDayIndexOf(
   slots: readonly { startAt: number }[],
   tz: string | undefined,
 ): (startAt: number) => number {
   if (tz === undefined) return () => 0;
+  const lookup = buildDayIndexLookup(slots, tz);
+  return (startAt) => {
+    const day = lookup(startAt);
+    if (day === undefined) {
+      throw new Error(`buildDayIndexOf: ${new Date(startAt).toISOString()} is not on any day of its own slot grid`);
+    }
+    return day;
+  };
+}
+
+/** `buildDayIndexOf`'s one derivation, for an instant that need NOT be a
+ *  slot: the index of the slots on `startAt`'s calendar day in `tz` (the
+ *  request's zone, `verifyConfig.tz`), or `undefined` when no slot falls on
+ *  that day — and `undefined` for every instant without a zone, where there
+ *  is no calendar day to name (the slots' 0 is `buildDayIndexOf`'s, not a
+ *  day). A pin row's day (W3 T10c fix round 1, I2) is read through this, so a
+ *  pin and a slot on the same calendar day can never get two different
+ *  indices, and a pin on a day outside the grid gets none rather than 0. */
+function buildDayIndexLookup(
+  slots: readonly { startAt: number }[],
+  tz: string | undefined,
+): (startAt: number) => number | undefined {
+  if (tz === undefined) return () => undefined;
   const keys = [...new Set(slots.map((s) => dayKeyInTz(s.startAt, tz)))].sort();
   const indexByKey = new Map(keys.map((k, i) => [k, i]));
-  return (startAt) => indexByKey.get(dayKeyInTz(startAt, tz))!;
+  return (startAt) => indexByKey.get(dayKeyInTz(startAt, tz));
 }
+
+/** `DayView.dayOf`'s answer for an instant on no day of the slot grid — a
+ *  fixture locked off the lattice. Every such instant shares this one bucket,
+ *  whose opening is 0 (`openOf`): exactly what the unasserted `undefined` key
+ *  gave before T10c fix round 1, so the gate's ladder and the reported
+ *  metrics are unchanged. Never a slot's index (those are 0..n-1) and never
+ *  on the wire (a slot is always on its own grid; a pin row reads
+ *  `buildDayIndexLookup`). */
+const OFF_GRID_DAY = -1;
 
 /** The `ScopeRow` a MOVABLE fixture would carry once placed — the same
  *  `entrants`/`people`/`poolId`/`divisionId` derivation `assignmentOf` (below,
@@ -1703,6 +1752,14 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
       // went to `fixtures` or `existing` on the wire in the first place, so
       // asking it again here cannot disagree with that split.
       ...(f?.roundNo !== undefined ? { roundNo: f.roundNo } : {}),
+      // X-SW-31 (W3 T10b). Carried through for the same reason as `roundNo`:
+      // this helper's output is what the gate below re-verifies, and a solver
+      // board that lost the flag would be judged by the start floor only. The
+      // two round limits (T10c, ruling 256) likewise, or the gate would judge
+      // a solver board with no gap and no cap.
+      ...(f?.roundBarrier !== undefined ? { roundBarrier: f.roundBarrier } : {}),
+      ...(f?.roundGapMinutes !== undefined ? { roundGapMinutes: f.roundGapMinutes } : {}),
+      ...(f?.roundsPerDayCap !== undefined ? { roundsPerDayCap: f.roundsPerDayCap } : {}),
       movable: !pinnedFixtureIds.has(fixtureId),
     };
   };
@@ -1767,6 +1824,7 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
   // clock, and the in-scope wrong one typechecks).
   const tz = verifyConfig.tz;
   const dayIndexOf = buildDayIndexOf(grid.slots, tz);
+  const dayIndexIfSlotted = buildDayIndexLookup(grid.slots, tz);
   // The SAME day resolution, handed to `boardMetrics` so the acceptance gate
   // ranks boards on the rungs the solver actually optimises. Built here, from
   // this run's grid, so the placer and the gate cannot disagree about which day
@@ -1784,10 +1842,15 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
             if (seen === undefined || s.startAt < seen) openByDay.set(d, s.startAt);
           }
           return {
-            dayOf: dayIndexOf,
-            // A pin can sit off the lattice, on no day the grid offers; its
-            // own start is then the only sane opening for that day, and
-            // `boardMetrics` floors the offset at 0 regardless.
+            // A pin can sit off the lattice, on no day the grid offers: it has
+            // no grid day, so it is bucketed under `OFF_GRID_DAY`, explicitly
+            // (T10c fix round 1; before, an asserted `undefined` did the same).
+            dayOf: (startAt: number) => dayIndexIfSlotted(startAt) ?? OFF_GRID_DAY,
+            // That bucket has no opening slot, so it reads 0 — which makes
+            // its `dayStartOffsetMinutes` the pin's epoch minutes, not 0.
+            // Unchanged here (pre-existing; the seed is measured the same way,
+            // so the ladder's equality is unaffected); recorded in the T10c
+            // report, not fixed in this scope.
             openOf: (d: number) => openByDay.get(d) ?? 0,
           };
         })();
@@ -1995,13 +2058,102 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
   // the first stage's movable rounds as if they were one sequence — the
   // pin-path version of the bug `multiPoolContaminated`/`stageId` already
   // fixed on the movable-movable path.
-  const roundBearingSequenceOf = (f: { divisionId?: string; stageId?: string; poolId?: string }): string =>
-    `${f.divisionId ?? ""}|${f.stageId ?? ""}|${f.poolId ?? ""}`;
+  //
+  // The key is `calendar.ts`'s own `roundSequenceKey`, not a second spelling of
+  // it: the verifier groups by that function, and so does the barrier lookup
+  // just below.
+  const roundBearingSequenceOf = roundSequenceKey;
   const roundBearingSequences = new Set(
     freeFixtures.flatMap((f) => (roundBearingFor(f) !== undefined ? [roundBearingSequenceOf(f)] : [])),
   );
   const singleRoundRobinSequence =
     roundBearingSequences.size === 1 ? [...roundBearingSequences][0] : undefined;
+
+  // X-SW-31 (W3 T10b). The Swiss end barrier rides beside the round it orders,
+  // and ONLY beside a round this request actually forwards: a division whose
+  // rounds were stripped above takes its barrier with them (a barrier with no
+  // round is an order the service cannot place), and a start-floor sequence
+  // sends no key at all, so every round-robin request is byte-identical to the
+  // pre-W3 wire. Read per SEQUENCE (`buildSchedule` already refused a mixed
+  // one), never off the row, so a pin row is judged by the sequence it is
+  // forwarded into. The service model lives outside this repo: until it reads
+  // the field, a board that breaks the barrier is refused by the gate below
+  // (`round_order_end` is a blocking `order` row) and the greedy board, which
+  // honours it, ships instead.
+  const rulesBySequence = roundRulesBySequence(fixtures);
+  const endBarrierOnWire = (roundNo: number | undefined, sequence: string): { roundBarrier?: "end" } =>
+    roundNo !== undefined && rulesBySequence.get(sequence)?.barrier === "end" ? { roundBarrier: "end" } : {};
+  // Rulings 255-256 (W3 T10c). A movable fixture of a forwarded Swiss round
+  // also carries its sequence's two round limits, each only when set: the gap
+  // always, the cap only with a zone — without one every slot's `dayIndex` is
+  // 0 (see `dayIndexOf` above), and a cap on day 0 would cap the WHOLE
+  // schedule rather than a day. And a fixture with neither entrants nor
+  // people goes out as an UNPAIRED ROUND SLOT: a Swiss round not drawn yet,
+  // which takes a court and a time and no person constraint. Flagged ONLY
+  // here, beside a round `roundBearingFor` actually forwards with its "end"
+  // barrier: a stripped round takes the flag with it, because the service
+  // refuses a flagged slot with no round — the whole request, so greedy ships.
+  // Pin rows carry no limits (round and barrier, as in T10b, plus their
+  // calendar day, `pinDayOnWire` below): a pin's round is forwarded only when
+  // the request holds exactly one round sequence, so its limits are that
+  // sequence's. A round-robin request with no pin rows is byte-identical to
+  // T10b's; one with pins differs only by each pin's `dayIndex`.
+  // A joint build of TWO Swiss sequences therefore forwards no played round,
+  // and the service gaps and caps it without them; the gate below judges the
+  // reply against `existing` and ships greedy when it breaks a limit. An
+  // accepted limit (fix round 1, m3), not an unguarded one.
+  //
+  // T10c fix round 1 (controller ruling, both sides of the wire): the cap goes
+  // out beside ANY forwarded round, whatever its barrier; the gap, the flag
+  // and the barrier itself beside a forwarded "end" round only (the gap is 0
+  // on any other sequence, `roundRulesBySequence`).
+  const swissRoundOnWire = (
+    roundNo: number | undefined,
+    sequence: string,
+    unpaired: boolean,
+  ): { roundBarrier?: "end"; roundGapMinutes?: number; roundsPerDayCap?: number; unpairedRoundSlot?: true } => {
+    const rules = rulesBySequence.get(sequence);
+    if (roundNo === undefined || rules === undefined) return {};
+    const end = rules.barrier === "end";
+    return {
+      ...(end ? { roundBarrier: "end" as const } : {}),
+      ...(end && rules.gapMinutes > 0 ? { roundGapMinutes: rules.gapMinutes } : {}),
+      ...(rules.roundsPerDayCap > 0 && tz !== undefined ? { roundsPerDayCap: rules.roundsPerDayCap } : {}),
+      ...(end && unpaired ? { unpairedRoundSlot: true as const } : {}),
+    };
+  };
+  // Fix round 1 (I2). A pin counts on its CALENDAR day, as the placer and
+  // verifier count it. The service sees only the lattice, so EVERY pin row
+  // names its day in the slots' own index space (controller ruling after fix
+  // round 1: not only a capped round's — the service also counts a person's
+  // `max_fixtures_per_day` on `day_index`, so a same-day rebuild's morning
+  // matches must be on today for that cap too). A round played this morning,
+  // before a rebuild's lattice starts at now, still fills today. Absent with
+  // no zone (no calendar day) and when no slot falls on the pin's day — an
+  // earlier day, or one the grid skips: no movable fixture can land there for
+  // it to crowd, and absent is never read as 0.
+  const pinDayOnWire = (startAt: number): { dayIndex?: number } => {
+    const dayIndex = dayIndexIfSlotted(startAt);
+    return dayIndex === undefined ? {} : { dayIndex };
+  };
+
+  // C1 (2026-08-12 round-order design). See `singleRoundRobinSequence`'s
+  // own comment above for why a pin's round is only ever forwarded in
+  // the one-round-robin-sequence case: `PinnedRow` has nowhere on the
+  // wire to carry a division (let alone a stage or pool), so this is the
+  // only condition under which the model comparing this pin's round
+  // against every OTHER round-bearing movable fixture is still
+  // guaranteed correct — the pin's OWN (division, stage, pool) must
+  // match the single clean sequence, not merely its division (C1
+  // fix-loop round 2, Item B). A function (W3 T10b) only because the
+  // pin row's barrier reads the same answer.
+  const pinRoundOf = (a: Assignment): number | undefined =>
+    a.roundNo !== undefined &&
+    singleRoundRobinSequence !== undefined &&
+    roundBearingSequenceOf(a) === singleRoundRobinSequence &&
+    !contaminatedDivisions.has(a.divisionId ?? "")
+      ? a.roundNo
+      : undefined;
 
   const placementInput: SolveBuildInput = {
     // The wire index space, not the placement domain (that's `grid.slots`
@@ -2019,6 +2171,11 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
       entrantIds: [f.home, f.away].filter((e): e is string => e !== undefined),
       divisionId: f.divisionId ?? "",
       roundNo: roundBearingFor(f),
+      ...swissRoundOnWire(
+        roundBearingFor(f),
+        roundBearingSequenceOf(f),
+        f.home === undefined && f.away === undefined && (f.people ?? []).length === 0,
+      ),
       // C10 (2026-08-16, wire person indices). Same derivation `assignmentOf`
       // (above) and `encodeBuild`'s own `rowOf`/`asAssignment` (z3 path) use
       // for `Assignment.people` — carried through, not dropped, so an
@@ -2063,29 +2220,19 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
     // is `a.entrants` verbatim: exactly what closes #447's "two pinned rows
     // sharing an entrant are invisible to each other" gap, once the C1 model
     // half reads it.
-    existing: [...existing, ...pinnedAssignments].map((a) => ({
-      fixtureId: a.fixtureId,
-      court: a.court,
-      startAtMs: a.startAt,
-      entrantIds: a.entrants,
-      ruleGroupIndices: ruleGroupSet.indicesFor(a),
-      // C1 (2026-08-12 round-order design). See `singleRoundRobinSequence`'s
-      // own comment above for why a pin's round is only ever forwarded in
-      // the one-round-robin-sequence case: `PinnedRow` has nowhere on the
-      // wire to carry a division (let alone a stage or pool), so this is the
-      // only condition under which the model comparing this pin's round
-      // against every OTHER round-bearing movable fixture is still
-      // guaranteed correct — the pin's OWN (division, stage, pool) must
-      // match the single clean sequence, not merely its division (C1
-      // fix-loop round 2, Item B).
-      roundNo:
-        a.roundNo !== undefined &&
-        singleRoundRobinSequence !== undefined &&
-        roundBearingSequenceOf(a) === singleRoundRobinSequence &&
-        !contaminatedDivisions.has(a.divisionId ?? "")
-          ? a.roundNo
-          : undefined,
-    })),
+    existing: [...existing, ...pinnedAssignments].map((a) => {
+      const roundNo = pinRoundOf(a);
+      return {
+        fixtureId: a.fixtureId,
+        court: a.court,
+        startAtMs: a.startAt,
+        entrantIds: a.entrants,
+        ruleGroupIndices: ruleGroupSet.indicesFor(a),
+        roundNo,
+        ...endBarrierOnWire(roundNo, roundBearingSequenceOf(a)),
+        ...pinDayOnWire(a.startAt),
+      };
+    }),
     // Filtered to pairs where BOTH ends are fixtures placement is actually being
     // asked to place: `fixtureIndexOf` throws `invalid_request` for an id
     // that names an `existing`/pinned row instead (positional identity has no
@@ -2242,7 +2389,27 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
   //    z3's did.
   const conflicts = conflictsForBoard(incumbent, proved);
   const ours = new Set(incumbent.map((a) => a.fixtureId));
-  const rejected = rejectedBlockingConflicts(rawSeedConflicts, conflicts, ours);
+  // X-SW-31 (W3 T10b fix round 2). The Swiss end barrier against PLAYED
+  // rounds. The app hands those over in `existing`, never as pins, and its
+  // apply gate re-runs round order over the board widened with them; the
+  // board-only check above cannot see that pair, so a service that places by
+  // the start floor alone (today's model) could ship a board the apply then
+  // refuses. Widened here the same way, with `existing`'s rows of an "end"
+  // sequence of THIS build's fixtures only (`roundSequenceRows`: matched by key,
+  // their own flag never read), and judged as a DELTA against the raw greedy
+  // seed's widened rows, like the gate above. NOT scoped to `ours`: a later
+  // round sitting in `existing` is blamed for a breach an earlier-round card
+  // of this board caused, and a row between two `existing` boards appears on
+  // both sides and cancels. T10c fix round 1: a capped start-floor sequence's
+  // rows join too (the cap applies under any barrier, and a played round fills
+  // its day). Empty for every build with no "end" and no capped sequence, so
+  // a start-floor board is gated exactly as before.
+  const endSiblings = roundSequenceRows(rulesBySequence, existing);
+  const widenedRoundOrder = (board: readonly Assignment[]): Conflict[] =>
+    roundOrderConflicts([...board, ...endSiblings], verifyConfig.tz).filter(isBlockingConflict);
+  const againstPlayed =
+    endSiblings.length === 0 ? [] : deltaConflicts(widenedRoundOrder(rawSeed.assignments), widenedRoundOrder(incumbent));
+  const rejected = [...rejectedBlockingConflicts(rawSeedConflicts, conflicts, ours), ...againstPlayed];
   if (rejected.length > 0) {
     // Structured error log, not a fallback-and-forget: the caller is handed a
     // VALID board and a status field they may never read, so an
@@ -2440,6 +2607,14 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
  * `buildSchedule` for a real over-cap board, `lattice_unusable` here).
  */
 export const solveBuildForTests = solveBuild;
+
+/** Test-only handles on the two day derivations (W3 T10c fix round 1): a
+ *  slot's wire index refuses an instant off its own grid by name, and a pin
+ *  row's lookup answers `undefined` there (and without a zone) — never 0.
+ *  The slot refusal is not reachable through `buildSchedule`, whose slots
+ *  are the grid the index is built from; this is what reaches it. */
+export const buildDayIndexOfForTests = buildDayIndexOf;
+export const buildDayIndexLookupForTests = buildDayIndexLookup;
 
 /**
  * THE INVARIANT: THE SOLVER MUST NEVER BE UNABLE TO EXPRESS ITS OWN INCUMBENT.

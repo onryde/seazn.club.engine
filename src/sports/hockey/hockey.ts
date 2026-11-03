@@ -235,8 +235,8 @@ export const hockey = withPeriodNaturalBreaks(makePeriodModule({
   // W2d (SPEC §5.10, HK-TB-1): FIH GTR App. 3 — points, matches won, goal difference, goals for, the head-to-head
   // block, field goals, then lots (in place of FIH's ranking shoot-out, App. 3 §2 g-k — RB2B-11).
   defaultTiebreakers: ["points", "wins", "diff", "for", "h2h_points", "h2h_wins", "h2h_diff", "h2h_for", "field_goals", "lots"],
-  // OC1: a Swiss stage keeps its pre-W2d order.
-  swissTiebreakers: ["points", "diff", "for", "h2h_points", "seed"],
+  // W3 (rulebook-W3-swiss.md §5, X-SW-9, HK-TB-3): a Swiss stage takes the goals chain (UEFA CL art. 18's shape).
+  swissTiebreakers: ["points", "diff", "for", "wins", "buchholz", "opp_diff", "direct", "lots"],
   // W2d (HK-PT-2): the Pro League preset — the module's own `fih-shootout` points read through its own schema and
   // its own `tablePointsRule`, so the preset is the variant and never a second hand-typed copy.
   tablePresets: (kind) => ({

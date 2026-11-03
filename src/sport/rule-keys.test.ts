@@ -153,7 +153,7 @@ const PLAN_ONLY: Readonly<Record<string, Partial<Record<RuleScope, readonly stri
   // names became football's and hockey's `soBonus`, which a result sport's schema does not take.
   icehockey: { points: ["awardScore", "points"] },
   hockey: { points: ["awardScore"] },
-  boardgame: { points: ["scoring", "byeScore"] },
+  boardgame: { points: ["scoring"] }, // W3 X-SW-6: `byeScore` is gone (a bye is the win, X-SW-5)
   carrom: { stage: ["pointsPerCoin"], points: ["points"] },
   generic: { points: ["points"] },
 };

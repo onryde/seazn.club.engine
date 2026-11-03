@@ -1130,7 +1130,9 @@ export const carrom: SportModule<CarromCfg, CarromEv, CarromState> = {
     { key: "points_won", label: "Points for", direction: "desc", display: false },
     { key: "points_lost", label: "Points against", direction: "asc", display: false },
   ],
-  defaultTiebreakers: () => [...CARROM_TIEBREAKERS],
+  // W3 (rulebook-W3-swiss.md §5, X-SW-9, CA-TB-2): a Swiss stage takes the carrom chain — Buchholz early, direct late.
+  defaultTiebreakers: (kind) =>
+    kind === "swiss" ? ["points", "buchholz_cut1", "buchholz", "set_ratio", "board_ratio", "point_ratio", "direct", "lots"] : [...CARROM_TIEBREAKERS],
   primaryTableKey: "points", // W2d (D11): the table ranks on points first.
 
   // Drawn matches exist only under the tieBoard 'draw' house rule, and only in

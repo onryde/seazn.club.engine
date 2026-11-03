@@ -85,10 +85,13 @@ describe("completion predicates (spec 05 §1)", () => {
       entrants: ["A", "B", "C"],
       rules: rulesOf(["points", "wins", "lots"]),
       rounds: 1,
+      // the bye is an unplayed round, so its art. 16 cap needs D: football stands a draw in a Swiss table, no set score
+      swissDraw: { drawReachable: true, setsToWin: undefined },
+      swissAbsentRounds: new Map(),
       rngSeed: 1,
     };
     const fixtures: TableFixture[] = [
-      { id: "board", roundNo: 1, status: "decided", result: fb("A", "B", 1, 0) },
+      { id: "board", roundNo: 1, status: "decided", result: fb("A", "B", 1, 0), unplayed: null },
       {
         id: "bye",
         roundNo: 1,

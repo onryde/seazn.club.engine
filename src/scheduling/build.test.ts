@@ -2128,13 +2128,17 @@ describe("buildSchedule — Placement path", () => {
     const byCourtTime = new Map(captured!.existing.map((e) => [`${e.court}@${e.startAtMs}`, e]));
     // The pin: division D9 (matches rule 1) AND the competition scope
     // (matches rule 0, which covers everything) — both, at their real
-    // positions.
+    // positions. Both rows also name their calendar day (W3 T10c, controller
+    // ruling: every pin on a grid day carries `dayIndex`, which is what lets
+    // the service count it against rule 1's `max_fixtures_per_day`): T0 and
+    // T0+90 are 2026-08-08 in Europe/London, the grid's first day, index 0.
     expect(byCourtTime.get(`C1@${T0}`)).toEqual({
       fixtureId: "pinned",
       court: "C1",
       startAtMs: T0,
       entrantIds: ["E1", "E2"],
       ruleGroupIndices: [0, 1],
+      dayIndex: 0,
     });
     // The obstacle: division D8, so only the competition-scoped rule 0 covers it.
     expect(byCourtTime.get(`C1@${T0 + 90 * MIN}`)).toEqual({
@@ -2143,7 +2147,10 @@ describe("buildSchedule — Placement path", () => {
       startAtMs: T0 + 90 * MIN,
       entrantIds: ["E9"],
       ruleGroupIndices: [0],
+      dayIndex: 0,
     });
+    expect(captured!.grid.slots[0]!.dayIndex).toBe(0);
+    expect(new Date(captured!.grid.slots[0]!.startAtMs).toISOString().slice(0, 10)).toBe("2026-08-08");
   });
 
   // `build.ts`'s own half of the no-behaviour-change proof. The DEEP proof —

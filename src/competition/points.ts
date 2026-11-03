@@ -168,13 +168,39 @@ export function forfeitShaped(outcome: MatchOutcome): boolean {
  *    it as unplayed too (`forfeitStatsRole`, X-PS-1).
  *  - Any other forfeit — a withdrawal, a disqualification, a retirement, a pre-W2b chess win by forfeit — is one only
  *    while nothing is played (`played` false). After play it is a result (Q9: normal points).
- *  - A bye is never one: nobody forfeited (it keeps the forfeit row's points, `payout`, but no award score).
+ *  - A bye is never one: nobody forfeited. It pays the win, never the forfeit row or a bonus (X-SW-5, `payout`).
  */
 export function isUnplayedForfeit(outcome: MatchOutcome, played: boolean): boolean {
   if (isWalkover(outcome)) return true;
   if (played) return false;
   if (outcome.kind === "win") return outcome.method === "forfeit";
   return outcome.kind === "award" && !isBye(outcome);
+}
+
+/**
+ * W3 (X-SW-7; FIDE C.07 (2026) 16.2.2 / 16.2.4; rulebook-W3-swiss.md §4 M1–M3) — the seat(s) of a decided fixture that
+ * lost WITHOUT playing, for `TableFixture.unplayed`: "both" for a double walkover (both sides absent); the loser's seat
+ * in `pair`'s [home, away] order for a forfeit with nothing played (`isUnplayedForfeit`: a walkover whatever was played,
+ * any other forfeit only before play); `null` for anything else — a played result (a retirement after play is a
+ * played game, M3) and a bye (nobody forfeited; the award is its own unplayed round, 16.2.1). The one authority the app
+ * calls to fill the field. The loser is the typed `loser`, else (a pre-W2b award) the seat that is not the winner's.
+ * Refused, CONFIG_INVALID: a forfeit whose winner holds neither seat, or whose typed loser does not hold the other one.
+ */
+export function unplayedSidesOf(outcome: MatchOutcome, played: boolean, pair: FixtureResult): "home" | "away" | "both" | null {
+  if (outcome.kind === "double_walkover") return "both";
+  if (!isUnplayedForfeit(outcome, played)) return null;
+  // An unplayed forfeit is an award or a win, and each names its winner.
+  const { winner, loser } = outcome as { winner: EntrantId; loser?: EntrantId | null };
+  const [home, away] = pair;
+  const lost = home.entrantId === winner ? away : away.entrantId === winner ? home : undefined;
+  if (lost === undefined || (loser != null && loser !== lost.entrantId)) {
+    throw new EngineError(
+      "CONFIG_INVALID",
+      `a forfeit's winner "${winner}" or loser "${String(loser)}" is not a seat of its fixture [${home.entrantId}, ${away.entrantId}]`,
+      { winner, loser: loser ?? null, home: home.entrantId, away: away.entrantId },
+    );
+  }
+  return lost === home ? "home" : "away";
 }
 
 /** F11 — the margin a delta's ledger records, read through the sport's score aliases (`gd`, `run_diff`, `diff`; else a
@@ -199,18 +225,18 @@ function scoreOf(delta: StandingsDelta): { for: number; against: number } | null
   return null;
 }
 
-/** `forfeitRow`: the result the rule pays as a forfeit (`payout`) — an unplayed forfeit or a bye. Margin bonuses read a
- *  played score, so they skip it; the forfeit bonuses pay only it. An award AFTER play is not one: its margin bonuses
- *  read the real score the sport credited (owner Q9, "normal win/loss points + bonuses on real score"). `delta` is the
- *  side as the rule BOOKS it (a draw-plus-bonus shoot-out is drawn for both, B2). */
+/** `forfeitRow`: the result the rule pays as a forfeit (`payout`) — an unplayed forfeit, never a bye (X-SW-5). Margin
+ *  bonuses read a played score, so they skip it; the forfeit bonuses pay only it. An award AFTER play is not one: its
+ *  margin bonuses read the real score the sport credited (owner Q9, "normal win/loss points + bonuses on real score").
+ *  `delta` is the side as the rule BOOKS it (a draw-plus-bonus shoot-out is drawn for both, B2). */
 function bonusesFor(
   delta: StandingsDelta,
   outcome: MatchOutcome,
   rule: PointsRule,
   forfeitRow: boolean,
 ): number {
-  // D14 (X-DW-4): a double walkover earns no bonus, `forfeit_loss` included — nobody forfeited TO anyone.
-  if (outcome.kind === "double_walkover") return 0;
+  // D14 (X-DW-4): a double walkover earns no bonus, `forfeit_loss` included — nobody forfeited TO anyone. X-SW-5: nor a bye.
+  if (outcome.kind === "double_walkover" || isBye(outcome)) return 0;
   let extra = 0;
   const margin = marginOf(delta);
   for (const b of rule.bonuses) {
@@ -330,17 +356,17 @@ function setPairOf(map: Readonly<Record<string, readonly [number, number]>>, sco
  *  4. a tie pays `tie` each, a draw (a cricket two-innings draw too, D10(c)) `draw` each — a rule without the field
  *     throws CONFIG_INVALID (`coverage` refuses such a rule at save);
  *  5. an award, and a pre-W2b win by walkover or forfeit (`forfeitShaped`), BEFORE `decidedIn` is read:
- *     - a forfeit with nothing played (`isUnplayedForfeit`) or a bye pays the forfeit row when the rule sets one — the
- *       organiser's more specific row outranks `loss.unplayed` (X-PT-1); only the unplayed forfeit also takes the
- *       row's `awardScore` (a bye never does: nobody forfeited);
+ *     - a forfeit with nothing played (`isUnplayedForfeit`) pays the forfeit row when the rule sets one — the
+ *       organiser's more specific row outranks `loss.unplayed` (X-PT-1) — and takes the row's `awardScore`; a bye takes
+ *       neither (X-SW-5, ruling 251: nobody forfeited);
  *     - otherwise the winner is paid the win of its credited score (ruling 108: `win.regulation`, or its set score's
- *       pair; a bye's clean sweep) and the loser `loss.unplayed` where the rule declares one (amended 108, D6: table
- *       tennis) — never a bye's, which has no loser — else the loss of the credited score;
+ *       pair; a bye's clean sweep, `setsToWin`-0 — X-SW-5) and the loser `loss.unplayed` where the rule declares one
+ *       (amended 108, D6: table tennis) — never a bye's, which has no loser — else the loss of the credited score;
  *  6. a win decided in `decidedIn`: a set sport's `bySetScore` pair (exact "W-L", else "*"; a match ended before its
  *     last set is scored FIVB 6.4.3's way, `setsToWin` to the other side's sets — ruling I2); a shoot-out under
  *     `shootoutAs: "draw_plus_bonus"` (B2) books BOTH sides drawn, pays each `draw` and the shoot-out winner `soBonus`
  *     (absent ⇒ 1) on top — no `wins` for either; otherwise `win`/`loss` by the so → ot → regulation chain;
- *  7. the bonuses, read off the side as the rule booked it (margins through the sport's score aliases, F11).
+ *  7. the bonuses, read off the side as the rule booked it (margins through the sport's score aliases, F11); none for a bye.
  * Only `points` and, under B2, the W/D/L counts change; the ledger is the module's, plus the display metrics `won_ot`,
  * `won_so`, `lost_ot`, `lost_so` (1, written only when 1) on a win decided beyond regulation (spec §5.7), and — on a
  * forfeit with nothing played — the rule's configured award score, which REPLACES `for` / `against` / `diff` and the
@@ -371,10 +397,10 @@ export function payout(
     });
   }
   const d: DecidedIn = decidedIn ?? "regulation";
+  // The rule's forfeit row (and its award score and forfeit bonuses) pays an unplayed forfeit alone: a bye is no forfeit,
+  // and pays the win with no bonus (X-SW-5, ruling 251).
   const forfeit = isUnplayedForfeit(outcome, played);
   const bye = isBye(outcome);
-  // The rule's forfeit row pays an unplayed forfeit and a bye alike; only the award score tells them apart.
-  const forfeitRow = forfeit || bye;
   const award = forfeitShaped(outcome);
   // `d` is "so" only for a win (the guard above); a forfeit-shaped win is an award whatever a caller passes.
   const shootoutDraw = !award && rule.bySetScore === undefined && d === "so" && rule.shootoutAs === "draw_plus_bonus";
@@ -390,7 +416,7 @@ export function payout(
         return levelPayout(rule, levelOutcomeKey(outcome.kind));
       // a win or an award: below
     }
-    if (forfeitRow && rule.forfeit !== undefined) {
+    if (forfeit && rule.forfeit !== undefined) {
       return delta.won === 1 ? rule.forfeit.winnerPoints : rule.forfeit.loserPoints;
     }
     if (award) {
@@ -411,7 +437,7 @@ export function payout(
   const mapped = pair.map((delta) => {
     // B2: a draw-plus-bonus shoot-out is a draw on the table — both sides drawn, neither a win nor a loss.
     const booked: StandingsDelta = shootoutDraw ? { ...delta, won: 0, drawn: 1, lost: 0 } : delta;
-    const points = sidePoints(delta) + bonusesFor(booked, outcome, rule, forfeitRow);
+    const points = sidePoints(delta) + bonusesFor(booked, outcome, rule, forfeit);
     const metrics = { ...delta.metrics };
     if (forfeit && rule.forfeit?.awardScore !== undefined) {
       const [w, l] = rule.forfeit.awardScore;
@@ -773,4 +799,37 @@ export function pointsRuleBounds(rule: PointsRule, reachable: ReadonlySet<Outcom
     lossCeil,
     winsOnly,
   };
+}
+
+/** W3 (ruling R4; design §5) — what a Swiss stage's draw points read off its SPORT under the stage's cfg, beside the rule:
+ *  whether a draw can stand in the stage, and the sets a match is won on (a set-score rule's clean sweep is "W-0"). */
+export interface SwissDrawFacts {
+  /** `reachableResultKinds(cfg, "swiss")` holds "draw", or `supportsDraws(cfg, "swiss")`. A rule that DECLARES a draw the
+   *  stage can never reach (IIHF ice hockey's 3/2/1/0, generic's win/loss mode) is a sport with no draw here. */
+  readonly drawReachable: boolean;
+  /** `setsToWinOf(module, cfg)`: undefined for a sport that keeps no set score. */
+  readonly setsToWin: number | undefined;
+}
+
+/** The facts `swissDrawPoints` reads, from the sport's own declarations under `cfg` (as its schema parses it). */
+export function swissDrawFactsOf(module: AnySportModule, cfg: unknown): SwissDrawFacts {
+  const parsed: unknown = module.configSchema.parse(cfg);
+  return {
+    drawReachable: module.reachableResultKinds(parsed, "swiss").has("draw") || module.supportsDraws(parsed, "swiss"),
+    setsToWin: setsToWinOf(module, cfg),
+  };
+}
+
+/** W3 (X-SW-7, X-SW-8; rulebook-W3-swiss.md §4 "Non-chess scaling"; rulings R4, 251) — a draw's points under a Swiss
+ *  stage's rule: the unit of the dummy cap "draw points × rounds" (FIDE C.07 (2026) 16.4.2) and of a 16.2.5 round read as
+ *  a draw (16.3.2). The rule's `draw` where a draw can stand in the stage; otherwise half the win points, the
+ *  Standard-Points midpoint (C.07 7.7). Under a set-score rule the win points are the clean sweep's ("W-0", else "*"),
+ *  the win a bye pays (design §5, X-SW-5). */
+export function swissDrawPoints(rule: PointsRule, facts: SwissDrawFacts): number {
+  if (facts.drawReachable && rule.draw !== undefined) return rule.draw;
+  if (rule.bySetScore === undefined) return rule.win.regulation / 2;
+  if (facts.setsToWin === undefined) {
+    throw new EngineError("CONFIG_INVALID", "the points rule pays by set score, but the sport keeps no set score (coverage refuses such a rule at save)", {});
+  }
+  return setPairOf(rule.bySetScore, `${facts.setsToWin}-0`)[0] / 2;
 }

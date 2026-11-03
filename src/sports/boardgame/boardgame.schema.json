@@ -2,12 +2,6 @@
   "configSchema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "properties": {
-      "byeScore": {
-        "default": 2,
-        "maximum": 9007199254740991,
-        "minimum": 0,
-        "type": "integer"
-      },
       "clock": {
         "properties": {
           "base": {

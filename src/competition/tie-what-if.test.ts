@@ -40,10 +40,14 @@ const NOT_ONLY_WINS = { winsOnly: false, primary: "points" } as const;
 // Each sport's default league order under its default cfg (W2d T8: `defaultTiebreakers(kind, cfg)`).
 const BADMINTON_ORDER = badminton.defaultTiebreakers("league", badminton.configSchema.parse({}));
 const VOLLEYBALL_ORDER = volleyball.defaultTiebreakers("league", volleyball.configSchema.parse({}));
-// W2d T11 (OC1): a Swiss stage keeps the pre-W2d points-first order, so the OQ1 skip of `wins` after `points` is still
-// read off a real module declaration — the Swiss one. The league orders are wins-first (D11; the P25 and BD-TB-1 cases).
-const BADMINTON_SWISS = badminton.defaultTiebreakers("swiss", badminton.configSchema.parse({}));
-const VOLLEYBALL_SWISS = volleyball.defaultTiebreakers("swiss", volleyball.configSchema.parse({}));
+// W2d T11 (OC1) read the OQ1 skip of `wins` after `points` off the modules' Swiss orders. W3 (X-SW-9, rulebook-W3 §5)
+// replaced those with the Buchholz chains, so the points-first, wins-second set-sport order is now a PINNED one: the W2d
+// migration pinned production's Swiss stage to it (B1), and a pinned stage still ranks by its pin (X-TB-2), so its
+// what-if is still served. Typed from the plan's Anchors row (main@e97823e4d8), never read off a module. The league
+// orders are wins-first (D11; the P25 and BD-TB-1 cases).
+const PINNED_SWISS: readonly TiebreakerKey[] = ["points", "wins", "set_ratio", "point_ratio", "h2h_points"];
+const BADMINTON_SWISS = PINNED_SWISS;
+const VOLLEYBALL_SWISS = PINNED_SWISS;
 const CARROM_ORDER = carrom.defaultTiebreakers("league", carrom.configSchema.parse({}));
 
 // The ledger each ratio comparator reads (tiebreakers.ts COMPARATORS). If a
@@ -115,10 +119,10 @@ describe("tieDecidingKey", () => {
   });
 });
 
-describe("tieWhatIf — the cascade and the skip read off real modules", () => {
+describe("tieWhatIf — the cascade (a module's default or a typed pinned order) and the skip (matchPointsBounds) read off real modules", () => {
   // Badminton pays 2 for every win and 0 otherwise, so rows level on points
   // are level on wins: the target lands on set_ratio, the next key.
-  it("badminton Swiss default cascade: `wins` is skipped and the target is on set ratio", () => {
+  it("badminton Swiss stage pinned to the pre-W3 order: `wins` is skipped and the target is on set ratio", () => {
     const b = badminton.matchPointsBounds(badminton.configSchema.parse({}));
     expect(b.winsOnly).toBe(true);
     const me = { ...row("me", 3, { sets_won: 5, sets_lost: 3 }, 2), points: 2 * b.winFloor };
@@ -129,7 +133,7 @@ describe("tieWhatIf — the cascade and the skip read off real modules", () => {
       margin: 2,
     });
     expectTightTarget(me, rv, "set_ratio", 2);
-    // The same answer through the FULL default cascade, `wins` included.
+    // The same answer through the FULL pinned cascade, `wins` included.
     expect(ahead(me, rv, "set_ratio", 2, BADMINTON_SWISS)).toBe(true);
     // The differential: without the skip, `wins` decides and there is no target.
     expect(tieWhatIf(me, rv, BADMINTON_SWISS, { winsOnly: false, primary: badminton.primaryTableKey })).toEqual({
@@ -143,7 +147,7 @@ describe("tieWhatIf — the cascade and the skip read off real modules", () => {
   // "the first key the two rows differ on today". Level on sets NOW, the next
   // match still moves the set ratio, so the target stays on set_ratio; point
   // ratio decides only if the sets END level (m − 1 here).
-  it("badminton Swiss, sets level now: the target stays on set ratio; point ratio decides only if the sets end level", () => {
+  it("badminton Swiss stage pinned to the pre-W3 order, sets level now: the target stays on set ratio; point ratio decides only if the sets end level", () => {
     const b = badminton.matchPointsBounds(badminton.configSchema.parse({}));
     const me = { ...row("me", 3, { sets_won: 4, sets_lost: 4, points_won: 150, points_lost: 140 }, 2), points: 4 };
     const rv = { ...row("rv", 3, { sets_won: 3, sets_lost: 3, points_won: 120, points_lost: 125 }, 2), points: 4 };
@@ -166,7 +170,7 @@ describe("tieWhatIf — the cascade and the skip read off real modules", () => {
   });
   // Volleyball's 3-2 win pays 2 and its 2-3 loss pays 1, so rows level on
   // points can differ on wins: `wins` stays the deciding key, rule only.
-  it("volleyball Swiss default cascade: `wins` decides, so no target — the rule and both win counts", () => {
+  it("volleyball Swiss stage pinned to the pre-W3 order: `wins` decides, so no target — the rule and both win counts", () => {
     const b = volleyball.matchPointsBounds(volleyball.configSchema.parse({}));
     expect(b.winsOnly).toBe(false);
     const me = row("me", 3, { sets_won: 9, sets_lost: 6 }, 3); // three 3-2 wins
@@ -177,6 +181,25 @@ describe("tieWhatIf — the cascade and the skip read off real modules", () => {
       mine: "3",
       theirs: "2",
     });
+  });
+  // W3 (X-SW-9, BD-TB-2): badminton's Swiss DEFAULT is rulebook §5's set-sport chain, whose step after points is
+  // Buchholz Cut-1 — a column of the opponents' scores, which no result of the row's own can be aimed at: the rule only.
+  it("X-SW-9 badminton Swiss default (rulebook §5): two level on points go to Buchholz Cut-1 — the rule and both Cut-1 values as shown, no target", () => {
+    const cfg = badminton.configSchema.parse({});
+    const b = badminton.matchPointsBounds(cfg);
+    const order = badminton.defaultTiebreakers("swiss", cfg);
+    expect(order.slice(0, 2), "premise: rulebook §5's chain, Cut-1 second").toEqual(["points", "buchholz_cut1"]);
+    expect([b.winFloor, cfg.bestOf], "premise: badminton's Swiss rule pays a win 2, best of 3").toEqual([2, 3]);
+    // Three rounds each, every card played (no unplayed round, so Cut-1 drops each one's LOWEST opponent; X-SW-7):
+    //   me met opponents now on 2, 4 and 2 points: Buchholz 8, Cut-1 drops a 2 → 6.
+    //   rv met opponents now on 0, 2 and 2 points: Buchholz 4, Cut-1 drops the 0 → 4.
+    // A whole-point table (badminton's unit) shows Buchholz unhalved, as an integer: "6" and "4" (X-SW-8, SW-L2).
+    const me = { ...row("me", 3, { sets_won: 5, sets_lost: 3, buchholz_cut1: 2 + 4 + 2 - 2 }, 2), points: 2 * b.winFloor };
+    const rv = { ...row("rv", 3, { sets_won: 4, sets_lost: 2, buchholz_cut1: 0 + 2 + 2 - 0 }, 2), points: 2 * b.winFloor };
+    const got = tieWhatIf(me, rv, order, { winsOnly: b.winsOnly, primary: badminton.primaryTableKey });
+    expect(got).toEqual({ kind: "rule", key: "buchholz_cut1", mine: "6", theirs: "4" });
+    // The differential: the very same pair under the pinned pre-W3 order gets a set-ratio target.
+    expect(tieWhatIf(me, rv, BADMINTON_SWISS, { winsOnly: b.winsOnly, primary: badminton.primaryTableKey })?.kind).toBe("target");
   });
   // W2d T11 BD-TB-1 (BWF GCR 16.2.2): two players level on matches won are settled by the match between them — the
   // league default's next step is the two-way head-to-head, a rule with no per-row value and no margin to aim at.
@@ -191,7 +214,7 @@ describe("tieWhatIf — the cascade and the skip read off real modules", () => {
       mine: null,
       theirs: null,
     });
-    // The differential: the Swiss order (points first) still aims at set ratio for the very same pair.
+    // The differential: the pinned pre-W3 Swiss order (points first) still aims at set ratio for the very same pair.
     expect(tieWhatIf(me, rv, BADMINTON_SWISS, { winsOnly: b.winsOnly, primary: badminton.primaryTableKey })?.kind).toBe("target");
   });
   // W2d P25 (spec §6 E3): the what-if keyed off `points` being first, so a wins-first order — the order volleyball,

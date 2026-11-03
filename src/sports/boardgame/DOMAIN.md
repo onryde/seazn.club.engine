@@ -53,7 +53,7 @@ Schema-path prefixes: `Ev.` = an event payload branch, `Cfg.` = config,
 | Clock family (classical / rapid / blitz) | all | — (config) | `Cfg.variant` | modelled | the only thing the three variants set |
 | Adjournment and the sealed move | classical | person | — | deferred | obsolete in FIDE play since the 1990s; would need sealed-move + resumption state for a case we have never been asked for |
 | Arbiter intervention, warning, conduct penalty | all | person | `core.note` | deferred | free text is the right fidelity; a closed penalty vocabulary needs a product decision (and i18n). **Reconsidered and reaffirmed in S4 (#428)**: boardgame has no misconduct/conduct-penalty concept at all beyond this free-text `core.note` (`core.forfeit`/`core.abandon` reasons are unrelated, different fact) — no `DisciplineModel`, no card-shaped event. Consistent with #430's PARKED stance on boardgame's harder problems; no-op, no code touched. |
-| Bye value (full-point / half-point) | all | entrant | `Cfg.byeScore` | modelled | competition-level; read by the Swiss engine, not folded here |
+| Bye value (full point; no half-point bye, X-SW-6) | all | entrant | — | modelled | a bye is the win (X-SW-5); not a setting. W3 removed `Cfg.byeScore` (X-SW-6, ruling 251): nothing read it, and a stored copy is stripped on parse, never rejected |
 | Swiss tie-breaks (Buchholz, Buchholz cut-1, Sonneborn-Berger, direct, wins) | all | entrant | `defaultTiebreakers`, `metrics.wins` | modelled | |
 | Player rating; rated vs unrated event | all | person | — | deferred | a person/entrant record fact, not a match-ledger fact |
 | Abandonment (venue lost, round replayed) | all | entrant | `core.abandon` → `State.replayFlagged` | modelled | leaves the game undecided and flags it |

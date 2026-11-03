@@ -18,6 +18,7 @@ import {
   type TableStage,
 } from "../competition/stage.ts";
 import { validateCascade } from "../competition/cascade-rules.ts";
+import { swissDrawFactsOf } from "../competition/points.ts";
 import { resolveTableRules, type TableRules } from "../competition/table-rules.ts";
 import type { MembersKey, StoredLotsDraw } from "../competition/tiebreakers.ts";
 import {
@@ -651,7 +652,7 @@ function playSwissStage(
       rank: seeds.get(id) ?? Number.MAX_SAFE_INTEGER,
     }));
     const paired = pairRound(standings, { played, colours, byes, floats }, { chess });
-    if (paired.pairings.length === 0 && entrants.length >= 2) break; // no legal matching left
+    if (!paired.ok) break; // SWISS_NO_LEGAL_PAIRING: the round is refused and seats nothing
     if (paired.bye !== undefined) byes.add(paired.bye);
     for (const id of paired.floated) floats.set(id, (floats.get(id) ?? 0) + 1);
 
@@ -680,7 +681,7 @@ function playSwissStage(
           result,
         }),
       );
-      tableFixtures.push({ id: fixtureId, roundNo: round, status: "decided", result });
+      tableFixtures.push({ id: fixtureId, roundNo: round, status: "decided", result, unplayed: null });
     }
     roundsPlayed = round;
   }
@@ -692,6 +693,10 @@ function playSwissStage(
     rules: stageRules(ctx, "swiss"),
     ...(ctx.module.winsCount === undefined ? {} : { winsCount: ctx.module.winsCount }),
     swiss: true,
+    // W3 (ruling R4, N1): a Swiss ledger stage names its sport's draw facts, as the app passes them.
+    swissDraw: swissDrawFactsOf(ctx.module, ctx.cfg),
+    // final review m3: a Swiss ledger stage names its absences; nobody enters late or withdraws in a simulated stage
+    swissAbsentRounds: new Map(),
     seeds,
     rngSeed: deriveSeed(ctx.seed, "lots", stageId),
     rounds: roundsPlayed,

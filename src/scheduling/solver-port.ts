@@ -14,6 +14,99 @@ export interface SolveBuildInput {
      *  unconstrained by round order on the service side, not round 0. */
     roundNo?: number;
     /**
+     * X-SW-31 (W3 T10b, controller ruling 2026-10-31) — how this fixture's
+     * round sequence is ordered. THE CONTRACT for any solver behind this port:
+     *
+     *  - Absent or `"start"`: the round-order START floor the service already
+     *    places (C1): for two round-bearing fixtures of one sequence with
+     *    `roundNo` i < j, j's day is not before i's, and on one day j does not
+     *    start before i.
+     *  - `"end"` (a Swiss stage): additionally, j does not START before i
+     *    ENDS: `start_j >= start_i + constraints.matchMinutes`. Equality is
+     *    legal. Read for movable fixtures and, through
+     *    {@link SolveBuildInput.existing}'s `roundBarrier`, for pin rows: a
+     *    pin of a later round caps when an earlier round's fixtures may end,
+     *    a pin of an earlier round floors when a later round's may start. Two
+     *    pins are never ordered against each other (pin-pin exempt).
+     *  - The sequence on the wire is the division (`divisionId`), as for
+     *    `roundNo`: `build.ts` strips a division's rounds, and so its barrier,
+     *    whenever its rounds span more than one stage or pool, and sends this
+     *    only beside a `roundNo` it forwards. Constant across a sequence
+     *    (`build.ts` refuses a mixed one CONFIG_INVALID before asking).
+     *  - `build.ts` sends only `"end"`; a start-floor sequence carries no key.
+     *
+     * The model is NOT in this repository (onryde/seazn.club.placement, behind
+     * onryde/seazn.club's `@seazn/scheduler` adapter). Until it reads this
+     * field, `build.ts`'s verifier gate refuses any board that breaks the
+     * barrier — between two of its own rows, or against a same-sequence row
+     * of `existing` (a played round, the shape the app hands over) — and
+     * ships the greedy board, which honours both (`round_order_end` is a
+     * blocking `order` row).
+     */
+    roundBarrier?: "start" | "end";
+    /**
+     * W3 T10c (owner ruling 256, 2026-11-01; proto `Fixture.round_gap_minutes`)
+     * — an `"end"` sequence's gap, in whole minutes: a fixture of round j does
+     * not start before a fixture of an earlier round i of its sequence ENDS
+     * plus this: `start_j >= start_i + constraints.matchMinutes + gap`
+     * (equality legal; pins in both directions, pin-pin exempt, exactly as
+     * `roundBarrier`). The division's minimum rest, carried by the round
+     * because an unpaired slot has no people for person rest to reach. Sent
+     * only beside `roundBarrier: "end"` and only when above 0; absent = no gap.
+     * Constant across a sequence (`build.ts` refuses a mixed one first). A gap
+     * on a sequence under any other barrier is IGNORED by the engine — never
+     * sent, never placed by, never verified — and the service ignores it too
+     * (controller ruling, T10c fix round 1).
+     */
+    roundGapMinutes?: number;
+    /**
+     * W3 T10c (owner ruling 256; proto `Fixture.rounds_per_day_cap`) — a
+     * round sequence's cap on ROUNDS per calendar day (the division's
+     * per-player daily match cap — in a Swiss each player plays once per
+     * round). Paired fixtures and unpaired slots alike.
+     *
+     * THE RULE (fix round 1, I1 — the service's, which the engine's placer and
+     * verifier now share): the cap counts the rounds MOVABLE fixtures ADD to a
+     * day. On one `dayIndex`, with `R_pin` the distinct rounds of the pins on
+     * it (`existing` rows with a forwarded round, counted on their
+     * `existing[].dayIndex`) and `R_mov` those of the movable fixtures placed
+     * on it: `|R_mov \ R_pin| <= max(0, cap - |R_pin|)`. So a movable fixture
+     * whose round a pin already put on that day is always admitted, however
+     * many rounds the pins put there; a day over the cap by pins alone is NOT
+     * infeasible, it just takes no new round. Pins are never constrained.
+     *
+     * Under ANY barrier (controller ruling, T10c fix round 1): `"end"`,
+     * `"start"` or absent alike. Sent beside a forwarded `roundNo`, only when
+     * above 0, and only when the build has a zone: without one every slot's
+     * `dayIndex` is 0 and the cap would bind the whole schedule. Absent = no
+     * cap. Constant across a sequence.
+     *
+     * Pin rows carry neither limit: a pin's round is forwarded only when the
+     * request holds exactly one round sequence, so a pin binds by that
+     * sequence's limits, read off its fixtures. (A request holding TWO Swiss
+     * sequences therefore forwards no pin round at all, so the service caps
+     * and gaps such a joint build without its played rounds; the build gate
+     * judges the reply against them and ships greedy when it breaks one — an
+     * accepted limit, fix round 1, m3.)
+     */
+    roundsPerDayCap?: number;
+    /**
+     * W3 T10c (owner ruling 255, 2026-11-01; proto `Fixture.unpaired_round_slot`)
+     * — an UNPAIRED ROUND SLOT: a board of a Swiss round whose pairing is not
+     * drawn yet. `entrantIds` and `people` are both empty, `roundNo` is set and
+     * `roundBarrier` is `"end"`; it takes a court and a time and carries no
+     * person constraint, every other constraint applying (the barrier, its
+     * gap, the day cap, courts, windows). Without it the service refuses a
+     * fixture with neither entrants nor people. `build.ts` sets it ONLY beside
+     * a round it forwards: a slot whose round was stripped goes out unflagged
+     * (and is refused, so greedy ships), never flagged without a round, which
+     * the service would refuse for the whole request. That greedy fallback is
+     * deliberate, not a defect to "fix" by flagging stripped slots (fix round
+     * 1, m4). A HALF-seated fixture (one entrant known, no people) is not
+     * unpaired: flagging it would drop its entrant's person constraints.
+     */
+    unpairedRoundSlot?: boolean;
+    /**
      * C10 (2026-08-16, wire person indices) — person ids, straight from
      * {@link SchedulableFixture.people} — resolved through a SEPARATE index
      * space than {@link entrantIds}; see `Fixture.person_indices`'s own
@@ -103,6 +196,29 @@ export interface SolveBuildInput {
      * index on the wire for the service to re-verify it against.
      */
     roundNo?: number;
+    /** X-SW-31 (W3 T10b) — the barrier of the sequence this pin's `roundNo`
+     *  is forwarded into; set only beside a forwarded `roundNo`. Same contract
+     *  as {@link SolveBuildInput.fixtures}' `roundBarrier`. */
+    roundBarrier?: "start" | "end";
+    /**
+     * W3 T10c fix round 1 (I2; proto `PinnedRow.day_index`, field 7,
+     * `optional int32`, placement 9bd5335) — the CALENDAR day this pin counts
+     * on, for `fixtures[].roundsPerDayCap` and for a person's
+     * `max_fixtures_per_day` alike, in the SAME index space as
+     * `grid.slots[].dayIndex`: the index of the slots that share the pin
+     * start's org-zone calendar day. A pin earlier than the lattice's first
+     * slot on that same day (a round played this morning, handed over to a
+     * rebuild whose lattice starts now) gets that slot's index, so it fills
+     * today's cap. Absent when no slot falls on the pin's day (no movable
+     * fixture can land there, so the pin can crowd none; the service then
+     * counts it on the day whose slot range holds its start, which is none,
+     * the same answer). Never negative: the service refuses a negative value
+     * by name, and an index read off the slots' own days cannot be one. Sent
+     * on EVERY pin row with a zone whose day has a slot, round or no round,
+     * capped or not (controller ruling after fix round 1); absent without a
+     * zone. A request with no pin rows is byte-identical to T10b's.
+     */
+    dayIndex?: number;
   }[];
   dependencies: { beforeFixtureId: string; afterFixtureId: string }[];
   /**

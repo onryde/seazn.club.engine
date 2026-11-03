@@ -21,7 +21,7 @@ import { forEachSport } from "../testkit/for-each-sport.ts";
 import { lineupFromCatalog, makeEnvelope, tableRulesOf } from "../testkit/helpers.ts";
 import { completeTableStage, type TableFixture } from "./stage.ts";
 import { foldResults, type FixtureResult, type StandingsRow } from "./standings.ts";
-import { buildSwissTable, directEncounter, rankStandings, type RankContext, type RankingResult, type SwissGame, type SwissTable } from "./tiebreakers.ts";
+import { buildSwissLedger, directEncounter, rankStandings, type RankContext, type RankingResult, type SwissGame, type SwissTable } from "./tiebreakers.ts";
 
 // ---------------------------------------------------------------------------
 // Builders
@@ -118,6 +118,7 @@ const ALL_KEYS = [
   "points", "wins", "h2h_points", "h2h_diff", "h2h_for", "diff", "for", "nrr", "set_ratio", "game_ratio", "board_ratio",
   "point_ratio", "buchholz", "buchholz_cut1", "sberger", "direct", "fair_play", "seed", "lots", "set_diff", "point_diff",
   "h2h_two", "h2h_wins", "h2h_set_ratio", "h2h_point_ratio", "h2h_reapply", "h2h_exclusion", "matches_played", "field_goals",
+  "opp_diff",
 ] as const;
 type _AllKeysAreKeys = (typeof ALL_KEYS)[number] extends TiebreakerKey ? true : never;
 type _AllKeysAreAll = Exclude<TiebreakerKey, (typeof ALL_KEYS)[number]> extends never ? true : never;
@@ -674,11 +675,16 @@ function trace(r: RankingResult, id: EntrantId): unknown {
   return t === undefined ? undefined : { ...t, with: [...t.with].sort() };
 }
 
-/** A Swiss card in half-points (win 2, draw 1, loss 0), the score summed from it. */
-const game = (opponent: EntrantId, result: "win" | "draw" | "loss", unplayed = false): SwissGame => ({
-  opponent, result, scored: result === "win" ? 2 : result === "draw" ? 1 : 0, ...(unplayed ? { unplayed: true } : {}),
+/** A Swiss card's game in half-points (win 2, draw 1, loss 0). A forfeit (C.07 16.2.2 / 16.2.4) carries its 16.4.1 cap,
+ *  the scheduled opponent's adjusted score, given as `forfeitCap`. */
+const game = (opponent: EntrantId, result: "win" | "draw" | "loss", forfeitCap?: number): Omit<SwissGame, "round"> => ({
+  opponent, result, scored: result === "win" ? 2 : result === "draw" ? 1 : 0,
+  ...(forfeitCap === undefined ? {} : { unplayed: result === "win" ? "forfeit_win" : "forfeit_loss", cap: forfeitCap }),
 });
-const card = (entrant: EntrantId, games: SwissGame[]) => ({ entrant, score: games.reduce((sum, g) => sum + g.scored, 0), games });
+/** A card in round order (round n is the n-th game), the score summed from it. */
+const card = (entrant: EntrantId, games: Omit<SwissGame, "round">[]) => ({
+  entrant, score: games.reduce((sum, g) => sum + g.scored, 0), games: games.map((g, i): SwissGame => ({ ...g, round: i + 1 })),
+});
 const swissRows = (table: SwissTable): StandingsRow[] =>
   table.map((c) =>
     row(c.entrant, {
@@ -771,36 +777,38 @@ describe("W2d T4 — the refinement driver's guards", () => {
     const [seeds, cascade] = [swissSeeds, swissDirect];
     // A beat B over the board, and beat D by FORFEIT. Direct encounter among the two: A 1-0 → A above B (the seed
     // alone would say B).
+    // (Each forfeit's cap is its opponent's score, 16.4.1: D 1 for A's, A 4 for D's. Direct encounter never reads it.)
     const played: SwissTable = [
-      card("A", [game("B", "win"), game("C", "loss"), game("D", "win", true)]),
+      card("A", [game("B", "win"), game("C", "loss"), game("D", "win", 1)]),
       card("B", [game("A", "loss"), game("D", "win"), game("C", "win")]),
       card("C", [game("D", "draw"), game("A", "win"), game("B", "loss")]),
-      card("D", [game("C", "draw"), game("B", "loss"), game("A", "loss", true)]),
+      card("D", [game("C", "draw"), game("B", "loss"), game("A", "loss", 4)]),
     ];
     expect(played.map((c) => c.score)).toEqual([4, 4, 3, 1]);
     expect(directEncounter(played, "A", "B")).toBe(1);
-    const met = rankStandings(swissRows(played), { cascade, swiss: played, seeds, rngSeed: 1 });
+    const met = rankStandings(swissRows(played), { cascade, swiss: played, pointsUnit: "half", seeds, rngSeed: 1 });
     expect(ids(met)).toEqual(["A", "B", "C", "D"]);
     expect([trace(met, "A"), trace(met, "B")]).toStrictEqual([{ key: "direct", with: ["B"] }, { key: "direct", with: ["A"] }]);
-    expect(ids(rankStandings(swissRows(played), { cascade: ["points", "seed", "lots"], swiss: played, seeds, rngSeed: 1 }))).toEqual(["B", "A", "C", "D"]);
+    expect(ids(rankStandings(swissRows(played), { cascade: ["points", "seed", "lots"], swiss: played, pointsUnit: "half", seeds, rngSeed: 1 }))).toEqual(["B", "A", "C", "D"]);
   });
 
-  it("direct at rank time on a forfeited Swiss meeting matches the engine's directEncounter (parity pin; no FIDE C.07 digest covers forfeits)", () => {
-    // NOT a rulebook value: the rulebook digests do not say whether a forfeit counts in direct encounter, so this pins
-    // only that the rank-time step and the exported pairwise reader agree (both skip `unplayed`). A FIDE ruling is
-    // owed; if it says a forfeit counts, both readers and this expected order change together.
+  it("direct at rank time on a forfeited Swiss meeting matches the engine's directEncounter (parity pin; a forfeit is not a meeting, rulebook-W3 §4 M1)", () => {
+    // Settled by W3 (row X-SW-7): a forfeit is NOT a meeting (rulebook-W3 §4 M1, P-A2, A2 3.5), so direct
+    // encounter skips it; the rule's own proof is swiss-unplayed.test.ts ("a forfeit is not a meeting"). This test pins
+    // that the rank-time step and the exported pairwise reader agree on it (both skip `unplayed`).
     const [seeds, cascade] = [swissSeeds, swissDirect];
     // The same scores, but A beat B by FORFEIT and D over the board. directEncounter reads the unplayed game as no
     // meeting, so the pair is level on direct and the seed decides: B above A.
+    // (The forfeit's caps are each other's score, 4, under 16.4.1. Direct encounter never reads them.)
     const forfeited: SwissTable = [
-      card("A", [game("B", "win", true), game("C", "loss"), game("D", "win")]),
-      card("B", [game("A", "loss", true), game("D", "win"), game("C", "win")]),
+      card("A", [game("B", "win", 4), game("C", "loss"), game("D", "win")]),
+      card("B", [game("A", "loss", 4), game("D", "win"), game("C", "win")]),
       card("C", [game("D", "draw"), game("A", "win"), game("B", "loss")]),
       card("D", [game("C", "draw"), game("B", "loss"), game("A", "loss")]),
     ];
     expect(forfeited.map((c) => c.score)).toEqual([4, 4, 3, 1]);
     expect(directEncounter(forfeited, "A", "B")).toBe(0);
-    const unmet = rankStandings(swissRows(forfeited), { cascade, swiss: forfeited, seeds, rngSeed: 1 });
+    const unmet = rankStandings(swissRows(forfeited), { cascade, swiss: forfeited, pointsUnit: "half", seeds, rngSeed: 1 });
     expect(ids(unmet)).toEqual(["B", "A", "C", "D"]);
     expect([trace(unmet, "B"), trace(unmet, "A")]).toStrictEqual([{ key: "seed", with: ["A"] }, { key: "seed", with: ["B"] }]);
   });
@@ -870,8 +878,9 @@ describe("W2d T4 — the refinement driver's guards", () => {
         return Reflect.get(target, prop, receiver) as unknown;
       },
     });
-    const swiss = buildSwissTable(["A", "B", "C"], games);
-    const onSwiss = rankStandings(foldResults(["A", "B", "C"], games), { cascade: ["points", "sberger", "lots"], swiss, results: counted, rngSeed: 1 });
+    // The three games as three rounds of a 3/1/0 (whole-point, draw 1) Swiss; nothing is unplayed.
+    const swiss = buildSwissLedger(["A", "B", "C"], games.map((result, i) => ({ round: i + 1, result })), { rounds: 3, drawPoints: 1 });
+    const onSwiss = rankStandings(foldResults(["A", "B", "C"], games), { cascade: ["points", "sberger", "lots"], swiss, pointsUnit: "whole", results: counted, rngSeed: 1 });
     expect(ids(onSwiss)).toEqual(["A", "B", "C"]);
     expect(reads).toBe(0);
   });

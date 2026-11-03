@@ -135,6 +135,8 @@ describe("Hammes preset (Jul3/08 §7)", () => {
         .map((id, i) => ({ entrantId: id, score: scores.get(id)!, rank: i + 1 }))
         .sort((a, b) => b.score - a.score || a.rank - b.rank);
       const round = pairRound(standings, { played }, { pairing: "rank_adjacent" });
+      expect(round).toMatchObject({ ok: true }); // a refusal shows its reason here
+      if (!round.ok) return;
       expect(round.pairings).toHaveLength(4);
       for (const p of round.pairings) {
         expect(played.has(pairKey(p.home, p.away))).toBe(false); // no rematch

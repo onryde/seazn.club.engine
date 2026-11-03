@@ -111,6 +111,7 @@ describe("DERIVED_METRICS", () => {
       "point_ratio",
       "buchholz_cut1",
       "buchholz",
+      "opp_diff",
       "set_diff",
       "point_diff",
       "field_goals",

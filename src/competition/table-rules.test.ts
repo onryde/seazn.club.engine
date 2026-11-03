@@ -43,7 +43,7 @@ const VOCABULARY: Record<TiebreakerKey, true> = {
   set_ratio: true, game_ratio: true, board_ratio: true, point_ratio: true, buchholz: true, buchholz_cut1: true,
   sberger: true, direct: true, fair_play: true, seed: true, lots: true, set_diff: true, point_diff: true, h2h_two: true,
   h2h_wins: true, h2h_set_ratio: true, h2h_point_ratio: true, h2h_reapply: true, h2h_exclusion: true,
-  matches_played: true, field_goals: true,
+  matches_played: true, field_goals: true, opp_diff: true,
 };
 const KEYS = Object.keys(VOCABULARY) as TiebreakerKey[];
 // Spec §5.9 / §5.5 rule 4: "every head-to-head key (`h2h_*`, `h2h_two`, `direct`, the h2h modifiers)".

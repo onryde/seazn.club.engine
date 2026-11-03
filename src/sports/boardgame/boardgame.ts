@@ -4,7 +4,7 @@
 // carry the metrics and pairing metadata the Swiss competition engine needs.
 //
 // Half-point integers, never floats: 1 / ½ / 0 are stored as 2 / 1 / 0
-// throughout (points, byeScore, the Swiss ledger) and divided by two only for
+// throughout (points, a bye's win, the Swiss ledger) and divided by two only for
 // display — spec 04 §6.1, chess.md §2. This keeps the ledger exact (spec 04
 // §9.4) and Buchholz/Sonneborn-Berger integer arithmetic (competition/
 // tiebreakers.ts).
@@ -68,10 +68,10 @@ export const BoardgameScoring = z.object({
 export const BoardgameCfg = z.object({
   scoring: BoardgameScoring.default({ win: 2, draw: 1, loss: 0 }),
   colors: z.boolean().default(true), // home = White (chess.md §2)
-  // Half-points a bye is worth (FIDE full-point bye = 2, half-point bye = 1).
-  // Byes are a competition-level concept; this value is read by the Swiss
-  // engine, not folded here.
-  byeScore: z.number().int().nonnegative().default(2),
+  // No `byeScore` (W3 X-SW-6, ruling 251): a pairing-allocated bye always pays the win (X-SW-5, competition/points.ts),
+  // so the bye's value is not a setting. The key (default 2) sat here until W3 and nothing ever read it. A cfg stored
+  // with it still parses: zod strips the unknown key on read and never rejects it, and the rest of the cfg stands.
+  // Its removal from every recorded state is why boardgame's FOLD_EPOCH is 5 (sport/fold-epoch.ts).
   // Clock family — metadata only, no scoring effect (chess.md §2).
   variant: z.enum(["classical", "rapid", "blitz"]).default("classical"),
   // Time control. Still metadata only: the board game has no clock in the fold,
@@ -905,7 +905,7 @@ export const boardgame: SportModule<BoardgameCfg, BoardgameEv, BoardgameState> =
     blitz: { variant: "blitz" },
   },
   // W2c (spec §4.1 Q5) — a chess match has no per-match format: the time control is set per stage (item 14), and the
-  // tie-break games exist only where someone must advance (`bracketDeciders`). Scoring and the bye are table points.
+  // tie-break games exist only where someone must advance (`bracketDeciders`). Scoring is table points; a bye is the win.
   ruleKeys: {
     variant: { scope: "stage" },
     clock: { scope: "stage" },
@@ -914,7 +914,7 @@ export const boardgame: SportModule<BoardgameCfg, BoardgameEv, BoardgameState> =
     // organiser key: `bracketDeciders` forces it on, and the rung list now decides whether anything is played.
     tiebreakRungs: { scope: "stage", decider: true, appliesTo: { stageKinds: [...BRACKET_KINDS] } },
     scoring: { scope: "points" },
-    byeScore: { scope: "points" },
+    // No `byeScore` (X-SW-6): a bye pays the win (X-SW-5), so its value is no organiser key.
   },
 
   init(cfg, lineups: LineupPair): BoardgameState {
@@ -1064,9 +1064,9 @@ export const boardgame: SportModule<BoardgameCfg, BoardgameEv, BoardgameState> =
         // INVALID_EVENT here until 2026-09-20). W2b unified chess on the award every other sport folds a forfeit to.
         //
         // The advancing side scores what a win scores, from cfg — FIDE's full-point bye, and the same pair total
-        // (`win + loss`) that `declaredPointsSets` already declares, so the conformance kit holds. `cfg.byeScore` is
-        // deliberately NOT read here: a half-point bye would take the pair outside declaredPointsSets. Scoring a bye
-        // below a win is a competition-layer decision, which is what byeScore's own comment says.
+        // (`win + loss`) that `declaredPointsSets` already declares, so the conformance kit holds. A bye is always the
+        // win (X-SW-5): there is no half-point bye to read (`byeScore` was removed, X-SW-6), and the stage's points
+        // rule pays a pairing-allocated bye its win as well (competition/points.ts `payout`).
         //
         // The metrics are `boardgameForfeitCredit`'s: 1-0, out of colour history.
         const winnerSide = sideOf(state, outcome.winner);

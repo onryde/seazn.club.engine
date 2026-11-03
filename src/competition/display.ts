@@ -6,8 +6,8 @@
 // Derived metrics are ranking concepts, not ledger fields: NRR and the ratio
 // metrics are recomputed for display from the integer ledger in a row (the
 // cascade compares them by cross-multiplication and never stores a float);
-// the Swiss metrics (buchholz/buchholz_cut1/sberger) are materialised into
-// row.metrics by rankStandings because they need the assembled ledger.
+// the Swiss metrics (buchholz/buchholz_cut1/sberger/opp_diff) are materialised
+// into row.metrics by rankStandings because they need the assembled ledger.
 import { EngineError } from "../core/errors.ts";
 import type { DecidedIn, TiebreakerKey } from "../sport/module.ts";
 import type { StandingsRow } from "./standings.ts";
@@ -30,6 +30,8 @@ export const DERIVED_METRICS: readonly DerivedMetricSpec[] = [
   { key: "point_ratio", label: "Pts ratio", decimals: 2 },
   { key: "buchholz_cut1", label: "Buchholz Cut-1", decimals: 1 },
   { key: "buchholz", label: "Buchholz", decimals: 1 },
+  // W3 (rulebook-W3-swiss.md §5 T10): after Buchholz. Neutral, like "Diff": goals in football, runs in cricket.
+  { key: "opp_diff", label: "Opp diff", decimals: 0 },
   { key: "set_diff", label: "Diff", decimals: 0 }, // neutral, like "Ratio": sets in volleyball, games in badminton
   { key: "point_diff", label: "Pts diff", decimals: 0 },
   { key: "field_goals", label: "FG", decimals: 0 },
@@ -146,6 +148,12 @@ export function derivedMetricText(row: StandingsRow, key: TiebreakerKey, ballsPe
     case "sberger": {
       const value = row.metrics[key];
       return value === undefined ? null : value.toFixed(2).replace(/\.?0+$/, "") || "0";
+    }
+    // W3 (rulebook §5 T10): the opponents' collective goal difference as rankStandings materialised it on a Swiss table.
+    // A goal difference is no points unit: printed as it stands, never halved.
+    case "opp_diff": {
+      const value = row.metrics[key];
+      return value === undefined ? null : `${value}`;
     }
     default:
       return null;

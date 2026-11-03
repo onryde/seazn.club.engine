@@ -4,13 +4,14 @@
 // stage into `finalRanks`, and the division-event ledger those transitions
 // emit. Fixture GENERATION is PROMPT-09 — a stage here consumes an
 // already-generated fixture set (its status + results) and never builds one.
+import { EngineError } from "../core/errors.ts";
 import type { EntrantId, StageKind } from "../core/types.ts";
 import { foldResults, foldStandings, type FixtureResult } from "./standings.ts";
-import { applyRankLocks, type RankLock } from "./points.ts";
+import { applyRankLocks, swissDrawPoints, type RankLock, type SwissDrawFacts } from "./points.ts";
 import type { StandingsDelta } from "../core/types.ts";
 import type { CrossGroupRules, PoolTable, SourceTables as StageTables } from "./progression.ts";
 import type { TableRules } from "./table-rules.ts";
-import { buildSwissTable, membersKeyOf, rankStandings, type MembersKey, type NewLotsDraw, type RankContext, type StoredLotsDraw } from "./tiebreakers.ts";
+import { buildSwissLedger, membersKeyOf, rankStandings, type MembersKey, type NewLotsDraw, type RankContext, type StoredLotsDraw, type SwissLedgerFixture, type SwissTable } from "./tiebreakers.ts";
 
 // spec 02 §6 fixture statuses that matter to a stage's completion/ranking.
 export type FixtureStatus = "scheduled" | "in_play" | "decided" | "void" | "walkover";
@@ -32,7 +33,8 @@ const COUNTS_FOR_STANDINGS: ReadonlySet<FixtureStatus> = new Set(["decided", "wa
 // bye): forfeited + `outcome.kind === "award"` with the other seat null, so
 // there is no [home, away] pair and no match_state for `standingsDelta`. The
 // adapter synthesises a single win delta; the fold treats it like any other
-// played win. Buchholz/SB see it as an unplayed game (opponent null).
+// played win. Buchholz/SB see it as an unplayed round (a 16.2.1 bye, opponent null).
+// On a Swiss ledger stage every counted fixture names its `roundNo`, and one with a `result` its `unplayed` (CONFIG_INVALID).
 export interface TableFixture {
   id: string;
   poolId?: string;
@@ -40,6 +42,12 @@ export interface TableFixture {
   status: FixtureStatus;
   result?: FixtureResult;
   awardDelta?: StandingsDelta;
+  /** W3 (X-SW-7; FIDE C.07 (2026) 16.2.2 / 16.2.4): the side(s) of `result` that lost WITHOUT playing — "home"/"away" a
+   *  forfeit with nothing played, "both" a double walkover, `null` a game played (a retirement after play included) — as
+   *  `unplayedSidesOf` (points.ts) answers, the one authority the caller fills it from. Read only on a Swiss stage, which
+   *  refuses a counted result that leaves it out (final review m3): by the ledger, where a forfeit is an unplayed round on
+   *  both cards and no meeting (P-A2), and by the head-to-head steps, whose mini-table leaves it out (X-SW-9). */
+  unplayed?: "home" | "away" | "both" | null;
 }
 
 // A bracket fixture (knockout / double_elim / stepladder). `round` is 0-based
@@ -63,8 +71,26 @@ export interface BracketFixture {
 }
 
 // Everything the ranking pass needs about a table stage that isn't in the
-// fixtures themselves (spec 05 §4 cascade is data).
-export interface TableStage {
+// fixtures themselves (spec 05 §4 cascade is data). A stage that assembles the
+// Swiss ledger names its draw facts beside it (`SwissLedgerStage`).
+export type TableStage = TableStageFields & (SwissLedgerStage | { swiss?: false; swissDraw?: SwissDrawFacts; swissAbsentRounds?: ReadonlyMap<EntrantId, readonly number[]> });
+
+/** A stage that assembles the Swiss ledger for buchholz/sberger/direct (`swiss: true`). */
+interface SwissLedgerStage {
+  swiss: true;
+  /** W3 (ruling R4; X-SW-7; T7 re-review N1): the sport's Swiss draw facts under the stage's cfg (`swissDrawFactsOf`),
+   *  which turn `rules.points` into D, the draw points of art. 16's dummy cap and of a 16.2.5 round. Required by the type,
+   *  and refused at run time (CONFIG_INVALID) whenever it is absent — whether or not a round is yet unplayed — so a caller
+   *  that leaves it out fails on its first ranking, not on its first odd round. */
+  swissDraw: SwissDrawFacts;
+  /** W3 (X-SW-7, X-SW-8; FIDE C.04.2 2.4, C.07 16.1; ruling 251): per entrant, the rounds (1-based) it was in the stage but
+   *  not paired — before its late entry, or after its withdrawal; an empty map when nobody was. Each is a zero-point unplayed
+   *  round (16.2.3 when play follows it, else 16.2.5, read as a draw, 16.3.2). Keys are the table's entrants; a round is in
+   *  1..`rounds` and holds no card of the entrant's. Required, and refused when absent (final review m3): never "nobody". */
+  swissAbsentRounds: ReadonlyMap<EntrantId, readonly number[]>;
+}
+
+interface TableStageFields {
   id: string;
   kind: Extract<StageKind, "league" | "group" | "swiss">;
   entrants: readonly EntrantId[];
@@ -76,10 +102,9 @@ export interface TableStage {
   winsCount?: RankContext["winsCount"];
   /** W2d (B5): a result's GAME points, for `sberger` and `direct` on a non-Swiss stage. Absent = the table points. */
   gamePoints?: RankContext["gamePoints"];
-  swiss?: boolean; // assemble the Swiss ledger for buchholz/sberger/direct
   seeds?: ReadonlyMap<EntrantId, number>;
   rngSeed?: number;
-  rounds?: number; // swiss: N rounds to play
+  rounds?: number; // swiss: N rounds to play; REQUIRED on a Swiss ledger stage with a bye or an absence (CONFIG_INVALID)
   /** Carry-over openings (Jul3/05 §3): synthetic deltas folded before the
    *  stage's own fixtures — prior H2H is never replayed. */
   openingDeltas?: readonly StandingsDelta[];
@@ -264,9 +289,10 @@ export function completeTableStage(
   for (const pool of pools) {
     const poolFixtures = single ? fixtures : fixtures.filter((fixture) => poolOf(fixture) === pool);
     const entrants = entrantsOfPool(pool, fixtures, stage.entrants, single);
-    const results = poolFixtures
-      .filter((fixture) => COUNTS_FOR_STANDINGS.has(fixture.status) && fixture.result !== undefined)
-      .map((fixture) => fixture.result as FixtureResult);
+    const counted = poolFixtures.filter((fixture) => COUNTS_FOR_STANDINGS.has(fixture.status) && fixture.result !== undefined);
+    const results = counted.map((fixture) => fixture.result as FixtureResult);
+    // W3 (X-SW-9): the counted results nothing was played in — the same tuples — for a Swiss stage's head-to-head steps.
+    const unplayedResults = new Set(counted.filter((fixture) => fixture.unplayed != null).map((fixture) => fixture.result as FixtureResult));
     const awardDeltas = poolFixtures
       .filter((fixture) => COUNTS_FOR_STANDINGS.has(fixture.status) && fixture.awardDelta !== undefined)
       .map((fixture) => fixture.awardDelta as StandingsDelta);
@@ -295,7 +321,9 @@ export function completeTableStage(
       ...(stage.seeds === undefined ? {} : { seeds: stage.seeds }),
       ...(stage.rngSeed === undefined ? {} : { rngSeed: stage.rngSeed }),
       ...(stage.h2hScope === undefined ? {} : { h2hScope: stage.h2hScope }),
-      ...(stage.swiss === true ? { swiss: buildSwissTable(entrants, results, awardDeltas) } : {}),
+      ...(stage.swiss === true
+        ? { swiss: swissLedgerOf(stage, entrants, poolFixtures), pointsUnit: stage.rules.points.unit, unplayedResults }
+        : {}),
       // ST-G12 reads a round robin's schedule; a Swiss stage pairs round by round and has none (Swiss stays W3, D7 —
       // and production's one competition, a Swiss one, does not move, B1).
       ...(stage.scheduledPairs === undefined || stage.kind === "swiss" ? {} : { scheduledPairs: stage.scheduledPairs }),
@@ -329,6 +357,43 @@ export function completeTableStage(
     tables: { pools: poolTables, ...(overall === undefined ? {} : { overall }) },
     newLotsDraws,
   };
+}
+
+// W3 (X-SW-7, X-SW-8; FIDE C.07 (2026) art. 16): the pool's Swiss ledger by round, from its counted fixtures (decided or
+// walked over, with a result or a sit-out award, and the side(s) that lost without playing) and the stage's declared
+// absences, scaled by the stage's points rule and the sport's draw facts (D = `swissDrawPoints`, ruling R4). Every counted
+// fixture names its round: art. 16 reads a card's place among the rounds. The draw facts are refused when absent at once
+// (N1), before any card is read: an even field with no unplayed round needs no D, but its stage still names them. So are
+// the absences, and a counted result's unplayed side(s) (`null` for a game played): left out, either would read as the
+// common case — nobody absent, the game played — and rank a plausible wrong table (final review m3).
+function swissLedgerOf(stage: TableStage, entrants: readonly EntrantId[], fixtures: readonly TableFixture[]): SwissTable {
+  if (stage.swissDraw === undefined) {
+    throw new EngineError("CONFIG_INVALID", `Swiss stage "${stage.id}" names no swissDraw: the sport's Swiss draw facts (swissDrawFactsOf) give its draw points`, { stageId: stage.id });
+  }
+  if (stage.swissAbsentRounds === undefined) {
+    throw new EngineError("CONFIG_INVALID", `Swiss stage "${stage.id}" names no swissAbsentRounds: each entrant's unpaired rounds (late entry, withdrawal), an empty map for none`, { stageId: stage.id });
+  }
+  const counted: SwissLedgerFixture[] = [];
+  for (const fixture of fixtures) {
+    if (!COUNTS_FOR_STANDINGS.has(fixture.status) || (fixture.result === undefined && fixture.awardDelta === undefined)) continue;
+    if (fixture.roundNo === undefined) {
+      throw new EngineError("CONFIG_INVALID", `counted Swiss fixture "${fixture.id}" names no roundNo`, { fixtureId: fixture.id });
+    }
+    if (fixture.result !== undefined && fixture.unplayed === undefined) {
+      throw new EngineError("CONFIG_INVALID", `counted Swiss fixture "${fixture.id}" names no unplayed side(s): null for a game played, else unplayedSidesOf's answer`, { fixtureId: fixture.id });
+    }
+    counted.push({
+      round: fixture.roundNo,
+      ...(fixture.result === undefined ? {} : { result: fixture.result }),
+      ...(fixture.awardDelta === undefined ? {} : { award: fixture.awardDelta }),
+      ...(fixture.unplayed == null ? {} : { unplayed: fixture.unplayed }),
+    });
+  }
+  return buildSwissLedger(entrants, counted, {
+    rounds: stage.rounds,
+    drawPoints: swissDrawPoints(stage.rules.points, stage.swissDraw),
+    absent: stage.swissAbsentRounds,
+  });
 }
 
 // Interleave pools by rank: rank-1 of every pool (in pool order), then rank-2,

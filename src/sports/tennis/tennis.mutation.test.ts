@@ -51,16 +51,19 @@ describe("tennis — lineup policy (ITF Rule 30: no substitute, a retired player
 });
 
 describe("tennis — standings cascade", () => {
-  it("a Swiss stage declares points → set ratio → game ratio → h2h → seed (v6/00 §4); a table stage the ATP order (W2d SPEC §5.10)", () => {
-    // W2d asks the order per stage kind. A Swiss stage keeps the pre-W2d order (OC1); a table stage takes SPEC §5.10's
-    // signed tennis row (wins > played > H2H2 > set% > game% > seed, D5), ending in lots.
+  it("a Swiss stage declares rulebook-W3 §5's tennis chain (points → Buchholz Cut-1 → Buchholz → set ratio → game ratio → direct → lots); a table stage the ATP order (W2d SPEC §5.10)", () => {
+    // W2d asks the order per stage kind. A Swiss stage takes rulebook-W3-swiss.md §5's tennis chain (X-SW-9, TN-TB-3; the
+    // pre-W3 v6/00 §4 order replaced); a table stage takes SPEC §5.10's signed tennis row (wins > played > H2H2 > set% >
+    // game% > seed, D5), ending in lots.
     const cfg = tennis.configSchema.parse({});
     expect(tennis.defaultTiebreakers("swiss", cfg)).toEqual([
       "points",
+      "buchholz_cut1",
+      "buchholz",
       "set_ratio",
       "game_ratio",
-      "h2h_points",
-      "seed",
+      "direct",
+      "lots",
     ]);
     let checked = 0;
     for (const kind of ["league", "group", "americano"] as const) {
