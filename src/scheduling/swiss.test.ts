@@ -63,6 +63,7 @@ interface SimEvent {
   colours: Map<string, Colour[]>;
   played: Set<string>;
   byes: Set<string>;
+  scores: Map<string, number>; // after the last round paired
 }
 // `lookAhead` sets the stage's one-round look-ahead (X-SW-10): `true` on every round, the last included (to read the last
 // round's own verdict); "app" as the app sets it, by appLookAhead. `onRound` sees each round as it is paired, with the
@@ -115,7 +116,7 @@ function simulate(
     if (opts.lookAhead === true || (opts.lookAhead === "app" && appLookAhead(n, rounds, r + 1))) constraints.lookAhead = true;
     const round = pairRound(standings, history, constraints);
     opts.onRound?.({ standings, history, constraints, result: round });
-    if (!round.ok) return { rounds: out, refusals: [round], colours, played, byes };
+    if (!round.ok) return { rounds: out, refusals: [round], colours, played, byes, scores: score };
 
     for (const p of round.pairings) {
       played.add(pairKey(p.home, p.away));
@@ -135,7 +136,7 @@ function simulate(
     }
     out.push({ pairings: round.pairings, ...(round.bye === undefined ? {} : { bye: round.bye }) });
   }
-  return { rounds: out, refusals: [], colours, played, byes };
+  return { rounds: out, refusals: [], colours, played, byes, scores: score };
 }
 
 describe("pairRound — golden 5-round Swiss on 9 entrants (spec 05 acceptance)", () => {
@@ -239,7 +240,7 @@ function eventFrom(n: number, boards: readonly (readonly (readonly [string, stri
     }),
   }));
   const next = pairRound(field(n).map((id, i) => ({ entrantId: id, score: 0, rank: i + 1 })), { played, colours, byes: new Set() }, { chess: true });
-  return { rounds, refusals: next.ok ? [] : [next], colours, played, byes: new Set() };
+  return { rounds, refusals: next.ok ? [] : [next], colours, played, byes: new Set(), scores: new Map(field(n).map((id) => [id, 0])) };
 }
 
 function checkEvent(sim: SimEvent, n: number, asked: number, chess: boolean, t: EventTally): void {
@@ -449,6 +450,49 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
     checkEvent(witness, 8, 4, true, t);
     expect(t.withinSafeMax).toBe(before + 1);
   }, budgetMs(RUNS.chess, CASE_MS.chess));
+
+  it("X-SW-1 chess at n = 62: round 3 of a simulated event pairs when the entrants who may take only White crowd the bottom score group, and the look-ahead before it says pairable (rulebook §2.3: the budget decides nothing at harness sizes; CI counterexample seed -746883899)", () => {
+    // The X-SW-1 chess property's counterexample [62, 3, -746883899] (fast-check seed 2115080205, path 85): round 3 was
+    // refused search_limit after 1,000,000 nodes. After two rounds 14 entrants (WW) may take only Black and 14 (BB) only
+    // White. 12 of the BB sit in the bottom score group with 4 who may take either colour, so that group needs 8 more
+    // Black-takers than it holds, and the score-group pass carries in 5 at most: it can never pair, and walked floater
+    // choices until its share of the budget ran out. The complete search then paired top-down, spent the flexible entrants
+    // above, and refuted the remainder it was left (more White-only entrants than boards) one transposition at a time.
+    const seed = -746883899;
+    const t = newTally();
+    const sim = simulate(62, 3, { chess: true, seed, lookAhead: "app" });
+    checkEvent(sim, 62, 3, true, t);
+    expect(sim.refusals).toEqual([]);
+    expect(t.rounds).toBe(3);
+    expect(sim.colours.size).toBe(62);
+    for (const [id, seq] of sim.colours) expect(colourHistoryLegal(seq), id).toBe(true); // P-A5: |W−B| ≤ 2, never three in a row
+
+    // The premise, read off the first two rounds (the same event: the look-ahead is off for all three, 3 ≤ ⌊62/2⌋).
+    const two = simulate(62, 2, { chess: true, seed, lookAhead: "app" });
+    expect(two.rounds).toEqual(sim.rounds.slice(0, 2));
+    const historyOf = (id: string): string => (two.colours.get(id) ?? []).join("");
+    expect(field(62).filter((id) => historyOf(id) === "WW")).toHaveLength(14);
+    expect(field(62).filter((id) => historyOf(id) === "BB")).toHaveLength(14);
+    const bottom = field(62).filter((id) => two.scores.get(id) === 0);
+    expect(bottom.filter((id) => historyOf(id) === "BB")).toHaveLength(12);
+    expect(bottom.filter((id) => historyOf(id) !== "BB" && historyOf(id) !== "WW")).toHaveLength(4);
+    expect(bottom).toHaveLength(16);
+
+    // Round 3 on its own, under a budget of 120 nodes: the complete search alone needs 96 here, so it pairs only when the
+    // score-group pass gives up at once instead of first walking its share (an eighth of the budget) of floater choices.
+    const standings = field(62).map((id, i) => ({ entrantId: id, score: two.scores.get(id) as number, rank: i + 1 }));
+    const r3 = pairRound(standings, { played: two.played, colours: two.colours, byes: two.byes }, { chess: true }, 120);
+    expect(r3).toMatchObject({ ok: true, pairings: sim.rounds[2]?.pairings });
+
+    // The look-ahead's own check walked the same dead end: with the look-ahead on every round, round 2 answered "unknown"
+    // after the whole budget. Each of rounds 1–3 is followed by a paired round, so each verdict is "pairable" (X-SW-10:
+    // "pairable" is followed by a paired round, "unpairable" by a refusal); round 4's own verdict has no round after it here.
+    const verdicts: (string | undefined)[] = [];
+    const ahead = simulate(62, 4, { chess: true, seed, lookAhead: true, onRound: ({ result }) => verdicts.push(result.ok ? result.nextRound : result.reason) });
+    expect(ahead.refusals).toEqual([]);
+    expect(ahead.rounds).toHaveLength(4);
+    expect(verdicts.slice(0, 3)).toEqual(["pairable", "pairable", "pairable"]);
+  });
 
   it("X-SW-1 X-SW-10 with lookAhead on every round keeps the invariant, and each round's nextRound is the next round's own outcome: 'pairable' is followed by a paired round, 'unpairable' by a refusal, as the oracle judges; boards move only when the plain seating dead-ends the next round (n 6–12, 5 rounds up to past the hard maximum, chess on and off, counted)", () => {
     const runs = RUNS.lookAhead;

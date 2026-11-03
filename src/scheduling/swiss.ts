@@ -136,6 +136,9 @@ export const SWISS_SEARCH_BUDGET: number = 1_000_000;
 // The rest stays for the complete search, which decides the round either way.
 const GROUP_PASS_SHARE = 1 / 8;
 
+// The score-group pass floats at most this many entrants out of a group beyond the one an odd group must.
+const EXTRA_FLOATS = 4;
+
 // Stable, order-independent key for an unordered pair.
 export function pairKey(a: EntrantId, b: EntrantId): string {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
@@ -172,6 +175,26 @@ function canTake(state: ColourState, c: Colour): boolean {
   if (c === "W" ? state.diff + 1 > 2 : state.diff - 1 < -2) return false;
   if (state.streakColour === c && state.streakLen >= 2) return false;
   return true;
+}
+
+// Which colours an entrant may take this round under the two hard rules.
+type ColourClass = "white" | "black" | "either" | "neither";
+function classOf(state: ColourState): ColourClass {
+  const white = canTake(state, "W");
+  const black = canTake(state, "B");
+  return white && black ? "either" : white ? "white" : black ? "black" : "neither";
+}
+
+// How far entrants with these colour classes are from sitting on boards of one White and one Black side each (CI red,
+// X-SW-1 chess at n = 62), with `free` seats whose board the colour limits do not bind (a topscorer's, X-SW-11; the next
+// round's bye seat), each taking one entrant of any class. A board of two bound entrants holds at most one who may take
+// only White, one who may take only Black, and nobody who may take neither, so the free seats must take each who may take
+// neither and the excess of either one-colour class over the other and the flexible: what they cannot take is the slack.
+// Above 0 the entrants cannot pair among themselves; at or below it they may (parity and rematches are not read). One
+// entrant more or fewer moves the slack by one at most.
+function colourSlack(count: { white: number; black: number; either: number; neither: number }, free: number): number {
+  const excess = Math.max(0, count.white - count.black - count.either, count.black - count.white - count.either);
+  return count.neither + excess - free;
 }
 
 // Preferred colour to keep the balance level: the minority colour, or the
@@ -318,6 +341,29 @@ export function pairRound(
   };
   const hardLegal = (a: SwissStanding, b: SwissStanding): boolean =>
     !played.has(pairKey(a.entrantId, b.entrantId)) && colourLegal(a, b);
+  // Which colours each entrant may take this round, for `coloursCanPair`: a topscorer's board is legal whatever the colours
+  // (X-SW-11), so it is read apart from the rest.
+  const colourClassOf = new Map<EntrantId, ColourClass | "topscorer">();
+  const colourClass = (s: SwissStanding): ColourClass | "topscorer" => {
+    let known = colourClassOf.get(s.entrantId);
+    if (known === undefined) {
+      known = topscorer(s) ? "topscorer" : classOf(stateOf(s.entrantId));
+      colourClassOf.set(s.entrantId, known);
+    }
+    return known;
+  };
+  // Whether `list` can still pair among itself as far as the colour counts go (CI red, X-SW-1 chess at n = 62). Without it
+  // the complete search, pairing top-down, could spend the flexible entrants above and reach a remainder holding more
+  // entrants who may take only White (or only Black) than it has boards, then refute that dead end one transposition at a
+  // time: exponential, so a round a pairing exists for ran out of budget. Necessary, never sufficient: it cuts only
+  // subtrees with no legal matching, so the search reaches the same leaves in the same order, in fewer nodes.
+  const slackOf = (list: readonly SwissStanding[]): number => {
+    if (!chess || liftColourLimits) return 0;
+    const count = { white: 0, black: 0, either: 0, neither: 0, topscorer: 0 };
+    for (const s of list) count[colourClass(s)]++;
+    return colourSlack(count, count.topscorer);
+  };
+  const coloursCanPair = (list: readonly SwissStanding[]): boolean => slackOf(list) <= 0;
 
   // Fold-preference candidate order for the strongest unpaired player `a`: its
   // own score group first (fold partner = top of that group's bottom half),
@@ -392,6 +438,10 @@ export function pairRound(
       if (!spend()) return "none";
       const key = remaining.map((s) => s.entrantId).join(",");
       if (memoFail.has(key)) return "none";
+      if (!coloursCanPair(remaining)) {
+        memoFail.add(key);
+        return "none";
+      }
       const a = remaining[0] as SwissStanding;
       const others = remaining.slice(1);
       let found: Found = "none";
@@ -429,7 +479,16 @@ export function pairRound(
     const current = [...carry, ...(groups[gi] as SwissStanding[])];
     const isLast = gi === groups.length - 1;
     const parity = current.length % 2;
-    const maxFloat = isLast ? 0 : parity + 4; // cap extra floats per group (the pass's cost is held by GROUP_PASS_SHARE)
+    const maxFloat = isLast ? 0 : parity + EXTRA_FLOATS; // cap extra floats per group (the pass's cost is held by GROUP_PASS_SHARE)
+    // The colour counts (CI red): a floater moves a group's slack by one at most, so a group must float out, or be carried
+    // in, at least its slack. This group floats at most maxFloat; a group below is carried at most 1 + EXTRA_FLOATS and
+    // floats as many (none from the last). Past either cap no choice of floaters can pair the groups, and the pass would
+    // otherwise walk every choice above before its share of the budget ran out.
+    if (slackOf(current) > maxFloat) return "none";
+    for (let g = gi + 1; g < groups.length; g++) {
+      const floatsOut = g === groups.length - 1 ? 0 : 1 + EXTRA_FLOATS;
+      if (slackOf(groups[g] as SwissStanding[]) > 1 + EXTRA_FLOATS + floatsOut) return "none";
+    }
 
     let found: Found = "none";
     for (let fc = parity; fc <= maxFloat; fc += 2) {
@@ -518,6 +577,26 @@ export function pairRound(
       const sy = stateNext(y);
       return (canTake(sx, "W") && canTake(sy, "B")) || (canTake(sx, "B") && canTake(sy, "W"));
     };
+    // The colour counts, as in the round's own search (CI red): the bye seat is the one seat the colours do not bind.
+    const seatClass = new Map<number, ColourClass>();
+    const slackOfSeats = (remaining: readonly number[]): number => {
+      if (!withColours) return 0;
+      const count = { white: 0, black: 0, either: 0, neither: 0 };
+      let free = 0;
+      for (const i of remaining) {
+        if (i === byeSeat) {
+          free++;
+          continue;
+        }
+        let known = seatClass.get(i);
+        if (known === undefined) {
+          known = classOf(stateNext((field[i] as SwissStanding).entrantId));
+          seatClass.set(i, known);
+        }
+        count[known]++;
+      }
+      return colourSlack(count, free);
+    };
     const memoFail = new Set<string>();
     let cut = false;
     const rec = (remaining: number[]): boolean => {
@@ -528,6 +607,10 @@ export function pairRound(
       }
       const key = remaining.join(",");
       if (memoFail.has(key)) return false;
+      if (slackOfSeats(remaining) > 0) {
+        memoFail.add(key);
+        return false;
+      }
       const i = remaining[0] as number;
       const others = remaining.slice(1);
       for (const j of others) {
