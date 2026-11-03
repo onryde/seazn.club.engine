@@ -881,6 +881,50 @@ describe("X-SW-7 forfeits, double walkovers and withdrawals: FIDE C.07 (2026) ar
     expect(ledger.find((r) => r.entrant === "B")?.adjusted).toBe(1);
   });
 
+  it("X-SW-7 a missed round followed only by a forfeit loss is 16.2.5: the forfeit loss is a VUR, so the absence counts as the last and its opponents read the entrant at score + D (final review m1)", () => {
+    // Boardgame half-points, R = 2, D = 1. B enters late and misses round 1 (X-SW-8), then forfeits its round-2 board.
+    //   R1: A beats C, D bye; B absent.   R2: B v A walks over to A (B forfeits, unplayed "home"), C beats D.
+    //   Scores: A 2+2 = 4, B 0+0 = 0, C 0+2 = 2, D 2+0 = 2.
+    //   B's card: R1 a zero-point round followed only by VURs (R2 is a forfeit loss, 16.2.4, and 16.1 counts a forfeit
+    //   loss among the VURs), so 16.2.5 — B's adjusted score is 0 + D = 1 (16.3.2). Nobody else has a 16.2.5 round.
+    //   A's R2 is a forfeit win (16.2.2), its dummy at A's score capped at B's ADJUSTED score (16.4.1): min(4, 1) = 1.
+    //   Buchholz: A = C 2 + 1 = 3.  B = min(0, D x R 2) 0 + min(0, A 4) 0 = 0.  C = A 4 + D 2 = 6.
+    //     D = bye min(2, D x R 2) 2 + C 2 = 4.   Shown on a half-point table, so ÷ 2.
+    //   differential: leaving the forfeit loss out of "followed only by VURs" keeps R1 a plain absence (16.2.3), B's
+    //   adjusted score its real 0, and A's dummy min(4, 0) = 0, so A = 2.
+    const late: Scene = {
+      rule: CHESS, draw: CHESS_DRAW, entrants: ["A", "B", "C", "D"], rounds: 2, absent: new Map([["B", [1]]]),
+      fixtures: [
+        board(CHESS, 1, "A", "C", "h"), bye(CHESS, 1, "D"),
+        walkedOver(boardgame, {}, CHESS, 2, "B", "A", forfeit("A", "B")), board(CHESS, 2, "C", "D", "h"),
+      ],
+    };
+    expect(late.fixtures[2]?.unplayed, "the forfeiting side sits home").toBe("home");
+    const ledger = buildSwissLedger(late.entrants, ledgerFixtures(late), { rounds: 2, drawPoints: 1, absent: late.absent! });
+    expect(categoriesOf(ledger)).toEqual({
+      A: ["played", "forfeit_win"],
+      B: ["absent_last", "forfeit_loss"],
+      C: ["played", "played"],
+      D: ["bye", "played"],
+    });
+    // `adjusted` is written only where it differs from the score (SwissRow: absent = `score`)
+    expect(Object.fromEntries(ledger.map((r) => [r.entrant, [r.score, r.adjusted]]))).toEqual({
+      A: [4, undefined], B: [0, 1], C: [2, undefined], D: [2, undefined],
+    });
+    expect(column(late, "buchholz")).toEqual({ A: 3 / 2, B: 0, C: 6 / 2, D: 4 / 2 });
+
+    // The positive pair: a played round after the forfeit is no VUR, so the absence is followed by a non-VUR (16.2.3) and
+    // adds nothing to B's score. R3: B beats D, A draws C; B's score 0 + 0 + 2 = 2, and no adjustment.
+    const playsOn: Scene = {
+      ...late, rounds: 3,
+      fixtures: [...late.fixtures, board(CHESS, 3, "B", "D", "h"), board(CHESS, 3, "A", "C", "d")],
+    };
+    const later = buildSwissLedger(playsOn.entrants, ledgerFixtures(playsOn), { rounds: 3, drawPoints: 1, absent: playsOn.absent! });
+    const b = later.find((r) => r.entrant === "B");
+    expect(b?.games.map((g) => g.unplayed ?? "played")).toEqual(["absent", "forfeit_loss", "played"]);
+    expect([b?.score, b?.adjusted]).toEqual([2, undefined]);
+  });
+
   it("X-SW-7 after a void: a voided round-2 board is not on either card and adds no dummy", () => {
     // S3 with round 2's A v C voided. Scores: A 2+1 = 3, B 0, C 2+2 = 4, D 0+2+1 = 3; B adjusted 0 + 2 = 2.
     //   A = B 2 + D 3 = 5 (a dummy for the void round would add min(3, 3) = 3, giving 8).
