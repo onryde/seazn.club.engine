@@ -454,7 +454,7 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
     const runs = RUNS.lookAhead;
     const t = newTally();
     const v = { verdicts: 0, pairable: 0, unpairable: 0, followedPaired: 0, followedRefused: 0, lastRound: 0, oracleAgreed: 0,
-      noCompletionKeeps: 0, chessNoCompletionKeeps: 0, seatingsJudged: 0, keptFirst: 0, firstDeadEnds: 0 };
+      noCompletionKeeps: 0, chessNoCompletionKeeps: 0, seatingsJudged: 0, turnedJudged: 0, keptFirst: 0, firstDeadEnds: 0 };
     fc.assert(
       // 5 rounds at least; up to n + 1, past every field's hard maximum (rulebook §3.1), so the rounds where the next one
       // cannot pair, and the refusal that follows, are reached as well
@@ -497,7 +497,9 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
             if (result.nextRound !== "unpairable") return;
             // "unpairable" means no seating of this bye's remainder keeps the next round pairable: every one, judged. A
             // seating's sides are the rule's (the oracle's ruleSides: with chess, a colour P-A5 forces, else the record's
-            // preferences), each board turned upper side first; with chess a pair that may not meet is no seating (P-A5)
+            // preferences), each board turned upper side first; with chess a pair that may not meet is no seating (P-A5).
+            // With chess, a seating with any board the other way up is one too, wherever both sides stay within their
+            // limits (P-A5 as seated): the look-ahead may seat one (final review I1), so none of those may keep it either
             const of = new Map(standings.map((s) => [s.entrantId, s]));
             const above = (x: string, y: string): boolean => {
               const [a, b] = [of.get(x) as SwissStanding, of.get(y) as SwissStanding];
@@ -517,6 +519,14 @@ describe("X-SW-1 every paired round seats each active entrant exactly once, with
               const seatedHere = { pairings, ...(result.bye === undefined ? {} : { bye: result.bye }) };
               expect({ seed, n, chess, boards, next: judgeRound(roundAfter(round, seatedHere)).exists }).toEqual({ seed, n, chess, boards, next: false });
               seatings++;
+              if (!chess) continue; // outside chess the sides carry no limit into the next round
+              for (let mask = 1; mask < 1 << pairings.length; mask++) {
+                const turned = pairings.map((p, i) => ((mask >> i) & 1 ? { home: p.away, away: p.home } : p));
+                if (!turned.every((p) => mayTake(recordOf(p.home), "W") && mayTake(recordOf(p.away), "B"))) continue;
+                const turnedHere = { pairings: turned, ...(result.bye === undefined ? {} : { bye: result.bye }) };
+                expect({ seed, n, boards, turned, next: judgeRound(roundAfter(round, turnedHere)).exists }).toEqual({ seed, n, boards, turned, next: false });
+                v.turnedJudged++;
+              }
             }
             expect(seatedJudged).toBe(1); // the seated round is one of them, judged once
             expect(seatings).toBeGreaterThan(0);

@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { mulberry32 } from "../core/rng.ts";
 import {
   judgeRound,
+  lowerScoredPairableByes,
+  mayTake,
   oraclePairKey,
   perfectMatchings,
   roundAfter,
@@ -861,6 +863,268 @@ describe("X-SW-10 above the safe maximum, a round is paired so that the next rou
     expect(seen.unknown).toBeGreaterThan(0);
     expect(seen.pairable).toBeGreaterThan(0); // reached, under budgets far below the default
     expect(seen.search_limit + seen.unknown + seen.pairable).toBe(5_001);
+  });
+
+  // Final review I1: the look-ahead judged each set of boards only with the colours the rule gives it, so a chess round whose
+  // next round a turned board would keep pairable was seated anyway with nextRound "unpairable", and the next round refused
+  // for colour. X-SW-10 promises "where a choice exists"; a board seated the other way up, inside the colour limits, is such a
+  // choice (rulebook §3.3: "among legal pairings, prefer one after which the next round is still pairable").
+  //
+  // Three seven-entrant chess events, each found by a seeded search over simulated events at 5bba509 (the reviewer's seed-249
+  // and seed-1863 states came from a simulator not kept in the tree, so the first two are the same shape, rebuilt), and one
+  // legal history from a seeded random search, for the order of the turns. In each, every seating with the rule's colours
+  // leaves the next round with no colour-legal pairing; turning one board keeps it pairable.
+  // Everything below is read from the rulebook and the oracle, never from the engine: the bye (P-Q2), the seatings (P-A1),
+  // the rule's sides (ruleSides), each side's colour preference (C.04.3 Art. 1.7: the colour it has had fewer times; level,
+  // the other of its last), and the boards (P-Q1: a score group floats its lowest-ranked).
+  interface TurnCase {
+    name: string;
+    scores: Record<string, number>;
+    colours: Record<string, Colour[]>;
+    played: string[]; // "pX|pY"
+    byes: string[];
+    bye: string; // the P-Q2 bye, checked against the oracle below
+    want: [string, string][]; // the seated round, [White, Black]: the rule's boards, one of them turned
+    turned: [string, string]; // the board seated against the rule's sides, [White, Black]
+    extraUnmet: number; // how many more colour preferences the turn leaves unmet than the rule's sides do
+  }
+  const TURN_CASES: TurnCase[] = [
+    {
+      // the reviewer's seed-249 shape: bye p0; p2 and p1 have no other partner left. Both ask White (p2 is −1, p1 level after a
+      // Black); p2's larger difference wins it, and with p2 White round 7 has no colour-legal pairing; with p1 White it pairs.
+      // One of the two asks goes unmet either way, so the turn leaves no more unmet
+      name: "bye p0, p2 v p1 turned (both ask White)",
+      scores: { p0: 6, p1: 3, p2: 8, p3: 6, p4: 6, p5: 6, p6: 5 },
+      colours: {
+        p0: ["W", "B", "W", "B", "B"], p1: ["W", "B", "W", "B"], p2: ["W", "B", "B", "W", "B"], p3: ["B", "W", "B", "W"],
+        p4: ["B", "W", "W", "B"], p5: ["B", "W", "B", "W"], p6: ["W", "B", "W", "W"],
+      },
+      played: ["p0|p3", "p1|p4", "p2|p5", "p0|p4", "p2|p6", "p1|p5", "p0|p2", "p3|p5", "p4|p6", "p2|p4", "p1|p3", "p0|p6", "p2|p3", "p0|p5", "p1|p6"],
+      byes: ["p6", "p3", "p1", "p5", "p4"],
+      bye: "p0",
+      // score 6 holds p3, p4, p5 (odd): the lowest-ranked, p5, floats to p6 (P-Q1)
+      want: [["p1", "p2"], ["p4", "p3"], ["p5", "p6"]],
+      turned: ["p1", "p2"],
+      extraUnmet: 0,
+    },
+    {
+      // the reviewer's seed-1863 shape, another bye (p3): p1 and p0 both ask White (level after a Black); the upper board, p1,
+      // gets it, and with p1 White round 7 has no colour-legal pairing
+      name: "bye p3, p1 v p0 turned (both ask White)",
+      scores: { p0: 2, p1: 3, p2: 3, p3: 3, p4: 3, p5: 4, p6: 2 },
+      colours: {
+        p0: ["W", "B", "W", "B"], p1: ["W", "B", "W", "B"], p2: ["W", "W", "B", "B", "W"], p3: ["B", "W", "B", "W", "W"],
+        p4: ["B", "W", "B", "B"], p5: ["B", "W", "W", "B"], p6: ["B", "B", "W", "W"],
+      },
+      played: ["p0|p3", "p1|p4", "p2|p5", "p1|p5", "p3|p6", "p0|p2", "p3|p5", "p1|p2", "p4|p6", "p2|p3", "p5|p6", "p0|p4", "p1|p3", "p2|p4", "p0|p6"],
+      byes: ["p6", "p4", "p0", "p1", "p5"],
+      bye: "p3",
+      want: [["p4", "p5"], ["p2", "p6"], ["p0", "p1"]],
+      turned: ["p0", "p1"],
+      extraUnmet: 0,
+    },
+    {
+      // a turn that costs (round 6 of 7 again): bye p5, and its remainder seats one way only. p6 asks White and p2 Black, and the rule meets both;
+      // after it round 7 has no colour-legal pairing. Turned, round 7 pairs, with both asks unmet. No seating of this bye keeps
+      // round 7 pairable for less (asserted below), so the preferences give way to the next round (X-SW-10), as far as it needs
+      // and no further. (Bye p3 has a seating that costs nothing, but the look-ahead never moves the bye: ruling R1)
+      name: "bye p5, p6 v p2 turned (two preferences given up)",
+      scores: { p0: 3, p1: 4, p2: 4, p3: 5, p4: 7, p5: 5, p6: 4 },
+      colours: {
+        p0: ["W", "B", "B"], p1: ["W", "W", "B"], p2: ["W", "W", "B"], p3: ["B", "W", "B", "W"], p4: ["B", "W", "W", "B"],
+        p5: ["B", "B", "W", "W"], p6: ["B", "B", "W"],
+      },
+      played: ["p0|p3", "p1|p4", "p2|p5", "p3|p5", "p4|p6", "p0|p1", "p3|p4", "p5|p6", "p1|p2", "p4|p5", "p2|p3", "p0|p6"],
+      byes: ["p6", "p2", "p0", "p1"],
+      bye: "p5",
+      want: [["p3", "p1"], ["p2", "p6"], ["p0", "p4"]],
+      turned: ["p2", "p6"],
+      extraUnmet: 2,
+    },
+    {
+      // the order of the turns: fewest preferences given up, not the first board. No simulated event separated the two (0 of
+      // 18,000 searched), so this is a legal history from a seeded random search (2 to 7 earlier rounds). Bye p6, the lowest-
+      // ranked on 0. Two boards can each be turned to keep the next round pairable: p3 v p2, whose two asks the rule meets
+      // (p3 −1 asks White, p2 level after a White asks Black), so turning it gives both up; and p4 v p1, who both ask Black
+      // (+1 each), so turning it moves the one unmet ask from p4 to p1. p3 v p2 comes first in the board order; p4 v p1 is
+      // turned. (p5 v p0 stays: p0 has had White twice running, so may not take a third, P-A5)
+      name: "bye p6, p4 v p1 turned, not p3 v p2 (the cheaper turn)",
+      scores: { p0: 1, p1: 2, p2: 1, p3: 1, p4: 0, p5: 0, p6: 0 },
+      colours: {
+        p0: ["B", "B", "W", "W"], p1: ["W", "W", "B"], p2: ["W", "B", "B", "W"], p3: ["B", "B", "W"], p4: ["W", "W", "B"],
+        p5: ["B", "B", "W"], p6: ["W", "W", "B", "B"],
+      },
+      played: ["p3|p4", "p0|p2", "p5|p6", "p0|p4", "p1|p5", "p2|p6", "p0|p3", "p2|p5", "p1|p6", "p0|p1", "p3|p6", "p2|p4"],
+      byes: ["p1", "p2"],
+      bye: "p6",
+      want: [["p3", "p2"], ["p5", "p0"], ["p1", "p4"]],
+      turned: ["p1", "p4"],
+      extraUnmet: 0,
+    },
+  ];
+  // C.04.3 Art. 1.7, the colour an entrant asks for: the one it has had fewer times; level, the other of its last; none yet, none
+  const asksFor = (seq: readonly Colour[]): Colour | null => {
+    const white = seq.filter((c) => c === "W").length;
+    const black = seq.length - white;
+    if (white !== black) return white > black ? "B" : "W";
+    const last = seq.at(-1);
+    return last === undefined ? null : last === "W" ? "B" : "W";
+  };
+  const wb = (pairings: readonly { home: string; away: string }[]): string[] => pairings.map((p) => `${p.home} v ${p.away}`).sort();
+
+  it("X-SW-10 chess: when no seating with the rule's colours keeps the next round pairable, a board turned within the colour limits is a choice too, the fewest preferences given up and the boards kept (final review I1; four 7-entrant rounds, counted)", () => {
+    let checked = 0;
+    let orientationsJudged = 0;
+    for (const c of TURN_CASES) {
+      const ids = Object.keys(c.scores).sort();
+      const colours = new Map(Object.entries(c.colours));
+      const recordOf = (id: string): readonly Colour[] => colours.get(id) ?? [];
+      const standings: SwissStanding[] = ids.map((id, i) => ({ entrantId: id, score: c.scores[id] as number, rank: i + 1 }));
+      const history = { played: new Set(c.played), colours, byes: new Set(c.byes) };
+      const round: OracleRound = {
+        field: standings.map((s) => ({ id: s.entrantId, score: s.score })),
+        played: c.played.map((k) => k.split("|") as [string, string]),
+        byeIneligible: new Set(c.byes),
+        colours,
+      };
+      const met = new Set(round.played.map(([a, b]) => oraclePairKey(a, b)));
+      const at = { case: c.name };
+      // P-Q2: the bye leaves a pairable remainder, and no lower score does (equal scores: the lowest-ranked)
+      const verdict = judgeRound(round);
+      expect({ ...at, pairable: verdict.pairableByes.includes(c.bye), lower: lowerScoredPairableByes(round, verdict, c.bye) })
+        .toEqual({ ...at, pairable: true, lower: [] });
+      const above = (x: string, y: string): boolean =>
+        c.scores[x] !== c.scores[y] ? (c.scores[x] as number) > (c.scores[y] as number) : x < y;
+      const ruleSeating = (boards: readonly (readonly [string, string])[]) =>
+        boards.map(([x, y]) => (above(x, y) ? ruleSides(x, y, recordOf, true) : ruleSides(y, x, recordOf, true)));
+      const unmet = (pairings: readonly { home: string; away: string }[]): number =>
+        pairings.filter((p) => asksFor(recordOf(p.home)) === "B").length + pairings.filter((p) => asksFor(recordOf(p.away)) === "W").length;
+      const keeps = (pairings: { home: string; away: string }[]): boolean => judgeRound(roundAfter(round, { pairings, bye: c.bye })).exists;
+
+      // the premise: with the rule's colours on every board, no seating of the bye's remainder keeps the next round pairable, and the
+      // reason is the colours (P-A5), not a rematch. So the look-ahead must turn a board, or warn
+      const rest = ids.filter((id) => id !== c.bye);
+      const seatings = perfectMatchings(rest, met);
+      expect(seatings.length).toBeGreaterThan(0);
+      for (const boards of seatings) {
+        const sides = ruleSeating(boards);
+        expect({ ...at, boards, legal: sides.every((p) => p !== undefined) }).toEqual({ ...at, boards, legal: true });
+        const after = judgeRound(roundAfter(round, { pairings: sides as { home: string; away: string }[], bye: c.bye }));
+        expect({ ...at, boards, exists: after.exists, reason: after.reason }).toEqual({ ...at, boards, exists: false, reason: "colour" });
+      }
+      // the differential: without the look-ahead the round takes the rule's sides, and the next round then refuses for colour
+      const plain = pairRound(standings, history, { chess: true });
+      expect(plain.ok && plain.bye).toBe(c.bye);
+      const plainSides = seated(plain).pairings;
+      expect(plainSides).toEqual(ruleSeating(plainSides.map((p) => [p.home, p.away] as const)));
+      expect(judgeRound(roundAfter(round, seated(plain))).reason).toBe("colour");
+
+      const r = pairRound(standings, history, { chess: true, lookAhead: true });
+      expect({ ...at, ok: r.ok, bye: r.ok && r.bye, next: r.ok && r.nextRound }).toEqual({ ...at, ok: true, bye: c.bye, next: "pairable" });
+      expect({ ...at, sides: wb(seated(r).pairings) }).toEqual({ ...at, sides: wb(c.want.map(([home, away]) => ({ home, away }))) });
+      expect(seatedRoundViolations(round, seated(r))).toEqual([]); // P-A1, P-A3, P-A4 and P-A5 as seated: the turn is within the limits
+      expect(nextPairs(round, r)).toBe(true); // the oracle agrees: the next round pairs
+      // the rule's boards are kept (P-Q1); exactly one is seated the other way up from the rule's sides
+      expect(boardsOf(r)).toEqual(boardsOf(plain));
+      const against = seated(r).pairings.filter((p) => !plainSides.some((q) => q.home === p.home && q.away === p.away));
+      expect(against.map((p) => [p.home, p.away])).toEqual([c.turned]);
+      expect(unmet(seated(r).pairings) - unmet(plainSides)).toBe(c.extraUnmet);
+      // the fewest preferences given up: no seating of this bye's remainder, on any boards, keeps the next round pairable for fewer
+      // (every orientation of every seating within the colour limits, judged)
+      let fewest = Number.POSITIVE_INFINITY;
+      for (const boards of seatings) {
+        for (let mask = 0; mask < 1 << boards.length; mask++) {
+          const pairings = boards.map(([x, y], i) => ((mask >> i) & 1 ? { home: y, away: x } : { home: x, away: y }));
+          if (!pairings.every((p) => mayTake(recordOf(p.home), "W") && mayTake(recordOf(p.away), "B"))) continue;
+          orientationsJudged++;
+          if (keeps(pairings)) fewest = Math.min(fewest, unmet(pairings));
+        }
+      }
+      expect({ ...at, unmet: unmet(seated(r).pairings) }).toEqual({ ...at, unmet: fewest });
+      // the second call
+      expect(pairRound(standings, history, { chess: true, lookAhead: true })).toEqual(r);
+      checked++;
+    }
+    expect(checked).toBe(TURN_CASES.length);
+    expect(orientationsJudged).toBeGreaterThan(0);
+  });
+
+  // The guard on the turn: a board is turned only where BOTH sides could play it either way up (P-A5 as seated). In each
+  // history below one turn would keep the next round pairable, but it takes a side outside its limits, so it is no legal
+  // pairing: the round keeps the rule's sides and says "unpairable". The first breaks the side the rule seats with Black (it
+  // would take White), the second the side the rule seats with White (it would take Black). Legal histories from a seeded random
+  // search (each guard's loosened form seats the turn there); the oracle judges every legal seating.
+  const OUTSIDE_CASES: (Omit<TurnCase, "want" | "turned" | "extraUnmet"> & { outside: { id: string; takes: Colour } })[] = [
+    {
+      // p5 (W W B W, +2) has Black against p4 by the rule; with White it would be +3
+      name: "bye p1, p4 v p5 not turned: p5 may not take White",
+      scores: { p0: 1, p1: 0, p2: 1, p3: 1, p4: 2, p5: 1, p6: 2 },
+      colours: {
+        p0: ["W", "B", "B", "W"], p1: ["B", "W", "W", "B", "B"], p2: ["B", "B", "W", "W"], p3: ["W", "W", "B", "B"],
+        p4: ["B", "W", "B", "W"], p5: ["W", "W", "B", "W"], p6: ["B", "B", "W", "W", "B"],
+      },
+      played: ["p3|p4", "p5|p6", "p0|p1", "p0|p5", "p1|p6", "p2|p3", "p1|p5", "p0|p6", "p2|p4", "p1|p2", "p4|p6", "p3|p5", "p1|p4", "p0|p3", "p2|p6"],
+      byes: [],
+      bye: "p1",
+      outside: { id: "p5", takes: "W" },
+    },
+    {
+      // p4 (B B W B, −2) has White against p0 by the rule; with Black it would be −3
+      name: "bye p6, p4 v p0 not turned: p4 may not take Black",
+      scores: { p0: 2, p1: 1, p2: 2, p3: 0, p4: 2, p5: 0, p6: 0 },
+      colours: {
+        p0: ["B", "W", "B"], p1: ["W", "B", "B", "W"], p2: ["B", "W", "W", "B"], p3: ["B", "W", "W"], p4: ["B", "B", "W", "B"],
+        p5: ["W", "W", "B", "B"], p6: ["W", "W"],
+      },
+      played: ["p0|p5", "p1|p4", "p2|p6", "p3|p5", "p0|p1", "p2|p4", "p0|p3", "p1|p2", "p4|p5", "p2|p3", "p4|p6", "p1|p5"],
+      byes: [],
+      bye: "p6",
+      outside: { id: "p4", takes: "B" },
+    },
+  ];
+
+  it("X-SW-10 chess: a board is turned only where both sides stay within the colour limits; when only a turn outside them would keep the next round pairable, the round keeps the rule's sides and says 'unpairable' (final review I1; two 7-entrant histories, counted)", () => {
+    let checked = 0;
+    let orientationsJudged = 0;
+    for (const c of OUTSIDE_CASES) {
+      const ids = Object.keys(c.scores).sort();
+      const colours = new Map(Object.entries(c.colours));
+      const recordOf = (id: string): readonly Colour[] => colours.get(id) ?? [];
+      const standings: SwissStanding[] = ids.map((id, i) => ({ entrantId: id, score: c.scores[id] as number, rank: i + 1 }));
+      const history = { played: new Set(c.played), colours, byes: new Set(c.byes) };
+      const round: OracleRound = {
+        field: standings.map((s) => ({ id: s.entrantId, score: s.score })),
+        played: c.played.map((k) => k.split("|") as [string, string]),
+        byeIneligible: new Set(c.byes),
+        colours,
+      };
+      const at = { case: c.name };
+      const verdict = judgeRound(round);
+      expect({ ...at, pairable: verdict.pairableByes.includes(c.bye), lower: lowerScoredPairableByes(round, verdict, c.bye) })
+        .toEqual({ ...at, pairable: true, lower: [] });
+      // the oracle: no seating of the bye's remainder, any board either way up within the colour limits, keeps the next round
+      // pairable; so "unpairable" is the right verdict
+      let keepers = 0;
+      for (const boards of perfectMatchings(ids.filter((id) => id !== c.bye), new Set(round.played.map(([a, b]) => oraclePairKey(a, b))))) {
+        for (let mask = 0; mask < 1 << boards.length; mask++) {
+          const pairings = boards.map(([x, y], i) => ((mask >> i) & 1 ? { home: y, away: x } : { home: x, away: y }));
+          if (!pairings.every((p) => mayTake(recordOf(p.home), "W") && mayTake(recordOf(p.away), "B"))) continue;
+          orientationsJudged++;
+          if (judgeRound(roundAfter(round, { pairings, bye: c.bye })).exists) keepers++;
+        }
+      }
+      expect({ ...at, keepers }).toEqual({ ...at, keepers: 0 });
+      // the turn the guard refuses: its side may not take that colour (P-A5)
+      expect({ ...at, mayTake: mayTake(recordOf(c.outside.id), c.outside.takes) }).toEqual({ ...at, mayTake: false });
+      const plain = pairRound(standings, history, { chess: true });
+      const r = pairRound(standings, history, { chess: true, lookAhead: true });
+      expect({ ...at, r }).toEqual({ ...at, r: { ...seated(plain), nextRound: "unpairable" } }); // the rule's round, and the warning
+      expect(seatedRoundViolations(round, seated(r))).toEqual([]);
+      expect(seated(r).bye).toBe(c.bye);
+      checked++;
+    }
+    expect(checked).toBe(OUTSIDE_CASES.length);
+    expect(orientationsJudged).toBeGreaterThan(0);
   });
 });
 

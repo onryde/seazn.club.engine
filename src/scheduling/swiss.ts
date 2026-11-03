@@ -24,8 +24,12 @@
 // next round to protect), each complete pairing the search reaches, in the
 // same order, is kept only if the next round could still be paired; the search
 // goes on past one that dead-ends, but only among the completions of the bye
-// candidate it already chose (bye minimality outranks it). When none keeps the
-// next round pairable, the first is seated anyway: the round reports
+// candidate it already chose (bye minimality outranks it). With chess colours on,
+// a board seated the other way up is a different legal pairing too (final review
+// I1): when no pairing keeps the next round pairable with the colours the rule
+// gives it, the same pairings are walked again, each with its boards turned where
+// both sides stay within the colour limits, the fewest colour preferences given
+// up first. When none keeps the next round pairable, the first is seated anyway: the round reports
 // `nextRound: "unpairable"` (or "unknown" when the shared budget ran out first)
 // so the organiser can be told, never a refusal (rulebook-W3 §3.3, RB3-4).
 //
@@ -66,7 +70,10 @@ export interface SwissConstraints {
    *  round but the last of a stage that plays more rounds than the safe maximum ⌊n/2⌋; never on the last, which has no next
    *  round to protect (set there, it would move boards and warn for a round that never comes). The search then prefers,
    *  among the legal pairings of the bye it would choose anyway, one after which the next round can still be paired, and
-   *  reports its verdict as `nextRound`. It judges the next round under the full colour limits, the final round included:
+   *  reports its verdict as `nextRound`. With chess colours on, the colour preferences give way only after the boards do:
+   *  every pairing is first judged with the colours the rule gives it, and only when none of them keeps the next round
+   *  pairable is a board seated the other way up (both sides within the colour limits, the fewest preferences given up
+   *  first; final review I1). It judges the next round under the full colour limits, the final round included:
    *  who is a topscorer there (X-SW-11) depends on results not yet played, so before the final round it may move a board or
    *  warn where the topscorer exception would have let that round pair (controller ruling, T4c). `finalRoundMaxScore`, if
    *  also set, describes THIS round and never enters the next round's check. */
@@ -466,16 +473,18 @@ export function pairRound(
   // same field, with this round's boards played (P-A1), its bye no longer eligible (P-A4), and for chess the colours as
   // seated (P-A5). Existence only, over the whole field: an odd field adds one bye seat that only a bye-eligible entrant may
   // take, so a perfect matching that seats it IS a bye choice with a pairable remainder. It draws on the same node budget,
-  // and answers "cut" when that ran out before it proved either answer. `withColours` false lifts the colour limits.
+  // and answers "cut" when that ran out before it proved either answer. `sides` is this round's boards as seated (White
+  // home), read for the colours; null lifts the colour limits.
   const lookAhead = constraints.lookAhead === true;
-  const nextRoundCheck = (boards: Boards, bye: SwissStanding | undefined, withColours: boolean): "yes" | "no" | "cut" => {
+  const nextRoundCheck = (boards: Boards, bye: SwissStanding | undefined, sides: readonly SwissPairing[] | null): "yes" | "no" | "cut" => {
+    const withColours = sides !== null;
     const metNow = new Set(boards.map(([a, b]) => pairKey(a.entrantId, b.entrantId)));
     const nextState = new Map<EntrantId, ColourState>();
-    if (withColours) {
+    if (sides !== null) {
       const take = (id: EntrantId, c: Colour): void => {
         nextState.set(id, colourState([...(history.colours?.get(id) ?? []), c]));
       };
-      for (const p of seat(boards).pairings) {
+      for (const p of sides) {
         take(p.home, "W");
         take(p.away, "B");
       }
@@ -526,22 +535,25 @@ export function pairRound(
     // "accepted" stops the search: the leaf took the boards, or proved that no completion of this bye can be taken.
     let first: Boards | undefined;
     let taken: Boards | undefined;
+    let takenSides: SwissPairing[] | undefined; // set when the second pass seats `taken` with a board turned
     // A pairing the score-group pass reaches by several floater choices, and again in the whole-remainder search, is judged
     // once. The memo is keyed on the boards AS REACHED (each pair in the order the search holds it), not on the set: the
     // same set reached with a board the other way up is judged again, so its verdict rests on `seat` turning every board
     // upper side first, and never on the memo standing in for that.
+    const keyOf = (boards: Boards): string => boards.map(([a, b]) => JSON.stringify([a.entrantId, b.entrantId])).sort().join("\n");
     const verdicts = new Map<string, boolean>();
     let baseChecked = false;
+    let hopeless = false; // the next round cannot pair whatever this round seats: no second pass either
     const leaf = (boards: Boards): Found => {
       first ??= boards;
       if (!lookAhead) {
         taken = boards;
         return "accepted";
       }
-      const key = boards.map(([a, b]) => JSON.stringify([a.entrantId, b.entrantId])).sort().join("\n");
+      const key = keyOf(boards);
       let pairs = verdicts.get(key);
       if (pairs === undefined) {
-        const answer = nextRoundCheck(boards, bye, chess);
+        const answer = nextRoundCheck(boards, bye, chess ? seat(boards).pairings : null);
         if (answer === "cut") return "rejected"; // not proved either way: a later reach judges it again
         pairs = answer === "yes";
         verdicts.set(key, pairs);
@@ -553,17 +565,64 @@ export function pairRound(
       // Turned down. If the next round cannot pair even before this round adds its boards and colours (this bye spent, the
       // colour limits lifted), no completion of this bye can make it pair: stop here rather than walk them all.
       if (!baseChecked) {
-        const base = nextRoundCheck([], bye, false);
+        const base = nextRoundCheck([], bye, null);
         if (base !== "cut") baseChecked = true;
-        if (base === "no") return "accepted";
+        if (base === "no") {
+          hopeless = true;
+          return "accepted";
+        }
       }
       return "rejected";
     };
     pairRemainder(remainderOf(bye), leaf);
+
+    // The second pass (chess, final review I1): no pairing kept the next round pairable with the colours the rule gives it.
+    // A board seated the other way up is another legal pairing (rulebook §3.3: "among legal pairings"), so the same pairings
+    // are walked again, in the same order, and each is judged with its boards turned: only boards whose two sides both stay
+    // within the colour limits either way up (a topscorer's exception never turns one), the fewest colour preferences given
+    // up first (`turnings`). The first that keeps the next round pairable is seated. Colour preferences give way only here:
+    // a pairing the rule's colours keep pairable, on any boards, was taken in the first pass. It draws on the same budget,
+    // each turning tried a node of its own, so a round it cannot finish comes back "unknown", never refused.
+    const turnedDown = new Set<string>();
+    const turnLeaf = (boards: Boards): Found => {
+      const key = keyOf(boards);
+      if (turnedDown.has(key)) return "rejected";
+      // the colours cannot help when the next round has no pairing even with their limits lifted: a rematch dead end
+      const lifted = nextRoundCheck(boards, bye, null);
+      if (lifted === "cut") return "rejected";
+      if (lifted === "no") {
+        turnedDown.add(key);
+        return "rejected";
+      }
+      const { pairings } = seat(boards);
+      const byCost: [number[], number[], number[]] = [[], [], []];
+      pairings.forEach((p, i) => {
+        const cost = turnCost(p, stateOf);
+        if (cost !== null) byCost[cost].push(i);
+      });
+      for (const turned of turnings(byCost)) {
+        if (!spend()) return "rejected"; // out of nodes (the whole budget, or the score-group pass's share): judged again later, or "unknown"
+        const sides = pairings.map((p, i) => (turned.includes(i) ? { home: p.away, away: p.home } : p));
+        const answer = nextRoundCheck(boards, bye, sides);
+        if (answer === "cut") return "rejected";
+        if (answer === "yes") {
+          taken = boards;
+          takenSides = sides;
+          return "accepted";
+        }
+      }
+      turnedDown.add(key);
+      return "rejected";
+    };
+    if (lookAhead && chess && first !== undefined && taken === undefined && !hopeless && !exhausted) {
+      pairRemainder(remainderOf(bye), turnLeaf);
+    }
+
     if (first !== undefined) {
       // No leaf kept the next round pairable: seat the first anyway (a soft preference, never a refusal), and say why.
       const nextRound: SwissNextRound = taken !== undefined ? "pairable" : exhausted ? "unknown" : "unpairable";
-      const { pairings, floated } = seat(taken ?? first);
+      const { pairings: ruleSides, floated } = seat(taken ?? first);
+      const pairings = takenSides ?? ruleSides;
       return {
         ok: true,
         pairings,
@@ -586,6 +645,50 @@ export function pairRound(
     if (exhausted) return refuse("search_limit");
   }
   return refuse("rematch");
+}
+
+// The look-ahead's second pass (X-SW-10, final review I1): what turning one seated chess board costs, in colour preferences
+// (preferredColour) the other way up leaves unmet beyond those the seated way leaves. null when the other way up would take
+// either side outside its colour limits: only a board both sides could play either way up may be turned, so a topscorer's
+// exception (X-SW-11) never turns one. The seated way already meets every preference it can (assignColours: both asks met
+// when they differ, the lone ask met, one of two equal asks met), so the cost is 0, 1 or 2; anything else is a defect in
+// this file, refused loudly rather than ordered wrongly.
+function turnCost(p: SwissPairing, stateOf: (id: EntrantId) => ColourState): 0 | 1 | 2 | null {
+  const white = stateOf(p.home);
+  const black = stateOf(p.away);
+  if (!(canTake(white, "W") && canTake(black, "B") && canTake(white, "B") && canTake(black, "W"))) return null;
+  const unmet = (s: ColourState, c: Colour): number => {
+    const ask = preferredColour(s);
+    return ask !== null && ask !== c ? 1 : 0;
+  };
+  const cost = unmet(white, "B") + unmet(black, "W") - (unmet(white, "W") + unmet(black, "B"));
+  if (cost !== 0 && cost !== 1 && cost !== 2) {
+    throw new Error(`pairRound: ${p.home} v ${p.away} was seated against ${-cost} more colour preferences than the other way up`);
+  }
+  return cost;
+}
+
+// The sets of boards the second pass tries turned, cheapest first: fewest colour preferences given up (the boards' summed
+// turnCost), then fewest boards turned, then a fixed order (the costlier boards' combinations outermost, each in board
+// order). `byCost[c]` lists the boards (their places in the seated round) whose turn costs c. Lazy: the caller pays a node
+// for each set it takes. Never the empty set: the boards as seated were judged in the first pass.
+function* turnings(byCost: readonly [number[], number[], number[]]): Generator<number[]> {
+  const [free, one, two] = byCost;
+  const boards = free.length + one.length + two.length;
+  for (let cost = 0; cost <= one.length + 2 * two.length; cost++) {
+    for (let size = 1; size <= boards; size++) {
+      for (let twos = 0; 2 * twos <= cost && twos <= two.length; twos++) {
+        const ones = cost - 2 * twos;
+        const frees = size - ones - twos;
+        if (ones > one.length || frees < 0 || frees > free.length) continue;
+        for (const t of combinations(two, twos)) {
+          for (const o of combinations(one, ones)) {
+            for (const f of combinations(free, frees)) yield [...f, ...o, ...t];
+          }
+        }
+      }
+    }
+  }
 }
 
 // Decide who is home (White in chess; a is the upper board). Chess: satisfy the
