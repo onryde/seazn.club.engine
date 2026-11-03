@@ -21,7 +21,7 @@ import { declaredCfgs } from "../testkit/declared-cfgs.ts";
 import { forEachSport } from "../testkit/for-each-sport.ts";
 import { offerableKeys } from "./cascade-rules.ts";
 import { decidedInFor } from "./decided-in.ts";
-import { payout, setsToWinOf, swissDrawFactsOf } from "./points.ts";
+import { payout, setsToWinOf, swissDrawFactsOf, unplayedSidesOf } from "./points.ts";
 import { completeTableStage, type TableFixture } from "./stage.ts";
 import type { FixtureResult, StandingsRow } from "./standings.ts";
 import { resolveTableRules, type TableRulesPin } from "./table-rules.ts";
@@ -74,6 +74,9 @@ function outcomeOf(m: Match): MatchOutcome {
   return m.award === true ? { kind: "award", winner, loser, reason: "walkover" } : { kind: "win", winner, loser };
 }
 
+/** A Swiss ledger stage's absences when nobody was absent (final review m3: the stage names them, an empty map for none). */
+const NOBODY_ABSENT: ReadonlyMap<EntrantId, readonly number[]> = new Map();
+
 /** The sport's real payout of `m` under `rule` (the seam a stage pays through). */
 function paid(module: AnySportModule, cfg: unknown, m: Match, rules: ReturnType<typeof resolveTableRules>): FixtureResult {
   const side = (id: EntrantId, won: boolean, lost: boolean, metrics: Ledger): StandingsDelta => ({
@@ -115,7 +118,10 @@ function rank(s: Scene): readonly StandingsRow[] {
   const fixtures: TableFixture[] = [
     ...s.decided.map((m, i): TableFixture => {
       const roundNo = s.roundNos?.[i];
-      return { id: `d${i}`, status: "decided", result: paid(s.module, cfg, m, resolved), ...(roundNo === undefined ? {} : { roundNo }) };
+      const result = paid(s.module, cfg, m, resolved);
+      // the side(s) that lost without playing, as the app fills it (read only on a Swiss stage; final review m3)
+      const unplayed = unplayedSidesOf(outcomeOf(m), m.award !== true, result);
+      return { id: `d${i}`, status: "decided", result, unplayed, ...(roundNo === undefined ? {} : { roundNo }) };
     }),
     ...s.pending.map((_, i): TableFixture => ({ id: `p${i}`, status: "scheduled" })),
   ];
@@ -124,7 +130,7 @@ function rank(s: Scene): readonly StandingsRow[] {
   const done = completeTableStage(
     {
       id: "s", kind: s.kind ?? "league", entrants, rules: resolved, rngSeed: 7,
-      ...(s.kind === "swiss" ? { swiss: true, rounds: 3, swissDraw: swissDrawFactsOf(s.module, cfg) } : { swiss: false }),
+      ...(s.kind === "swiss" ? { swiss: true, rounds: 3, swissDraw: swissDrawFactsOf(s.module, cfg), swissAbsentRounds: NOBODY_ABSENT } : { swiss: false }),
       ...(scheduledPairs === undefined ? {} : { scheduledPairs }),
       ...(s.module.partialScheduleOrder === undefined ? {} : { partialScheduleOrder: s.module.partialScheduleOrder }),
       ...(s.module.winsCount === undefined ? {} : { winsCount: s.module.winsCount }),

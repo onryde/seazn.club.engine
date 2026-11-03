@@ -66,7 +66,7 @@ function sideOf(entrantId: EntrantId, side: Side, rule: PointsRule): StandingsDe
 /** A decided board in `round`: "h" the home side won, "a" the away side, "d" a draw. */
 function board(rule: PointsRule, round: number, home: EntrantId, away: EntrantId, r: "h" | "a" | "d"): TableFixture {
   const [h, a]: [Side, Side] = r === "h" ? ["w", "l"] : r === "a" ? ["l", "w"] : ["d", "d"];
-  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "decided", result: [sideOf(home, h, rule), sideOf(away, a, rule)] };
+  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "decided", result: [sideOf(home, h, rule), sideOf(away, a, rule)], unplayed: null };
 }
 /** A pairing-allocated bye as the app writes it: a walkover holding a one-sided award of the win (X-SW-5). */
 function bye(rule: PointsRule, round: number, entrantId: EntrantId): TableFixture {
@@ -75,6 +75,9 @@ function bye(rule: PointsRule, round: number, entrantId: EntrantId): TableFixtur
     awardDelta: { entrantId, played: 1, won: 1, drawn: 0, lost: 0, points: rule.win.regulation, metrics: {} },
   };
 }
+
+/** A Swiss ledger stage's absences when nobody was absent (final review m3: the stage names them, an empty map for none). */
+const NOBODY_ABSENT: ReadonlyMap<EntrantId, readonly number[]> = new Map();
 
 interface Scene {
   readonly rule: PointsRule;
@@ -91,7 +94,7 @@ function stageOf(s: Scene): TableStage {
   const stage = {
     id: "sw", kind: "swiss", swiss: true, entrants: s.entrants, rules: tableRulesOf(s.cascade ?? CASCADE, s.rule), rngSeed: 7,
     ...(s.rounds === undefined ? {} : { rounds: s.rounds }),
-    ...(s.absent === undefined ? {} : { swissAbsentRounds: s.absent }),
+    swissAbsentRounds: s.absent ?? NOBODY_ABSENT,
     ...(s.draw === undefined ? {} : { swissDraw: s.draw }),
   } as const;
   // A Swiss ledger stage with no draw facts is a type error for every caller (N1); a scene builds one only to prove the
@@ -373,9 +376,9 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
         const lost = (id: EntrantId): StandingsDelta => ({ entrantId: id, played: 1, won: 0, drawn: 0, lost: 1, points: loss, metrics: {} });
         const byeOf = (round: number, id: EntrantId): TableFixture => ({ id: `r${round}-bye`, roundNo: round, status: "walkover", awardDelta: paidBye(m, cfg, rule, id) });
         const fixtures: TableFixture[] = [
-          { id: "r1", roundNo: 1, status: "decided", result: [won("X"), lost("Y")] }, byeOf(1, "Z"),
-          { id: "r2", roundNo: 2, status: "decided", result: [won("X"), lost("Z")] }, byeOf(2, "Y"),
-          { id: "r3", roundNo: 3, status: "decided", result: [won("Y"), lost("Z")] }, byeOf(3, "X"),
+          { id: "r1", roundNo: 1, status: "decided", result: [won("X"), lost("Y")], unplayed: null }, byeOf(1, "Z"),
+          { id: "r2", roundNo: 2, status: "decided", result: [won("X"), lost("Z")], unplayed: null }, byeOf(2, "Y"),
+          { id: "r3", roundNo: 3, status: "decided", result: [won("Y"), lost("Z")], unplayed: null }, byeOf(3, "X"),
         ];
         const paid = (id: EntrantId) => (fixtures.find((f) => f.awardDelta?.entrantId === id)?.awardDelta?.points ?? NaN);
         const score = { X: win + win + paid("X"), Y: loss + paid("Y") + win, Z: paid("Z") + loss + loss };
@@ -469,6 +472,7 @@ describe("X-SW-8 the Swiss ledger by round: FIDE C.07 (2026) art. 16 (rulebook-W
         { entrantId: winner, played: 1, won: 1, drawn: 0, lost: 0, points: w, metrics: {} },
         { entrantId: loser, played: 1, won: 0, drawn: 0, lost: 1, points: l, metrics: {} },
       ],
+      unplayed: null,
     });
     const scene: Scene = {
       rule, draw: facts, entrants: ["X", "Y", "Z"], rounds: 3,
@@ -636,14 +640,14 @@ function sceneS3(): Scene {
 }
 
 describe("X-SW-7 forfeits, double walkovers and withdrawals: FIDE C.07 (2026) art. 16.2.2/16.2.4, 16.3.2, 16.4.1, 16.5 (rulebook-W3 §4)", () => {
-  it("X-SW-7 empty case first: unplayedSidesOf is undefined for a played win and for a bye", () => {
+  it("X-SW-7 empty case first: unplayedSidesOf is null for a played win and for a bye", () => {
     const pair = board(CHESS, 1, "A", "B", "h").result!; // A (home) beat B
     const won = MatchOutcome.parse({ kind: "win", winner: "A", loser: "B", method: "regulation" });
     const byeAward = MatchOutcome.parse({ kind: "award", winner: "A", loser: null, reason: "bye" });
     let checked = 0;
     for (const played of [true, false]) {
-      expect(unplayedSidesOf(won, played, pair), `a played win, played=${played}`).toBeUndefined();
-      expect(unplayedSidesOf(byeAward, played, pair), `a bye, played=${played}`).toBeUndefined();
+      expect(unplayedSidesOf(won, played, pair), `a played win, played=${played}`).toBeNull();
+      expect(unplayedSidesOf(byeAward, played, pair), `a bye, played=${played}`).toBeNull();
       checked += 2;
     }
     expect(checked).toBe(4);
@@ -656,26 +660,27 @@ describe("X-SW-7 forfeits, double walkovers and withdrawals: FIDE C.07 (2026) ar
     //     played by its own reason;
     //   - any other forfeit (retired, disqualified, withdrew; a pre-W2b win by forfeit): the loser's seat while nothing was
     //     played, and none after play (a played game, M3);
-    //   - a bye (16.2.1: the award's own unplayed round, nobody forfeited), a played win, a draw, a tie, a no result: none.
-    const cases: Array<{ outcome: MatchOutcome; played: boolean; pair: FixtureResult; expected: "home" | "away" | "both" | undefined; what: string }> = [];
+    //   - a bye (16.2.1: the award's own unplayed round, nobody forfeited), a played win, a draw, a tie, a no result: none,
+    //     spelled `null` (a game played; final review m3).
+    const cases: Array<{ outcome: MatchOutcome; played: boolean; pair: FixtureResult; expected: "home" | "away" | "both" | null; what: string }> = [];
     // the winner is always A, and B the side that forfeits; `home` is who holds the home seat
     for (const home of ["A", "B"] as const) {
       const pair: FixtureResult = home === "A" ? board(CHESS, 1, "A", "B", "h").result! : board(CHESS, 1, "B", "A", "a").result!;
       const loserSeat = home === "A" ? "away" : "home";
       for (const played of [false, true]) {
-        const add = (outcome: unknown, expected: "home" | "away" | "both" | undefined, what: string) =>
+        const add = (outcome: unknown, expected: "home" | "away" | "both" | null, what: string) =>
           cases.push({ outcome: MatchOutcome.parse(outcome), played, pair, expected, what: `${what}, A ${home === "A" ? "home" : "away"}, played=${played}` });
         add({ kind: "double_walkover" }, "both", "double walkover");
-        add({ kind: "draw" }, undefined, "draw");
-        add({ kind: "tie" }, undefined, "tie");
-        add({ kind: "no_result" }, undefined, "no result");
+        add({ kind: "draw" }, null, "draw");
+        add({ kind: "tie" }, null, "tie");
+        add({ kind: "no_result" }, null, "no result");
         for (const reason of AWARD_REASONS) {
           const loser = reason === "bye" ? null : "B";
-          const expected = reason === "bye" ? undefined : reason === "walkover" || !played ? loserSeat : undefined;
+          const expected = reason === "bye" ? null : reason === "walkover" || !played ? loserSeat : null;
           add({ kind: "award", winner: "A", loser, reason }, expected, `award ${reason}`);
         }
         for (const method of ["regulation", "walkover", "forfeit"] as const) {
-          const expected = method === "walkover" || (method === "forfeit" && !played) ? loserSeat : undefined;
+          const expected = method === "walkover" || (method === "forfeit" && !played) ? loserSeat : null;
           add({ kind: "win", winner: "A", loser: "B", method }, expected, `win by ${method}`);
         }
       }
@@ -998,6 +1003,50 @@ describe("X-SW-7 forfeits, double walkovers and withdrawals: FIDE C.07 (2026) ar
     expect(refusal(() => completeTableStage(untyped, []))?.message).toMatch(/names no swissDraw/);
   });
 
+  it("X-SW-7 m3: a Swiss ledger stage names each counted board's unplayed side(s), null for a game played, and its absences, an empty map for none; an omission is refused (CONFIG_INVALID), never read as a game played or as nobody absent (final review m3)", () => {
+    // Each omission, if read the old way, gives a plausible wrong table: S2's forfeit read as a game B lost to A (B's
+    // Buchholz 4/2, not 2/2), S4's late entrant L with no round-1 card (no dummy). So each is refused instead.
+    const s2 = sceneS2();
+    const omitted = (f: TableFixture): TableFixture => {
+      const { unplayed: _unplayed, ...rest } = f;
+      return rest;
+    };
+    const forfeitBoard = s2.fixtures.find((f) => f.unplayed === "away");
+    const playedBoard = s2.fixtures.find((f) => f.unplayed === null);
+    if (forfeitBoard === undefined || playedBoard === undefined) throw new Error("S2 holds a forfeit and a played board");
+    const withoutAbsences = (s: Scene): TableStage => {
+      const { swissAbsentRounds: _absent, ...rest } = stageOf(s);
+      return rest as TableStage;
+    };
+    const cases: Array<[string, () => unknown, RegExp]> = [
+      ["the forfeit names no unplayed side", () => tableOf({ ...s2, fixtures: s2.fixtures.map((f) => (f === forfeitBoard ? omitted(f) : f)) }), /"r1-A-B" names no unplayed/],
+      ["a played board names no unplayed side", () => tableOf({ ...s2, fixtures: s2.fixtures.map((f) => (f === playedBoard ? omitted(f) : f)) }), /names no unplayed/],
+      ["a late entrant's stage names no absences", () => completeTableStage(withoutAbsences(S4), S4.fixtures), /names no swissAbsentRounds/],
+      ["a stage with nobody absent names no absences", () => completeTableStage(withoutAbsences(S1), S1.fixtures), /names no swissAbsentRounds/],
+    ];
+    let checked = 0;
+    for (const [what, run, message] of cases) {
+      const got = refusal(run);
+      expect(got?.code, what).toBe("CONFIG_INVALID");
+      expect(got?.message, what).toMatch(message);
+      checked++;
+    }
+    expect(checked).toBe(4);
+    // The cleared pairs: named, each stage ranks, and S2's columns are the forfeit's (the S2 Buchholz test derives them).
+    expect(refusal(() => tableOf(s2))).toBeNull();
+    expect(column(s2, "buchholz")).toEqual({ A: 4 / 2, B: 2 / 2, C: 4 / 2, D: 4 / 2 });
+    expect(refusal(() => tableOf(S4))).toBeNull();
+    expect(refusal(() => tableOf(S1))).toBeNull();
+    // A bye is an award with no [home, away] result, its own unplayed round (16.2.1): it names no side, and S1's three rank.
+    expect(S1.fixtures.filter((f) => f.awardDelta !== undefined && f.result === undefined && f.unplayed === undefined)).toHaveLength(3);
+    // A board still to play is no card, so it needs no unplayed side either.
+    expect(refusal(() => tableOf({ ...S4, fixtures: [...S4.fixtures, { id: "later", roundNo: 3, status: "scheduled", result: board(CHESS, 3, "A", "C", "h").result! }] }))).toBeNull();
+    // and the type says so first for the absences: a Swiss ledger stage with no swissAbsentRounds does not compile
+    // @ts-expect-error — m3: TableStage's Swiss arm requires `swissAbsentRounds` (an empty map when nobody is absent)
+    const untyped: TableStage = { id: "sw", kind: "swiss", swiss: true, swissDraw: CHESS_DRAW, entrants: [], rules: tableRulesOf(CASCADE, CHESS) };
+    expect(refusal(() => completeTableStage(untyped, []))?.message).toMatch(/names no swissAbsentRounds/);
+  });
+
   it("X-SW-7 guards: an unplayed side on a fixture with no result, a forfeit side that did not lose, a forfeit whose winner or loser is not a seat → CONFIG_INVALID", () => {
     const s2 = sceneS2();
     const walked = s2.fixtures[0]!;
@@ -1080,7 +1129,7 @@ function walkedOver(m: AnySportModule, rawCfg: unknown, rule: PointsRule, round:
   const raw = m.standingsDelta(outcome, cfg, { kind: "swiss" }, state) as FixtureResult;
   const result = payout(outcome, decidedInFor(m, outcome), raw, false, rule, m.awardScoreKeys, setsToWinOf(m, cfg));
   const unplayed = unplayedSidesOf(outcome, false, result);
-  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "walkover", result, ...(unplayed === undefined ? {} : { unplayed }) };
+  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "walkover", result, unplayed };
 }
 
 /** A played set-sport board: `games` [home, away] (the side that takes more games wins), each game 21-15 to its winner,
@@ -1097,7 +1146,7 @@ function setBoard(m: AnySportModule, rawCfg: unknown, rule: PointsRule, round: n
   const outcome = MatchOutcome.parse({ kind: "win", winner: homeWon ? home : away, loser: homeWon ? away : home });
   const cfg = m.configSchema.parse(rawCfg);
   const result = payout(outcome, decidedInFor(m, outcome), raw, true, rule, m.awardScoreKeys, setsToWinOf(m, cfg));
-  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "decided", result };
+  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "decided", result, unplayed: null };
 }
 
 /** Each ranked row's entrant, in table order. */
@@ -1214,7 +1263,7 @@ describe("X-SW-9 the Swiss default chains on a real stage, and head-to-head on a
           for (const bSide of B_SIDES) {
             const where = `${m.key}/${name} [${cascade.join(", ")}] B ${bSide}`;
             const s = sceneH(m, cfg, rule, cascade, bSide);
-            expect(s.fixtures.map((f) => f.unplayed), `${where}: premise, the producer marks the three forfeits`).toEqual([bSide, "away", "away", undefined]);
+            expect(s.fixtures.map((f) => f.unplayed), `${where}: premise, the producer marks the three forfeits`).toEqual([bSide, "away", "away", null]);
             const done = completeTableStage(stageOf(s), s.fixtures);
             const rows = done.tables.overall ?? [];
             const a = rows.find((r) => r.entrantId === "A");
@@ -1232,7 +1281,7 @@ describe("X-SW-9 the Swiss default chains on a real stage, and head-to-head on a
           // The positive pair: a PLAYED game between them is their meeting on the same Swiss stage, and the step splits it.
           const where = `${m.key}/${name} [${cascade.join(", ")}] played`;
           const p = sceneHPlayed(m, cfg, rule, cascade);
-          expect(p.fixtures.map((f) => f.unplayed), `${where}: premise, one forfeit (C v D)`).toEqual([undefined, "away", undefined, undefined]);
+          expect(p.fixtures.map((f) => f.unplayed), `${where}: premise, one forfeit (C v D)`).toEqual([null, "away", null, null]);
           const prow = completeTableStage(stageOf(p), p.fixtures).tables.overall ?? [];
           expect(prow.find((r) => r.entrantId === "A")?.points, `${where}: premise, level`).toBe(prow.find((r) => r.entrantId === "B")?.points);
           const pids = orderOf(prow);

@@ -181,14 +181,14 @@ export function isUnplayedForfeit(outcome: MatchOutcome, played: boolean): boole
  * W3 (X-SW-7; FIDE C.07 (2026) 16.2.2 / 16.2.4; rulebook-W3-swiss.md §4 M1–M3) — the seat(s) of a decided fixture that
  * lost WITHOUT playing, for `TableFixture.unplayed`: "both" for a double walkover (both sides absent); the loser's seat
  * in `pair`'s [home, away] order for a forfeit with nothing played (`isUnplayedForfeit`: a walkover whatever was played,
- * any other forfeit only before play); `undefined` for anything else — a played result (a retirement after play is a
+ * any other forfeit only before play); `null` for anything else — a played result (a retirement after play is a
  * played game, M3) and a bye (nobody forfeited; the award is its own unplayed round, 16.2.1). The one authority the app
  * calls to fill the field. The loser is the typed `loser`, else (a pre-W2b award) the seat that is not the winner's.
  * Refused, CONFIG_INVALID: a forfeit whose winner holds neither seat, or whose typed loser does not hold the other one.
  */
-export function unplayedSidesOf(outcome: MatchOutcome, played: boolean, pair: FixtureResult): "home" | "away" | "both" | undefined {
+export function unplayedSidesOf(outcome: MatchOutcome, played: boolean, pair: FixtureResult): "home" | "away" | "both" | null {
   if (outcome.kind === "double_walkover") return "both";
-  if (!isUnplayedForfeit(outcome, played)) return undefined;
+  if (!isUnplayedForfeit(outcome, played)) return null;
   // An unplayed forfeit is an award or a win, and each names its winner.
   const { winner, loser } = outcome as { winner: EntrantId; loser?: EntrantId | null };
   const [home, away] = pair;

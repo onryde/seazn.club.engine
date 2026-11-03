@@ -59,7 +59,7 @@ function game(round: number, home: EntrantId, away: EntrantId, hg: number, ag: n
   const outcome = MatchOutcome.parse(
     hg === ag ? { kind: "draw" } : { kind: "win", winner: hg > ag ? home : away, loser: hg > ag ? away : home, method: "regulation" },
   );
-  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "decided", result: paid(outcome, football.standingsDelta(outcome, FB_CFG, { kind: "swiss" }, state), true) };
+  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "decided", result: paid(outcome, football.standingsDelta(outcome, FB_CFG, { kind: "swiss" }, state), true), unplayed: null };
 }
 /** A walkover on a seated board (`loser` never arrived): football's award fold (FB-WO-1), the rule's payout with nothing
  *  played, and unplayedSidesOf — the one authority the app fills `TableFixture.unplayed` from. */
@@ -67,7 +67,7 @@ function walkover(round: number, home: EntrantId, away: EntrantId, winner: Entra
   const outcome = MatchOutcome.parse({ kind: "award", winner, loser, reason: "walkover" });
   const result = paid(outcome, football.standingsDelta(outcome, FB_CFG, { kind: "swiss" }, football.init(FB_CFG, seats(home, away))), false);
   const unplayed = unplayedSidesOf(outcome, false, result);
-  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "walkover", result, ...(unplayed === undefined ? {} : { unplayed }) };
+  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "walkover", result, unplayed };
 }
 /** A double walkover on a seated board (both sides absent, rulebook §4 M2): the same producer chain as `walkover`. X-DW-4
  *  credits nothing, so each side's goal difference moves by 0 here. */
@@ -75,7 +75,7 @@ function doubleWalkover(round: number, home: EntrantId, away: EntrantId): TableF
   const outcome = MatchOutcome.parse({ kind: "double_walkover" });
   const result = paid(outcome, football.standingsDelta(outcome, FB_CFG, { kind: "swiss" }, football.init(FB_CFG, seats(home, away))), false);
   const unplayed = unplayedSidesOf(outcome, false, result);
-  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "walkover", result, ...(unplayed === undefined ? {} : { unplayed }) };
+  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "walkover", result, unplayed };
 }
 /** A pairing-allocated bye as the app writes it (X-SW-5): the award fold opposite a phantom seat, the winner's half. */
 function bye(round: number, entrant: EntrantId): TableFixture {
@@ -85,6 +85,9 @@ function bye(round: number, entrant: EntrantId): TableFixture {
   if (awardDelta === undefined) throw new Error("the paid bye names no winner");
   return { id: `r${round}-bye-${entrant}`, roundNo: round, status: "walkover", awardDelta };
 }
+
+/** A Swiss ledger stage's absences when nobody was absent (final review m3: the stage names them, an empty map for none). */
+const NOBODY_ABSENT: ReadonlyMap<EntrantId, readonly number[]> = new Map();
 
 interface Scene {
   readonly entrants: readonly EntrantId[];
@@ -98,7 +101,7 @@ const OPP: readonly TiebreakerKey[] = ["points", "opp_diff", "lots"];
 function stageOf(s: Scene): TableStage {
   return {
     id: "sw", kind: "swiss", swiss: true, swissDraw: FB_DRAW, entrants: s.entrants, rules: tableRulesOf(s.cascade ?? OPP, FB_RULE),
-    rngSeed: 7, rounds: s.rounds, ...(s.absent === undefined ? {} : { swissAbsentRounds: s.absent }),
+    rngSeed: 7, rounds: s.rounds, swissAbsentRounds: s.absent ?? NOBODY_ABSENT,
   };
 }
 function tableOf(s: Scene): readonly StandingsRow[] {
@@ -366,9 +369,9 @@ describe("opp_diff — the opponents' collective goal difference (rulebook-W3 §
       const rule = m.tablePointsRule(cfg, "swiss");
       const stage: TableStage = {
         id: "sw", kind: "swiss", swiss: true, swissDraw: swissDrawFactsOf(m, raw), entrants: ["H", "A"],
-        rules: tableRulesOf(OPP, rule), rngSeed: 7, rounds: 1,
+        rules: tableRulesOf(OPP, rule), rngSeed: 7, rounds: 1, swissAbsentRounds: NOBODY_ABSENT,
       };
-      const rows = completeTableStage(stage, [{ id: "r1", roundNo: 1, status: "decided", result }]).tables.overall ?? [];
+      const rows = completeTableStage(stage, [{ id: "r1", roundNo: 1, status: "decided", result, unplayed: null }]).tables.overall ?? [];
       const by = new Map(rows.map((r) => [r.entrantId, r]));
       const diffOf = (id: EntrantId): number | undefined => by.get(id)?.metrics[alias];
       expect(diffOf("H"), `${key}: the winner's ${alias} is recorded and not 0, so a misread shows`).not.toBe(0);
@@ -403,9 +406,9 @@ describe("opp_diff — the opponents' collective goal difference (rulebook-W3 §
     const chessRule = boardgame.tablePointsRule(boardgame.configSchema.parse({}), "swiss");
     const side = (id: EntrantId, won: number, points: number): StandingsDelta => ({ entrantId: id, played: 1, won, drawn: 0, lost: 1 - won, points, metrics: {} });
     const chess = (cascade: readonly TiebreakerKey[]): TableStage => ({
-      id: "sw", kind: "swiss", swiss: true, swissDraw: swissDrawFactsOf(boardgame, {}), entrants: ["A", "B"], rules: tableRulesOf(cascade, chessRule), rngSeed: 7, rounds: 1,
+      id: "sw", kind: "swiss", swiss: true, swissDraw: swissDrawFactsOf(boardgame, {}), entrants: ["A", "B"], rules: tableRulesOf(cascade, chessRule), rngSeed: 7, rounds: 1, swissAbsentRounds: NOBODY_ABSENT,
     });
-    const fixtures: TableFixture[] = [{ id: "r1", roundNo: 1, status: "decided", result: [side("A", 1, chessRule.win.regulation), side("B", 0, chessRule.loss.regulation)] }];
+    const fixtures: TableFixture[] = [{ id: "r1", roundNo: 1, status: "decided", result: [side("A", 1, chessRule.win.regulation), side("B", 0, chessRule.loss.regulation)], unplayed: null }];
     const e3 = refusal(() => completeTableStage(chess(OPP), fixtures));
     expect([e3?.code, e3?.data]).toEqual(["CONFIG_INVALID", { entrantId: "A", opponent: "B", need: "gd or run_diff or diff" }]);
     expect(e3?.message).toMatch(/records no goal difference/);
@@ -436,7 +439,7 @@ function ledgerOf(s: Scene): SwissTable {
       round: f.roundNo as number,
       ...(f.result === undefined ? {} : { result: f.result }),
       ...(f.awardDelta === undefined ? {} : { award: f.awardDelta }),
-      ...(f.unplayed === undefined ? {} : { unplayed: f.unplayed }),
+      ...(f.unplayed == null ? {} : { unplayed: f.unplayed }),
     })),
     { rounds: s.rounds, drawPoints: FB_RULE.draw, ...(s.absent === undefined ? {} : { absent: s.absent }) },
   );
@@ -497,11 +500,11 @@ describe("X-SW-9 the goals family's full Swiss default reaches opp_diff (ruleboo
         const outcome = MatchOutcome.parse({ kind: "win", winner: hg > ag ? home : away, loser: hg > ag ? away : home, method: "regulation" });
         const deltas = m.standingsDelta(outcome, cfg, { kind: "swiss" }, state as never) as FixtureResult;
         const result = payout(outcome, decidedInFor(m, outcome), deltas, true, rule, m.awardScoreKeys, setsToWinOf(m, cfg));
-        return { id: `r${round}-${home}-${away}`, roundNo: round, status: "decided", result };
+        return { id: `r${round}-${home}-${away}`, roundNo: round, status: "decided", result, unplayed: null };
       };
       const stage = (order: readonly TiebreakerKey[]): TableStage => ({
         id: "sw", kind: "swiss", swiss: true, swissDraw: swissDrawFactsOf(m, raw), entrants: ["X", "Y", "P", "Q", "R", "S"],
-        rules: tableRulesOf(order, rule), rngSeed: 7, rounds: 2,
+        rules: tableRulesOf(order, rule), rngSeed: 7, rounds: 2, swissAbsentRounds: NOBODY_ABSENT,
       });
       const fixtures = GOALS_G.map(board);
       const rows = completeTableStage(stage(tiebreakers), fixtures).tables.overall ?? [];

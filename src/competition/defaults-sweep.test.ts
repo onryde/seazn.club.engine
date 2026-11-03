@@ -390,7 +390,7 @@ function bwfBoard(module: AnySportModule, cfg: unknown, rule: PointsRule, round:
   const raw: FixtureResult = [side(home, homeWon, hs, as), side(away, !homeWon, as, hs)];
   const outcome = MatchOutcome.parse({ kind: "win", winner: homeWon ? home : away, loser: homeWon ? away : home });
   const result = payout(outcome, decidedInFor(module, outcome), raw, true, rule, module.awardScoreKeys, setsToWinOf(module, cfg));
-  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "decided", result };
+  return { id: `r${round}-${home}-${away}`, roundNo: round, status: "decided", result, unplayed: null };
 }
 
 describe("W3 T10 — the Swiss default chains (rulebook-W3-swiss.md §5, SW-H4, RB3-8; ruling 252)", () => {
@@ -482,7 +482,7 @@ describe("W3 T10 — the Swiss default chains (rulebook-W3-swiss.md §5, SW-H4, 
       bwfBoard(module, cfg, rule, 2, "A", "C", [2, 0]), bwfBoard(module, cfg, rule, 2, "D", "B", [2, 0]),
     ];
     const rank = (rules: TableRulesPin) =>
-      completeTableStage({ id: "sw", kind: "swiss", swiss: true, swissDraw: swissDrawFactsOf(module, cfg), entrants: ["A", "B", "C", "D"], rules, rngSeed: 7, rounds: 2 }, fixtures)
+      completeTableStage({ id: "sw", kind: "swiss", swiss: true, swissDraw: swissDrawFactsOf(module, cfg), entrants: ["A", "B", "C", "D"], rules, rngSeed: 7, rounds: 2, swissAbsentRounds: new Map<EntrantId, readonly number[]>() }, fixtures)
         .tables.overall ?? [];
     const byPin = rank(pinned);
     const byDefault = rank(live);

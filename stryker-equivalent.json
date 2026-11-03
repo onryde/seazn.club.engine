@@ -194,7 +194,7 @@
       "reason": "The same line guards this comparison with `taken.home !== taken.away`, so it only ever compares two different counts, where `<` and `<=` agree (W2e Task 9 moved it here from line 84, where line 83 returned on equal counts)."
     },
     {
-      "mutant": "src/competition/stage.ts:486:33 EqualityOperator → fixture.round <= prev",
+      "mutant": "src/competition/stage.ts:494:33 EqualityOperator → fixture.round <= prev",
       "original": "fixture.round < prev",
       "line": "if (prev === undefined || fixture.round < prev) outAt.set(id, fixture.round);",
       "reason": "At fixture.round === prev the mutant sets outAt[id] to the value it already holds (prev), so the elimination round each entrant is pinned at is the same map either way; only the strict `>=` mutant changes it (killed)."

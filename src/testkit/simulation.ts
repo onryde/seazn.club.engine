@@ -681,7 +681,7 @@ function playSwissStage(
           result,
         }),
       );
-      tableFixtures.push({ id: fixtureId, roundNo: round, status: "decided", result });
+      tableFixtures.push({ id: fixtureId, roundNo: round, status: "decided", result, unplayed: null });
     }
     roundsPlayed = round;
   }
@@ -695,6 +695,8 @@ function playSwissStage(
     swiss: true,
     // W3 (ruling R4, N1): a Swiss ledger stage names its sport's draw facts, as the app passes them.
     swissDraw: swissDrawFactsOf(ctx.module, ctx.cfg),
+    // final review m3: a Swiss ledger stage names its absences; nobody enters late or withdraws in a simulated stage
+    swissAbsentRounds: new Map(),
     seeds,
     rngSeed: deriveSeed(ctx.seed, "lots", stageId),
     rounds: roundsPlayed,
