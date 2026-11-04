@@ -1,6 +1,6 @@
 {
   "name": "@onryde/seazn-engine",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "type": "module",
   "description": "Pure tournament engine for seazn.club — zero effectful deps (design corpus: engine/).",
   "license": "SEE LICENSE IN LICENSE.md",
