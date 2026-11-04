@@ -2,6 +2,8 @@
 // reached, never WHAT the engine asks, says or returns. The snapshot was recorded on the pre-port code and must not change
 // now the port has landed. It records, per scenario: every request the solver was asked (and the shape of its correlation
 // id), every line the engine logged (level, fields, message), and the board the engine returned.
+// Re-recorded ONCE since, on 2026-11-04, for the solver ladder's seventh rung (`day_rank`): every scenario's metrics gained
+// `dayRankSum: 0` (each board is on one day) and `tiersCompleted` went 6 -> 7 where it was the full ladder. Nothing else moved.
 import { describe, expect, it } from "vitest";
 import { buildSchedule } from "./build.ts";
 import { EQUIVALENCE_SCENARIOS } from "./__tests__/equivalence-scenarios.ts";

@@ -177,6 +177,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 30,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -188,7 +189,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "moved": 0,
     "rlimitSpent": 0,
     "status": "already_optimal",
-    "tiersCompleted": 6,
+    "tiersCompleted": 7,
   },
 }
 `;
@@ -354,6 +355,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 90,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -365,7 +367,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "moved": 0,
     "rlimitSpent": 0,
     "status": "infeasible",
-    "tiersCompleted": 6,
+    "tiersCompleted": 7,
   },
 }
 `;
@@ -531,6 +533,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 120,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -542,7 +545,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "moved": 0,
     "rlimitSpent": 0,
     "status": "ok",
-    "tiersCompleted": 6,
+    "tiersCompleted": 7,
   },
 }
 `;
@@ -570,6 +573,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 0,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 0,
@@ -696,6 +700,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 30,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -821,6 +826,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 30,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -885,6 +891,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 0,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 0,
@@ -1023,6 +1030,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 60,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -1198,6 +1206,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 90,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -1209,7 +1218,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "moved": 0,
     "rlimitSpent": 0,
     "status": "infeasible",
-    "tiersCompleted": 6,
+    "tiersCompleted": 7,
   },
 }
 `;
@@ -1318,6 +1327,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 60,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -1329,7 +1339,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "moved": 0,
     "rlimitSpent": 0,
     "status": "ok",
-    "tiersCompleted": 6,
+    "tiersCompleted": 7,
   },
 }
 `;
@@ -1441,6 +1451,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 60,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -1452,7 +1463,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "moved": 1,
     "rlimitSpent": 0,
     "status": "ok",
-    "tiersCompleted": 6,
+    "tiersCompleted": 7,
   },
 }
 `;
@@ -1565,6 +1576,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 30,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -1690,6 +1702,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 30,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -1806,6 +1819,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 30,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -1933,6 +1947,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 30,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -1944,7 +1959,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "moved": 0,
     "rlimitSpent": 0,
     "status": "verifier_rejected",
-    "tiersCompleted": 6,
+    "tiersCompleted": 7,
   },
 }
 `;
@@ -1995,6 +2010,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 30,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -2112,6 +2128,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "lost": 0,
     "metrics": {
       "courtImbalanceMinutes": 0,
+      "dayRankSum": 0,
       "daySpanMinutes": 30,
       "dayStartOffsetMinutes": 0,
       "daysUsed": 1,
@@ -2123,7 +2140,7 @@ exports[`solver port equivalence > asks the solver the same question and returns
     "moved": 0,
     "rlimitSpent": 0,
     "status": "infeasible",
-    "tiersCompleted": 6,
+    "tiersCompleted": 7,
   },
 }
 `;

@@ -26,6 +26,7 @@
 // the gate is handed a day view at all, and that the name check is real.
 import { describe, expect, it } from "vitest";
 import { buildSchedule, TIER_COUNT, TIER_NAMES } from "./build.ts";
+import { boardMetrics, type DayView } from "./build-objectives.ts";
 import type { SchedulableFixture, SlotConfig } from "./calendar.ts";
 import type { SolveBuildOutcome } from "./solver-port.ts";
 import { fakeSolver, resolvingSolver, silentLogger } from "./__tests__/solver-fakes.ts";
@@ -293,5 +294,126 @@ describe("the gate does not discard a board the service proved optimal", () => {
     expect(out.engine).toBe("optimized");
     expect(out.moved).toBe(0);
     expect(out.lost).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The seventh rung (2026-11-04, owner ruling; seazn.club W3 X-SW-29):
+// `day_rank`, the earliest-day tie-break, LAST in the service's ladder.
+//
+// Every rung above it is blind to a whole board sliding one calendar day, so
+// with no end date (seazn.club's `boundSolverWindow` adds a day of slack) the
+// service held two proved optima and returned whichever a search worker found
+// first: the round on the start day, or at midnight of the next. The service
+// now proves the earliest. What the engine owes: the SAME ladder by name (the
+// `provedOurLadder` check is exact, so a 6-name engine against a 7-rung service
+// never trusts a proof), and `day_rank` in `ladderTied`, or a proved board
+// that is better ONLY on the new rung is called a tie and thrown away.
+// ---------------------------------------------------------------------------
+
+describe("the ladder is the placement service's, rung for rung", () => {
+  it("names the service's seven rungs in its order", () => {
+    // Typed, not derived: the source of truth is the OTHER repo's
+    // `placement/objective.py` `TIER_ORDER`, and `provedOurLadder` compares
+    // these strings to the reply's exactly.
+    expect(TIER_NAMES).toEqual(["placed", "days", "day_span", "day_start", "idle_gap", "imbalance", "day_rank"]);
+    expect(TIER_COUNT).toBe(7);
+  });
+
+  it("does not trust a reply that proved the six-rung ladder this engine used to share", async () => {
+    // The deploy-skew case, from the side this repo owns: a service that has not
+    // shipped the seventh rung proves six names. Counted as fewer than
+    // `TIER_COUNT`, so not a proof of ours — the D6 comparator decides instead.
+    const sixRung = TIER_NAMES.slice(0, 6);
+    const solve = resolvingSolver({ ...reply([], sixRung), tiersCompleted: sixRung.length });
+
+    const out = await buildSchedule({ fixtures: optimal, config, frozen: ["a", "b"], solve, log: silentLogger });
+
+    expect(out.status).not.toBe("already_optimal");
+  });
+});
+
+const DAY_0 = Date.UTC(2026, 7, 8, 0, 0);
+const DAY_1 = Date.UTC(2026, 7, 9, 0, 0);
+
+/** Greedy's cursor opens at `startAt` — here the SECOND day's midnight — while
+ *  the window (so the grid) opens at the first day's. Greedy's board on day 1
+ *  and the solver's same board on day 0 then tie on every rung above
+ *  `day_rank`: one day, a 30-minute span, each day opened by its first card
+ *  (`dayStartOffsetMinutes` 0), no idle (four distinct entrants), no imbalance
+ *  (one card per court). That is X-SW-29's pair with the roles reversed: here
+ *  the seed is the late board, so the one the gate must ship is the solver's. */
+const twoDayConfig: SlotConfig & { courts: string[] } = {
+  ...config,
+  tz: "UTC",
+  startAt: DAY_1,
+  window: { from: DAY_0, to: DAY_1 + 23 * 60 * MIN },
+};
+
+/** Calendar days of UTC from DAY_0, opening at midnight: the view `build.ts`
+ *  builds for `twoDayConfig`'s grid (dense, in time order, ticks from 00:00). */
+const utcDays: DayView = {
+  dayOf: (startAt) => Math.floor((startAt - DAY_0) / (24 * 60 * MIN)),
+  openOf: (d) => DAY_0 + d * 24 * 60 * MIN,
+};
+
+describe("ladderTied reads day_rank", () => {
+  it("is a run where the seed and the day-0 board differ ONLY on day_rank", async () => {
+    // The premise of the next spec, asserted: without it that spec could pass
+    // on a board that also wins `day_start` or `days`.
+    const seed = await buildSchedule({
+      fixtures: twoCards,
+      config: twoDayConfig,
+      solve: fakeSolver(() => Promise.reject(new Error("no service"))),
+      log: silentLogger,
+    });
+    expect(seed.engine).toBe("greedy");
+    expect(seed.assignments.map((a) => a.startAt)).toEqual([DAY_1, DAY_1]);
+
+    const day0 = seed.assignments.map((a) => ({ ...a, startAt: a.startAt - (DAY_1 - DAY_0), endAt: a.endAt - (DAY_1 - DAY_0) }));
+    const late = boardMetrics(seed.assignments, twoDayConfig.courts, 2, utcDays);
+    const early = boardMetrics(day0, twoDayConfig.courts, 2, utcDays);
+    expect(late.dayRankSum).toBe(2);
+    expect(early.dayRankSum).toBe(0);
+    const { dayRankSum: _l, ...lateRest } = late;
+    const { dayRankSum: _e, ...earlyRest } = early;
+    expect(earlyRest).toEqual(lateRest);
+  });
+
+  it("ships a proved board that beats the seed only on day_rank", async () => {
+    // THE ENGINE HALF OF THE FIX. With `day_rank` missing from `ladderTied`
+    // this reply reads as a tie, the gate keeps greedy's day-1 board, and calls
+    // it `already_optimal` — the late round shipped by the very rung meant to
+    // stop it.
+    const solve = stub(
+      reply([
+        { fixtureId: "a", court: "C1", startAtMs: DAY_0 },
+        { fixtureId: "b", court: "C2", startAtMs: DAY_0 },
+      ]),
+    );
+
+    const out = await buildSchedule({ fixtures: twoCards, config: twoDayConfig, solve, log: silentLogger });
+
+    expect(out.engine).toBe("optimized");
+    expect(out.status).toBe("ok");
+    expect(out.assignments.map((a) => a.startAt)).toEqual([DAY_0, DAY_0]);
+    expect(out.metrics.dayRankSum).toBe(0);
+  });
+
+  it("still keeps the seed when the proved board ties it on day_rank too", async () => {
+    // The cleared pair: the same courts swapped, on the seed's own day. Every
+    // rung ties, `day_rank` included, so nothing improved and nothing ships.
+    const solve = stub(
+      reply([
+        { fixtureId: "a", court: "C2", startAtMs: DAY_1 },
+        { fixtureId: "b", court: "C1", startAtMs: DAY_1 },
+      ]),
+    );
+
+    const out = await buildSchedule({ fixtures: twoCards, config: twoDayConfig, solve, log: silentLogger });
+
+    expect(out.engine).toBe("greedy");
+    expect(out.status).toBe("already_optimal");
+    expect(out.assignments.map((a) => a.startAt)).toEqual([DAY_1, DAY_1]);
   });
 });
