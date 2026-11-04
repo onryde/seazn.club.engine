@@ -205,7 +205,17 @@ export const DEFAULT_BUILD_WALL_MS = 30_000;
  *  It cannot close it retroactively: a caller already deployed with the old
  *  four-name list has no such check, so the safe deploy order for THIS change
  *  is still web first, then the placement service. New web against an old
- *  service simply never reaches `TIER_COUNT` — degraded, but honest. */
+ *  service simply never reaches `TIER_COUNT` — degraded, but honest.
+ *
+ *  6 -> 7 on 2026-11-04 (owner ruling; seazn.club W3 X-SW-29): `day_rank`, the
+ *  earliest-day tie-break, LAST. Every rung above it is blind to a whole board
+ *  sliding one calendar day, so a lattice with a spare empty day (no end date:
+ *  `boundSolverWindow`'s slack) held two proved optima and the service's
+ *  search race returned either — the round on the start day, or at midnight
+ *  of the next. Both sides check the full list since the 4 -> 6 change, so a
+ *  skewed pair degrades in EITHER deploy order (7 names against 6 rungs, or
+ *  6 against 7: never `TIER_COUNT` of ours) — honest, but the fix is live only
+ *  once both have shipped. */
 export const TIER_NAMES = [
   "placed",
   "days",
@@ -213,10 +223,11 @@ export const TIER_NAMES = [
   "day_start",
   "idle_gap",
   "imbalance",
+  "day_rank",
 ] as const;
 
-/** T0 plus the five lexicographic tiers
- *  (`placed → days → day_span → day_start → idle_gap → imbalance`).
+/** T0 plus the six lexicographic tiers
+ *  (`placed → days → day_span → day_start → idle_gap → imbalance → day_rank`).
  *  `tiersCompleted` reaching this is what "the board is lexicographically
  *  optimal" means.
  *
@@ -227,7 +238,9 @@ export const TIER_NAMES = [
  *
  *  4 → 6 on 2026-08-13, and the warning above turned out to be exactly right:
  *  the web layer's copy was STILL a hand-written literal, not this export, so
- *  it had to be found and moved by hand. It now imports this constant. */
+ *  it had to be found and moved by hand. It now imports this constant.
+ *
+ *  6 → 7 on 2026-11-04 (`day_rank`); see `TIER_NAMES`. */
 export const TIER_COUNT = TIER_NAMES.length;
 
 /**
@@ -2496,7 +2509,7 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
   // still the only evidence there is, and D6 keeps it.
   //
   // TRUSTING THE PROOF NEEDS A TIE RULE, and the tie is a question about the
-  // LADDER, not about the boards. Equality on all six rungs is the solver's own
+  // LADDER, not about the boards. Equality on every rung is the solver's own
   // statement that it found nothing to gain: greedy's board is optimal too, and
   // the two are interchangeable by every measure the service was optimising.
   // Shipping the candidate anyway is pure churn — measured on
@@ -2526,7 +2539,11 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
     incumbentMetrics.daySpanMinutes === seedLadderMetrics.daySpanMinutes &&
     incumbentMetrics.dayStartOffsetMinutes === seedLadderMetrics.dayStartOffsetMinutes &&
     incumbentMetrics.worstIdleGapMinutes === seedLadderMetrics.worstIdleGapMinutes &&
-    incumbentMetrics.courtImbalanceMinutes === seedLadderMetrics.courtImbalanceMinutes;
+    incumbentMetrics.courtImbalanceMinutes === seedLadderMetrics.courtImbalanceMinutes &&
+    // `day_rank` (2026-11-04): without it a proved board better ONLY on the
+    // earliest day — greedy's board a day late, the solver's on the start day
+    // — reads as a tie, and the gate keeps the late one as `already_optimal`.
+    incumbentMetrics.dayRankSum === seedLadderMetrics.dayRankSum;
 
   const improved =
     // D6's floor first, in every arm: a board that places FEWER fixtures is

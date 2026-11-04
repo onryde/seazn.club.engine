@@ -65,6 +65,13 @@ export interface BoardMetrics {
    *  plus any court the board actually uses. A configured court nobody plays on
    *  counts as zero, which is the whole point of the metric. */
   courtImbalanceMinutes: number;
+  /** The sum, over every match with a day, of that day's index — a DENSE
+   *  index in time order, so the day's rank among the grid's days (0 = the
+   *  first). The solver's LAST rung, `day_rank` (2026-11-04): the
+   *  earliest-day tie-break. A match on no grid day (`OFF_GRID_DAY`, a pin off
+   *  the lattice) adds nothing, as the service skips a pin with no day. 0 with
+   *  no view, where every match is on the one day. */
+  dayRankSum: number;
   placed: number;
   total: number;
 }
@@ -83,6 +90,7 @@ export function boardMetrics(
       makespanMinutes: 0,
       worstIdleGapMinutes: 0,
       courtImbalanceMinutes: 0,
+      dayRankSum: 0,
       placed: 0,
       total,
     };
@@ -114,7 +122,7 @@ export function boardMetrics(
   }
 
   // The three day metrics, mirroring `placement/model.py`'s T1 rungs term for
-  // term. `Math.max(0, ...)` on the offset is the same guard the model states
+  // term (and `dayRankSum` below them, its last rung). `Math.max(0, ...)` on the offset is the same guard the model states
   // as a non-negative variable DOMAIN: an off-lattice pin can sit before its
   // day's first admissible tick, and a negative offset here would read as a
   // board that started before the day opened.
@@ -129,7 +137,7 @@ export function boardMetrics(
   // an abstention. It also makes `daySpanMinutes` equal the whole-board span in
   // that case, which is the right number for a single day by definition.
   //
-  // NONE OF THE THREE IS RANKED, HERE OR ANYWHERE. `isStrictlyBetter` reads
+  // NONE OF THE THREE (NOR `dayRankSum`) IS RANKED, HERE OR ANYWHERE. `isStrictlyBetter` reads
   // only `placed`, `makespanMinutes`, `worstIdleGapMinutes` and
   // `courtImbalanceMinutes`, and is unchanged by the day-aware rungs — see its
   // own note for why mirroring the solver's ladder into it does not work, and
@@ -137,7 +145,8 @@ export function boardMetrics(
   // attempts that proved it.
   //
   // READ BUT NOT ORDERED by the build gate, since 2026-08-13. `solveBuild`'s
-  // `ladderTied` compares these three for EQUALITY against the seed, to answer
+  // `ladderTied` compares these three, and `dayRankSum`, for EQUALITY against
+  // the seed, to answer
   // "did the solver find anything to gain" before trusting its proof. That is
   // not a ranking and must never become one: an equality can decline to ship
   // churn, an ordering would pick a winner on terms greedy scores well on by
@@ -155,6 +164,17 @@ export function boardMetrics(
     }
   }
   const daysUsed = byDay.size;
+  // `day_rank`, mirroring `placement/model.py` term for term: per MATCH, so a
+  // board two matches a day late scores 2, not 1. The service ranks days by
+  // time; `dayOf` here is already that rank (`build.ts` indexes the grid's
+  // calendar days densely in date order, the same index it sends as
+  // `Slot.day_index`). A negative day is `OFF_GRID_DAY` — no grid day — and
+  // counts 0, never -1.
+  let dayRankSum = 0;
+  for (const a of assignments) {
+    const d = dayOf(a.startAt);
+    if (d > 0) dayRankSum += d;
+  }
   let daySpanMinutes = 0;
   let dayStartOffsetMinutes = 0;
   for (const [d, { lo: dayLo, hi: dayHi }] of byDay) {
@@ -174,6 +194,7 @@ export function boardMetrics(
     makespanMinutes: (hi - lo) / MS_PER_MIN,
     worstIdleGapMinutes,
     courtImbalanceMinutes: Math.max(...mins) - Math.min(...mins),
+    dayRankSum,
     placed: assignments.length,
     total,
   };

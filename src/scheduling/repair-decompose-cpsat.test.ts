@@ -103,6 +103,7 @@ const buildResult = (assignments: Assignment[], overrides: Partial<BuildResult> 
     makespanMinutes: 0,
     worstIdleGapMinutes: 0,
     courtImbalanceMinutes: 0,
+    dayRankSum: 0,
     placed: assignments.length,
     total: assignments.length,
   },
