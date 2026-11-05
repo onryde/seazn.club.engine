@@ -113,7 +113,7 @@ describe("completion predicates (spec 05 §1)", () => {
     expect(byId.get("A")).toMatchObject({ played: 1, won: 1, points: 3 });
   });
 
-  it("a bracket completes when its final is decided", () => {
+  it("a bracket completes when its final is decided, and not while another fixture is still owed", () => {
     const stage: BracketStage = { id: "ko", kind: "knockout" };
     const semis: BracketFixture[] = [
       { id: "sf1", round: 0, status: "decided", home: "A", away: "B", winner: "A", loser: "B" },
@@ -122,6 +122,12 @@ describe("completion predicates (spec 05 §1)", () => {
     expect(isBracketStageComplete(stage, semis)).toBe(false);
     semis[1] = { ...(semis[1] as BracketFixture), status: "decided", winner: "A", loser: "C" };
     expect(isBracketStageComplete(stage, semis)).toBe(true);
+    // CH-1 (RB4-C7, every fixture settled): the same decided final beside a semi-final still scheduled is not complete,
+    // and becomes complete once that semi is decided. Before W4 the final alone decided it (true here).
+    const openSemi: BracketFixture[] = [...semis, { id: "sf2", round: 0, status: "scheduled", home: "C", away: "D" }];
+    expect(isBracketStageComplete(stage, openSemi)).toBe(false);
+    openSemi[2] = { ...(openSemi[2] as BracketFixture), status: "decided", winner: "C", loser: "D" };
+    expect(isBracketStageComplete(stage, openSemi)).toBe(true);
   });
 });
 
@@ -234,9 +240,13 @@ describe("bracketRanks — page_playoff (L3/#414, spec 2026-07-19)", () => {
     expect(bracketRanks(stage, bracket)).toEqual(["S1", "S2", "S3", "S4"]);
   });
 
-  it("completes once the Final alone is decided, regardless of the other three", () => {
+  it("page playoff completes when all four fixtures are settled", () => {
     const beforeFinal = bracket.map((f) => (f.id === "pp-final" ? { ...f, status: "scheduled" as const, winner: undefined, loser: undefined } : f));
     expect(isBracketStageComplete(stage, beforeFinal)).toBe(false);
+    // RB4-C7 (every fixture settled): the Final decided while Qualifier 2 is still scheduled leaves the stage open. Before
+    // W4 the Final alone decided it (true here).
+    const beforeQ2 = bracket.map((f) => (f.id === "pp-q2" ? { ...f, status: "scheduled" as const, winner: undefined, loser: undefined } : f));
+    expect(isBracketStageComplete(stage, beforeQ2)).toBe(false);
     expect(isBracketStageComplete(stage, bracket)).toBe(true);
   });
 

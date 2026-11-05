@@ -208,15 +208,22 @@ export function isTableStageComplete(stage: Pick<TableStage, "kind" | "rounds">,
   return fixtures.every((fixture) => SETTLED.has(fixture.status));
 }
 
-// knockout / stepladder: the final is decided. double_elim: the grand final
-// (the last `isFinal` game — a bracket reset adds a second) is decided.
+/** W4 (X-CH-7, ruling 274, RB4-C7): the ids of the fixtures still owed — every fixture not decided, void or walkover —
+ *  in the caller's order. Empty for an empty list, so it never answers "no final" on its own. */
+export function undecidedBracketFixtures(fixtures: readonly BracketFixture[]): string[] {
+  return fixtures.filter((fixture) => !SETTLED.has(fixture.status)).map((fixture) => fixture.id);
+}
+
+// Every bracket kind (knockout, double_elim, stepladder, page_playoff): the stage has a final, and EVERY fixture is
+// settled — the final, every earlier round, a third-place play-off (X-TP-4, RB4-T3) and a double-elim bracket reset alike
+// (X-CH-7, ruling 274, RB4-C7). The final alone is not enough: a semi-final still scheduled (CH-1) or a final still
+// in_play (AN-2) leaves the stage open. A voided reset and a walked-over line are settled.
 export function isBracketStageComplete(
   _stage: BracketStage,
   fixtures: readonly BracketFixture[],
 ): boolean {
-  const finals = fixtures.filter((fixture) => fixture.isFinal === true);
-  if (finals.length === 0) return false;
-  return finals.every((fixture) => SETTLED.has(fixture.status));
+  if (!fixtures.some((fixture) => fixture.isFinal === true)) return false;
+  return undecidedBracketFixtures(fixtures).length === 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -419,10 +426,27 @@ export interface CompletedBracketStage {
   finalRanks: EntrantId[];
 }
 
+// Completing a bracket stage is refused, never ranked provisionally, until `isBracketStageComplete` holds (X-CH-7, ruling
+// 274, RB4-C7): STAGE_NOT_READY with `reason: "no_final"` when no fixture is the final (checked first, since an empty list
+// owes no fixture and would otherwise pass), else `reason: "fixtures_undecided"` naming every fixture still owed.
 export function completeBracketStage(
   stage: BracketStage,
   fixtures: readonly BracketFixture[],
 ): CompletedBracketStage {
+  if (!fixtures.some((fixture) => fixture.isFinal === true)) {
+    throw new EngineError("STAGE_NOT_READY", `bracket stage "${stage.id}" has no final to complete it`, {
+      stageId: stage.id,
+      reason: "no_final",
+    });
+  }
+  const undecided = undecidedBracketFixtures(fixtures);
+  if (undecided.length > 0) {
+    throw new EngineError(
+      "STAGE_NOT_READY",
+      `bracket stage "${stage.id}" has ${undecided.length} fixture(s) not yet decided or settled: ${undecided.join(", ")}`,
+      { stageId: stage.id, reason: "fixtures_undecided", undecided },
+    );
+  }
   const finalRanks = bracketRanks(stage, fixtures);
   return {
     events: [{ type: "stage_completed", stageId: stage.id, finalRanks }],
