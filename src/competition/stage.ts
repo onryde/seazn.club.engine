@@ -55,6 +55,7 @@ export interface TableFixture {
 export interface BracketFixture {
   id: string;
   bracket?: "WB" | "LB" | "GF"; // double-elim lanes; omit for single bracket
+  /** 0-based; 0 is the opening round, as the generators emit. */
   round: number;
   isFinal?: boolean; // SE final / DE grand final (or bracket-reset game)
   thirdPlace?: boolean;

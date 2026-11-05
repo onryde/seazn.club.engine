@@ -83,7 +83,13 @@ export type SlotDescriptor =
   | { kind: "rank_range"; rank: number }
   | { kind: "best_nth"; nth: number; position: number; normaliseUnequalPools?: boolean }
   | { kind: "round_loser"; round: number; position: number }
-  | { kind: "first_loss"; position: number };
+  | {
+      kind: "first_loss";
+      /** The slot's place in the first-loss field: the ORDER OF FIRST LOSS (by round, then bracket position), NOT the
+       *  plate seed. The app re-seeds the plate by main-draw seed on the fold (RB4-D10, X-SD-11), so the resolved
+       *  `seed` of a first_loss qualifier is this order, never a seeding. */
+      position: number;
+    };
 
 export interface SlotLabel {
   key: string;
@@ -94,7 +100,7 @@ export interface SourceShape {
   poolKeys: string[];
   /** W4 (Task 10): how many eligible first losses the source's field holds (`firstLossField(...).losers.length`), once
    *  the caller knows it. Absent — at save time, before round 2 — a `firstLosses` take expands to no slot. */
-  firstLosses?: number;
+  firstLossCount?: number;
 }
 
 /** A descriptor tagged with which `ProgressionSpec.sources[]` entry produced
@@ -182,7 +188,7 @@ function expandOne(rule: TakeRule, shape: SourceShape): SlotDescriptor[][] {
     case "firstLosses": {
       // One pot of the field's size, in the field's order; no count yet, no slot (RB4-P3: known after round 2).
       const pot: SlotDescriptor[] = [];
-      for (let i = 1; i <= (shape.firstLosses ?? 0); i++) pot.push({ kind: "first_loss", position: i });
+      for (let i = 1; i <= (shape.firstLossCount ?? 0); i++) pot.push({ kind: "first_loss", position: i });
       return [pot];
     }
   }
@@ -453,7 +459,7 @@ export function validateProgressionAgainstShapes(
   placeDescriptors(pots, progression.placement, progression.map, targetKind); // throws on a bad seeded_map or an illegal snake/bracket-target combo
   const total = pots.reduce((n, p) => n + p.length, 0);
   const uncounted = progression.sources.some(
-    (source, i) => source.take.some((rule) => rule.kind === "firstLosses") && shapes[i]?.firstLosses === undefined,
+    (source, i) => source.take.some((rule) => rule.kind === "firstLosses") && shapes[i]?.firstLossCount === undefined,
   );
   if (total < 2 && !uncounted) {
     throw new EngineError("SEEDING_RULES_MISSING", "this stage's progression rules produce fewer than 2 qualifiers");
@@ -784,12 +790,13 @@ export function resolveProgression(
     } else if (d.kind === "round_loser") {
       row = loserAt(src.bracket, d.round, d.position);
     } else if (d.kind === "first_loss") {
+      // Position is the order of first loss, not the plate seed (see SlotDescriptor first_loss; RB4-D10, X-SD-11).
       let field = firstLossCache.get(slot.sourceIndex);
       if (field === undefined) {
         field = firstLossField(src.bracket ?? []);
         firstLossCache.set(slot.sourceIndex, field);
       }
-      row = firstLossAt(field, shapes[slot.sourceIndex]?.firstLosses, slot.sourceIndex, d.position);
+      row = firstLossAt(field, shapes[slot.sourceIndex]?.firstLossCount, slot.sourceIndex, d.position);
     } else {
       // best_nth — every pool's nth-place row, compared together (once per
       // distinct nth), exactly like resolveQualification.bestOfRank used to

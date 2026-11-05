@@ -60,18 +60,29 @@ function fieldRows(rows: readonly BracketFixtureRow[]): FieldRow[] {
 
 const settled = (row: FieldRow): boolean => SETTLED_FIXTURE_STATUSES.has(row.status);
 const seats = (row: FieldRow, entrant: EntrantId): boolean => row.home === entrant || row.away === entrant;
-/** Played: settled, both seats, a winner and a loser, and no walkover. */
-const played = (row: FieldRow): boolean =>
-  settled(row) && row.home !== undefined && row.away !== undefined && row.winner !== undefined && row.loser !== undefined && row.walkedOver === undefined;
+// Both predicates below are asked only of a SETTLED row the entrant SITS in (`judge` returns on an unsettled row first, and
+// the round-0 loop asks after `!settled(line)`), and a loser always comes with a winner over two seats (the app's
+// `bracketWinnerLoser`): so a loser and no walkover is enough to call it played (review m2).
+/** Played: a loser, and no walkover. */
+const played = (row: FieldRow): boolean => row.loser !== undefined && row.walkedOver === undefined;
 /** Lost without playing (RB4-P2): the forfeiting loser — `walkedOver: "loser"`, whatever the app's reason (walkover,
- *  retirement, disqualification, withdrawal) — or either seated side of a double walkover. */
+ *  retirement, disqualification, withdrawal) — or either side of a double walkover. */
 const forfeitedBy = (row: FieldRow, entrant: EntrantId): boolean =>
-  settled(row) && seats(row, entrant) && ((row.walkedOver === "loser" && row.loser === entrant) || row.walkedOver === "both");
+  (row.walkedOver === "loser" && row.loser === entrant) || row.walkedOver === "both";
 
 export function firstLossField(rows: readonly BracketFixtureRow[]): FirstLossField {
   const all = fieldRows(rows);
   const place = new Map(all.map((row, i) => [row.id, i]));
   const opening = all.filter((row) => row.round === 0);
+  // Rows but no round 0 is a draw numbered some other way (the app's 1-based round_no): refused by name, never read as a
+  // field still open (review m3). No rows at all is no main draw yet, and not refused (B4-2).
+  if (all.length > 0 && opening.length === 0) {
+    const lowestRound = Math.min(...all.map((row) => row.round));
+    throw new EngineError("CONFIG_INVALID", `firstLossField: no bracket row is in round 0 (the lowest is round ${lowestRound}) — rounds are 0-based`, {
+      reason: "first_loss_no_opening_round",
+      lowestRound,
+    });
+  }
   const second = all.filter((row) => row.round === 1);
   const losers: FirstLoss[] = [];
   const excluded: FirstLoss[] = [];

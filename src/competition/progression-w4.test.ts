@@ -8,7 +8,7 @@
 // Task 10 (RB4-P1, P4; X-PL-3; owner ruling 265, plate option B): the `firstLosses` take. The plate takes every eligible
 // first loss of its main draw (`firstLossField`, first-loss.ts) — no fixed count q (RB4-P4). The count is known only once
 // the field is (after round 2, RB4-P3), so at save time the take expands to no slot and skips the "< 2 qualifiers"
-// refusal; the app sizes the stage from the field and hands the count back as `SourceShape.firstLosses`. Expected
+// refusal; the app sizes the stage from the field and hands the count back as `SourceShape.firstLossCount`. Expected
 // membership comes from RB4-P1 over the RB4-D1 fold, never from the resolver.
 // single-sport: progression is sport-agnostic (reads no SportModule)
 import { describe, expect, it } from "vitest";
@@ -146,7 +146,7 @@ describe("rank_range over a bracket source by position (Task 8, RB4-Q2, controll
 // ---------------------------------------------------------------------------------------------------------------------
 
 const firstLosses: ProgressionSpec = { sources: [{ stage: "previous", take: [{ kind: "firstLosses" }] }], placement: "rank_order" };
-const shapeOf = (firstLossCount?: number): SourceShape => ({ poolKeys: [], ...(firstLossCount === undefined ? {} : { firstLosses: firstLossCount }) });
+const shapeOf = (firstLossCount?: number): SourceShape => ({ poolKeys: [], ...(firstLossCount === undefined ? {} : { firstLossCount }) });
 
 /** 13 entrants in a 16-draw, played out: byes to seeds 1-3 (RB4-D2). Fold lines (1,16b) (9,8) (5,12) (13,4) (3,14b) (11,6)
  *  (7,10) (15b,2): round 1 plays five lines, the worse seed losing each — E9, E12, E13, E11, E10 ((2·13 − 16) / 2 = 5).

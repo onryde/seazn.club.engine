@@ -186,6 +186,21 @@ describe("X-PL-3 the plate holds everyone's first loss: every round-1 loser, plu
     ]);
   });
 
+  it("X-PL-3 the round orders first, whatever order the rows arrive in: round-2 rows listed before round-1 rows give the same losers", () => {
+    // The same n=6 upset, its rows handed over later rounds first (each round's own rows still in bracket order): e1's
+    // round-2 loss now comes FIRST in the rows, and still follows every round-1 loss (review m1).
+    const upset = (home: string, away: string): string =>
+      [home, away].includes("e1") && [home, away].includes("e4") ? "e4" : home < away ? home : away;
+    const rows = played(6, { winner: upset });
+    const laterFirst = [...rows.filter((row) => row.round >= 1), ...rows.filter((row) => row.round === 0)];
+    expect(laterFirst[0]?.id).toBe("se-r1-i0");
+    expect(firstLossField(laterFirst).losers).toEqual([
+      { entrantId: "e5", fixtureId: "se-r0-i1", round: 0 },
+      { entrantId: "e6", fixtureId: "se-r0-i2", round: 0 },
+      { entrantId: "e1", fixtureId: "se-r1-i0", round: 1 },
+    ]);
+  });
+
   it("X-PL-3 a late entrant's case-(1) line (newcomer v bye holder in round 0) feeds the plate with its first loss like anyone else (RB4-L14, L3)", () => {
     // n=5, then a 6th entrant arrives: RB4-L3/L4 reverse the lowest-seeded bye holder's bye (e3, fold line 2) into a new
     // round-1 match, e3 v e6. Nothing else moves.
@@ -315,6 +330,17 @@ describe("firstLossField refuses rows it cannot read (CONFIG_INVALID, controller
     const err = refusalOf(() => firstLossField([...rows, { round: 1, status: "scheduled" }]));
     expect(err.code).toBe("CONFIG_INVALID");
     expect(err.data).toEqual({ reason: "first_loss_row_without_id", index: rows.length });
+  });
+
+  it("rows with no opening round (1-based, as the app's round_no) are refused by name, never read as a field still open (review m3)", () => {
+    // differential: before the refusal these rows answered { complete: false, pending: [] } forever — a plate that never
+    // proposes and says nothing. The same draw numbered from 0 (BracketFixture.round, as the generators emit) is read.
+    const zeroBased = played(4);
+    const oneBased = zeroBased.map((row) => ({ ...row, round: row.round + 1 }));
+    const err = refusalOf(() => firstLossField(oneBased));
+    expect(err.code).toBe("CONFIG_INVALID");
+    expect(err.data).toEqual({ reason: "first_loss_no_opening_round", lowestRound: 1 });
+    expect(firstLossField(zeroBased).complete).toBe(true);
   });
 
   it("a row without a status is refused by name", () => {
