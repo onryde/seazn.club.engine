@@ -10,6 +10,8 @@
 //     dead (X-DE-1; controller ruling B3-10);
 //   - `doubleWalkover`: both sides walked over — `walkedOver: "both"`, no winner and no loser, every onward seat dead;
 //   - `voided`: the fixture is void, nobody advances from it;
+//   - `jointFinal`: the final, both sides seated, is decided with no winner — `jointWinners: true` (Q4, X-CH-1) — so a
+//     double-elimination bracket reset after it has no one to seat and is void;
 //   - a fixture with one seat dead is a walkover to the side present (no loser); with both dead it is void;
 //   - a double-elim bracket reset (`conditional`) is played only when the losers'-bracket champion won the grand final,
 //     and voided otherwise (spec 05 §2.4);
@@ -29,6 +31,8 @@ export interface PlayOutOptions {
   doubleWalkover?: ReadonlySet<string>;
   /** Fixture ids voided. */
   voided?: ReadonlySet<string>;
+  /** The final (both sides seated) ends in joint winners: `status: "decided"`, `jointWinners: true`, no winner or loser. */
+  jointFinal?: boolean;
 }
 
 export function playOutBracket(gen: GeneratedBracket, opts: PlayOutOptions = {}): BracketFixture[] {
@@ -75,6 +79,8 @@ export function playOutBracket(gen: GeneratedBracket, opts: PlayOutOptions = {})
     } else if (home !== undefined && away !== undefined && forfeiter !== undefined) {
       if (forfeiter !== home && forfeiter !== away) throw new Error(`playOutBracket: "${forfeiter}" is not seated in ${g.id}`);
       row = { ...base, status: "walkover", winner: forfeiter === home ? away : home, loser: forfeiter, walkedOver: "loser" };
+    } else if (home !== undefined && away !== undefined && opts.jointFinal === true && g.isFinal === true) {
+      row = { ...base, status: "decided", jointWinners: true };
     } else if (home !== undefined && away !== undefined) {
       const winner = winnerOf(home, away);
       row = { ...base, status: "decided", winner, loser: winner === home ? away : home };

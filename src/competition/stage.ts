@@ -68,6 +68,9 @@ export interface BracketFixture {
    *  walkover, no winner and no loser, both sides out here (X-DW-2). Ranks pin these entrants' elimination round to
    *  this fixture, so they read the same answer seating does. */
   walkedOver?: "loser" | "both";
+  /** W4 (Q4; RB4-C3; X-CH-1): the final ended in joint winners — decided, with no `winner`, no `loser` and no
+   *  `walkedOver`: both its seated sides rank 1st. Only ever on the final (`isFinal`); anything else is a wiring bug. */
+  jointWinners?: boolean;
 }
 
 // Everything the ranking pass needs about a table stage that isn't in the
@@ -445,6 +448,20 @@ function crossPoolOrder(pools: readonly PoolTable[]): EntrantId[] {
 export interface CompletedBracketStage {
   events: DivisionEvent[];
   finalRanks: FinalPlace[];
+  /** W4 (X-CH-1): what the deciding final crowned. */
+  title: BracketTitle;
+}
+
+/** W4 (Q4; RB4-C1, C3, C4; X-CH-1): what a bracket's deciding final crowned. */
+export type BracketTitle =
+  | { kind: "champion"; champion: EntrantId }
+  | { kind: "joint"; winners: readonly [EntrantId, EntrantId] }
+  | { kind: "vacant" };
+
+/** The title the deciding final crowned (`decidingFinal`), or undefined while no final has decided anything — a void
+ *  final included (a double-elimination reset that was not needed decides nothing; the grand final before it does). */
+export function bracketTitle(fixtures: readonly BracketFixture[]): BracketTitle | undefined {
+  return decidingFinal(fixtures)?.title;
 }
 
 // Completing a bracket stage is refused, never ranked provisionally, until `isBracketStageComplete` holds (X-CH-7, ruling
@@ -462,11 +479,18 @@ export function completeBracketStage(
         : `bracket stage "${stage.id}" has ${refusal.undecided.length} fixture(s) not yet decided or settled: ${refusal.undecided.join(", ")}`;
     throw new EngineError("STAGE_NOT_READY", message, { stageId: stage.id, ...refusal });
   }
+  // Assumption → guard (X-CH-1): a completed bracket crowned a champion, joint winners, or left the title vacant. A final
+  // settled without deciding anything (void, with no reset after it) crowned nobody: a wiring bug, never a ranking.
+  const title = bracketTitle(fixtures);
+  if (title === undefined) {
+    throw new EngineError("CONFIG_INVALID", `bracket stage "${stage.id}" is settled but its final decided no title`, { reason: "no_title", stageId: stage.id });
+  }
   const finalRanks = bracketRanks(stage, fixtures);
   assertCompletedBracketPlaces(stage, fixtures, finalRanks);
   return {
     events: [{ type: "stage_completed", stageId: stage.id, finalRanks }],
     finalRanks,
+    title,
   };
 }
 
@@ -516,8 +540,9 @@ interface DeclaredPlaces {
 }
 
 // SH-3 (ruling 270): only a knockout shares its 3rd — its semi-final losers, when it played no play-off or voided it
-// (X-TP-3, plan's call); a play-off both sides walked over ranks both 4th, 3rd vacant (X-TP-7). B3-6 (controller call):
-// a final won by walkover over a dead seat has no runner-up, so 2nd is vacant.
+// (X-TP-3, plan's call); a play-off both sides walked over ranks both 4th, 3rd vacant (X-TP-7). The title (Q4, X-CH-1):
+// joint winners share 1st; a vacant title's two finalists share 2nd, 1st vacant. B3-6 (controller call): a champion who
+// won the final by walkover over a dead seat has no runner-up, so 2nd is vacant.
 function declaredPlaces(stage: BracketStage, fixtures: readonly BracketFixture[]): DeclaredPlaces {
   const pairs = new Set<number>();
   const pairsBelowVacancy = new Set<number>();
@@ -527,8 +552,10 @@ function declaredPlaces(stage: BracketStage, fixtures: readonly BracketFixture[]
     if (playOff === undefined || playOff.status === "void") pairs.add(3);
     else if (playOff.walkedOver === "both") pairsBelowVacancy.add(4);
   }
-  const final = decidingFinal(fixtures);
-  if (final !== undefined && final.loser === undefined) vacancies.add(2);
+  const decided = decidingFinal(fixtures);
+  if (decided?.title.kind === "joint") pairs.add(1);
+  if (decided?.title.kind === "vacant") pairsBelowVacancy.add(2);
+  if (decided?.title.kind === "champion" && decided.fixture.loser === undefined) vacancies.add(2);
   return { pairs, pairsBelowVacancy, vacancies };
 }
 
@@ -568,13 +595,39 @@ export function assertCompletedBracketPlaces(stage: BracketStage, fixtures: read
   }
 }
 
-// The deciding game: the latest-round settled final that produced a winner. A voided final (DE bracket reset skipped
-// because the WB champion won GF1, spec 05 §2.4) is settled for completion but decides nothing — without the winner
-// filter it would shadow GF1 and leave the champion undefined.
-function decidingFinal(fixtures: readonly BracketFixture[]): BracketFixture | undefined {
-  return fixtures
-    .filter((fixture) => fixture.isFinal === true && SETTLED.has(fixture.status) && fixture.winner !== undefined)
-    .sort((a, b) => b.round - a.round)[0];
+// A joint final's two winners. Assumptions are guards (wiring bugs, plain Error): joint winners end the final only, both
+// sides seated, decided with no winner, no loser and no walkover.
+function jointWinnersOf(fixture: BracketFixture): readonly [EntrantId, EntrantId] {
+  const bug = (what: string): Error => new Error(`bracket fixture ${fixture.id}: jointWinners ${what}`);
+  if (fixture.isFinal !== true) throw bug("on a fixture that is not the final");
+  if (fixture.home === undefined || fixture.away === undefined) throw bug("needs both sides seated");
+  if (fixture.winner !== undefined || fixture.loser !== undefined) throw bug("names a winner or a loser");
+  if (fixture.walkedOver !== undefined) throw bug("on a walkedOver fixture");
+  if (fixture.status !== "decided") throw bug(`on a fixture that is "${fixture.status}", not decided`);
+  return [fixture.home, fixture.away];
+}
+
+// What a settled final decided, if anything: joint winners, a vacant title (both sides walked over), or a champion.
+function titleOf(fixture: BracketFixture): BracketTitle | undefined {
+  if (fixture.jointWinners === true) return { kind: "joint", winners: jointWinnersOf(fixture) };
+  if (fixture.walkedOver === "both") return { kind: "vacant" };
+  if (fixture.winner !== undefined) return { kind: "champion", champion: fixture.winner };
+  return undefined;
+}
+
+// The deciding game (Q4): the latest-round settled final that decided something — a winner, joint winners, or both sides
+// walked over (a vacant title). A voided final (DE bracket reset skipped because the WB champion won GF1, spec 05 §2.4)
+// is settled for completion but decides nothing, so it never shadows GF1. Every jointWinners row is checked first, a
+// final's or not.
+function decidingFinal(fixtures: readonly BracketFixture[]): { fixture: BracketFixture; title: BracketTitle } | undefined {
+  for (const fixture of fixtures) if (fixture.jointWinners === true) jointWinnersOf(fixture);
+  let decided: { fixture: BracketFixture; title: BracketTitle } | undefined;
+  for (const fixture of fixtures) {
+    if (fixture.isFinal !== true || !SETTLED.has(fixture.status)) continue;
+    const title = titleOf(fixture);
+    if (title !== undefined && (decided === undefined || fixture.round > decided.fixture.round)) decided = { fixture, title };
+  }
+  return decided;
 }
 
 // The entrants a `walkedOver` fixture puts out. Assumptions are guards: a double walkover decided nobody, so a row that
@@ -626,7 +679,7 @@ export function bracketRanks(
     }
   }
 
-  const grandFinal = decidingFinal(fixtures);
+  const decided = decidingFinal(fixtures);
 
   const lastLossRound = new Map<EntrantId, number>();
   for (const fixture of fixtures) {
@@ -690,9 +743,18 @@ export function bracketRanks(
   // placed + 1) — so a shared 3rd's second holder still uses up a place (3, 3, then 5) and a vacant rank stays vacant.
   const placeNext = (id: EntrantId | undefined): void => placeAt(id, Math.max(lastRank + 1, placed.size + 1));
 
-  if (grandFinal !== undefined) {
-    placeNext(grandFinal.winner);
-    placeNext(grandFinal.loser);
+  // The title (Q4; RB4-C1, C3, C4): a champion ranks 1st and the final's loser 2nd; joint winners both 1st; a vacant
+  // title's two finalists both 2nd, 1st vacant — each pair by seed, then id.
+  if (decided !== undefined) {
+    const { fixture: decider, title } = decided;
+    if (title.kind === "champion") {
+      placeNext(title.champion);
+      placeNext(decider.loser);
+    } else if (title.kind === "joint") {
+      for (const id of [...title.winners].sort(bySeedThenId)) placeAt(id, 1);
+    } else {
+      for (const id of walkedOverSides(decider).sort(bySeedThenId)) placeAt(id, 2);
+    }
   }
 
   const stillInPlay = [...inPlay].filter((id) => !placed.has(id));
