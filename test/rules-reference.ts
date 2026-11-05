@@ -53,7 +53,7 @@ export const CHECKER_FILES: readonly string[] = [
  *  same ("not yet implemented" or "proof owed"). The proving commit deletes the entry, fills `proved by` and drops that citation note;
  *  every W4 entry is to be gone by the W4 close-out. */
 export const AWAITING_PROOF: ReadonlyMap<string, string> = new Map<string, string>([
-  ["X-SD-1", "W4 app PR A"], ["X-SD-2", "W4 app PR A"], ["X-SD-3", "W4 engine PR"], ["X-SD-4", "W4 engine PR"], ["X-SD-5", "W4 engine PR"],
+  ["X-SD-1", "W4 app PR A"], ["X-SD-2", "W4 app PR A"], ["X-SD-4", "W4 engine PR"], ["X-SD-5", "W4 engine PR"],
   ["X-SD-6", "W4 app PR A"], ["X-SD-7", "W4 app PR A"], ["X-SD-8", "W4 app PR A"], ["X-SD-9", "W4 app PR A"], ["X-SD-10", "W4 app PR A"],
   ["X-SD-11", "W4 app PR B"],
   ["X-LE-1", "W4 app PR A"], ["X-LE-2", "W4 app PR A"], ["X-LE-3", "W4 app PR A"], ["X-LE-4", "W4 app PR A"], ["X-LE-5", "W4 app PR A"],
@@ -63,7 +63,7 @@ export const AWAITING_PROOF: ReadonlyMap<string, string> = new Map<string, strin
   ["X-PL-1", "W4 app PR A"], ["X-PL-2", "W4 app PR B"], ["X-PL-3", "W4 engine PR"], ["X-PL-4", "W4 engine PR"], ["X-PL-5", "W4 app PR B"],
   ["X-PL-6", "W4 app PR B"], ["X-PL-7", "W4 app PR B"], ["X-PL-8", "W4 app PR B"],
   ["X-QM-1", "W4 app PR A"], ["X-QM-2", "W4 app PR A"], ["X-QM-3", "W4 app PR A"], ["X-QM-4", "W4 app PR A"], ["X-QM-5", "W4 app PR A"],
-  ["X-TP-1", "W4 app PR B"], ["X-TP-2", "W4 app PR B"], ["X-TP-3", "W4 app PR B"], ["X-TP-4", "W4 engine PR"], ["X-TP-5", "W4 engine PR"],
+  ["X-TP-1", "W4 app PR B"], ["X-TP-2", "W4 app PR B"], ["X-TP-3", "W4 app PR B"], ["X-TP-4", "W4 engine PR"],
   ["X-TP-6", "W4 app PR B"], ["X-TP-7", "W4 app PR B"],
   ["X-CH-1", "W4 engine PR"], ["X-CH-2", "W4 app PR A"], ["X-CH-3", "W4 app PR B"], ["X-CH-4", "W4 app PR B"], ["X-CH-5", "W4 app PR A"],
   ["X-CH-6", "W4 app PR B"], ["X-CH-7", "W4 engine PR"], ["X-CH-8", "W4 app PR A"],

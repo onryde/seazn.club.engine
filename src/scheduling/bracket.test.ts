@@ -1,6 +1,7 @@
 // Bracket generation — spec 05 §2.3–2.5, invariants §6.
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
+import { EngineError } from "../core/errors.ts";
 import {
   crossPoolSeedOrder,
   generateDoubleElim,
@@ -130,14 +131,34 @@ describe("generateSingleElim — structure, byes & feeds (spec 05 §2.3)", () =>
     );
   });
 
-  it("is idempotent — regeneration is byte-identical", () => {
-    fc.assert(
-      fc.property(fc.integer({ min: 2, max: 64 }), (n) => {
-        expect(generateSingleElim({ entrants: field(n), thirdPlace: true })).toEqual(
-          generateSingleElim({ entrants: field(n), thirdPlace: true }),
-        );
-      }),
-    );
+  it("is idempotent — regeneration is byte-identical, and a refused third place is refused the same way (n 2..64, counted)", () => {
+    // A third place needs two real semi-finals (rules/cross-sport.md, ruling 266, RB4-T4): n = 2 has no semi-final and
+    // n = 3 has one bye semi-final, so both refuse it by name; every n >= 4 generates it.
+    const refusal = (n: number): unknown => {
+      try {
+        generateSingleElim({ entrants: field(n), thirdPlace: true });
+      } catch (e) {
+        return e instanceof EngineError ? { code: e.code, data: e.data } : e;
+      }
+      return "generated";
+    };
+    let generated = 0;
+    let refused = 0;
+    for (let n = 2; n <= 64; n++) {
+      if (n < 4) {
+        const realSemis = n === 2 ? 0 : 1;
+        const expected = { code: "CONFIG_INVALID", data: { reason: "third_place_needs_two_semis", entrants: n, realSemis } };
+        expect(refusal(n)).toEqual(expected);
+        expect(refusal(n)).toEqual(expected);
+        refused++;
+      } else {
+        const first = generateSingleElim({ entrants: field(n), thirdPlace: true });
+        expect(JSON.stringify(generateSingleElim({ entrants: field(n), thirdPlace: true }))).toBe(JSON.stringify(first));
+        generated++;
+      }
+    }
+    // n = 2..64: 2 refused (2, 3) and 61 generated (4..64)
+    expect({ refused, generated }).toEqual({ refused: 2, generated: 61 });
   });
 });
 

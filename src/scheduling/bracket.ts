@@ -215,9 +215,24 @@ function buildSingleElim(opts: SingleElimOptions): SEResult {
 export function generateSingleElim(opts: SingleElimOptions): GeneratedBracket {
   const se = buildSingleElim(opts);
   const fixtures = [...se.fixtures];
+  const n = opts.entrants.length;
+  // Below 2 entrants there is no bracket, whatever is asked of it: the app refuses 0 and 1 by name (X-SD-1, X-SD-2), so
+  // the engine answers with the empty bracket before the third-place rule below is reached.
+  if (n < 2) return { fixtures, rounds: se.rounds };
 
-  // 3rd-place playoff from the semifinal losers (spec 05 §2.3).
-  if (opts.thirdPlace === true && se.semifinalIds.length === 2) {
+  // 3rd-place playoff from the semifinal losers (spec 05 §2.3), only where both semi-finals are real (X-TP-5, ruling 266,
+  // RB4-T4). A semi-final holding a bye `award` (round 0 only, so n = 3) has no loser to send; n = 2 has no semi-final at
+  // all (X-SD-3: one final). Asked for there, it is refused by name rather than dropped or fed by a bye.
+  if (opts.thirdPlace === true) {
+    const semis = new Set(se.semifinalIds);
+    const realSemis = fixtures.filter((f) => semis.has(f.id) && f.award === undefined).length;
+    if (realSemis < 2) {
+      throw new EngineError(
+        "CONFIG_INVALID",
+        `a third-place match needs two real semi-finals; ${n} entrants give ${realSemis}`,
+        { reason: "third_place_needs_two_semis", entrants: n, realSemis },
+      );
+    }
     fixtures.push({
       id: `${opts.idPrefix ?? "se"}-3p`,
       round: se.rounds - 1,
