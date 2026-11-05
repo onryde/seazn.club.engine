@@ -151,8 +151,12 @@ export interface BracketStage {
   kind: Extract<StageKind, "knockout" | "double_elim" | "stepladder" | "page_playoff">;
   /** W4 (X-FR-1, RB4-R1): every entrant of the stage, declared — a withdrawn or disqualified entrant included, and one in
    *  no fixture at all (a departed qualifier whose line was voided). The ranks cover exactly these, each once; a fixture
-   *  naming anyone else, or a repeat in this list, is a wiring bug (CONFIG_INVALID). */
+   *  naming anyone else, or a repeat in this list, is a wiring bug (CONFIG_INVALID). In the order the bracket was DRAWN
+   *  with: X-SP-4 reads a stepladder rung from it, where two seeds tie (`seedOrder`). */
   entrants: readonly EntrantId[];
+  /** The seeds the bracket was DRAWN with — a fed stage's qualification order, never a registration seed the draw did
+   *  not use. X-SP-4 reads the stepladder rung from them, by seed order. Absent (or an entrant's missing) = no rung to
+   *  read: a stepladder entrant in no fixture then ranks last. */
   seeds?: ReadonlyMap<EntrantId, number>;
 }
 
@@ -671,8 +675,9 @@ function declaredEntrants(stage: BracketStage): Set<EntrantId> {
 // drawn in seed order over the stage's entrants (`generateStepladder`): of k, ladder places k − 1 and k play first, at
 // round 0, and place p ≤ k − 2 waits for round k − 1 − p. One in no fixture left before their rung was played, so that
 // rung holds an empty seat — theirs, dead (X-WD-3, ruling 116) — and they rank as its loser. A rung with no empty seat
-// was drawn without them (as is no rung at all): they stay in no fixture, last. Assumption → guard: the rung is read
-// from the seed, so a stepladder entrant in no fixture with no seed is a wiring bug (CONFIG_INVALID).
+// was drawn without them (as is no rung at all): they stay in no fixture, last. The rung is read from the seed. One with
+// no seed — or a stage with no seed map, an unseeded division — has no rung to read, and ranks last as before W4: a read
+// path never refuses (Review Focus 5; T11 review I1, controller ruling).
 function stepladderDueRounds(stage: BracketStage, fixtures: readonly BracketFixture[], named: ReadonlySet<EntrantId>): Map<EntrantId, number> {
   const due = new Map<EntrantId, number>();
   const k = stage.entrants.length;
@@ -680,13 +685,7 @@ function stepladderDueRounds(stage: BracketStage, fixtures: readonly BracketFixt
   stage.entrants.forEach((id, index) => {
     if (named.has(id)) return;
     const seed = stage.seeds?.get(id);
-    if (seed === undefined) {
-      throw placesInvalid(`stepladder stage "${stage.id}": "${id}" is in no fixture and has no seed, so the rung they were due to enter cannot be named`, {
-        reason: "stepladder_seed_missing",
-        stageId: stage.id,
-        entrantId: id,
-      });
-    }
+    if (seed === undefined) return;
     // Their ladder place, as the generator's seed order draws it: by seed, a tie by declared order.
     const place = 1 + stage.entrants.filter((other, i) => seedKey(other) < seed || (seedKey(other) === seed && i < index)).length;
     const round = place >= k - 1 ? 0 : k - 1 - place;

@@ -964,8 +964,8 @@ describe("X-SP-4 a withdrawn stepladder seed ranks as the loser of the rung they
     // RB4-R1: no entrant, no place.
     expect(bracketRanks({ id: "sl", kind: "stepladder", entrants: [] }, [])).toEqual([]);
     // Nobody withdrew: every entrant is in a fixture, so no rung is read — Rank places, "stepladder: strict 1 … n", every
-    // match to seed: E1 … E5. With no seed map at all nothing is refused either: a rung is read only for an entrant in no
-    // fixture (the seed guard's positive pair), and the ranks are elimination round, then id.
+    // match to seed: E1 … E5. With no seed map at all nothing changes: a rung is read only for an entrant in no fixture,
+    // and the ranks are elimination round, then id.
     const rows = playOutBracket(generateStepladder({ entrants: ids(5), seeds: seedsOf(ids(5)) }), { seeds: seedsOf(ids(5)) });
     expect(completeBracketStage({ id: "sl", kind: "stepladder", entrants: ids(5), seeds: seedsOf(ids(5)) }, rows).finalRanks).toEqual(places(...ids(5)));
     expect(completeBracketStage({ id: "sl", kind: "stepladder", entrants: ids(5) }, rows).finalRanks).toEqual(places(...ids(5)));
@@ -1058,14 +1058,29 @@ describe("X-SP-4 a withdrawn stepladder seed ranks as the loser of the rung they
     expect(completeBracketStage(stage, done).finalRanks).toEqual(places("E1", "E3", "E2", "E4", "E5"));
   });
 
-  it("X-SP-4 a stepladder entrant in no fixture with no seed → CONFIG_INVALID (her rung cannot be named); a knockout's is never refused", () => {
-    // Assumption → guard: the rung is read from the seed. E2 is in no fixture and the seed map leaves her out.
+  it("X-SP-4 a stepladder entrant in no fixture with no seed, or no seed map at all, ranks last and is never refused; a knockout's likewise", () => {
+    // T11 review I1 (controller ruling): an unseeded division is legal and a read path never refuses (Review Focus 5). The
+    // rung is read from the seed, so with none there is no rung: E2, in no fixture, ranks last, as before W4 (X-FR-1).
+    // Rank places, "stepladder: strict 1 … n": E1, E3 (the final), E4 (sl-g1, round 1), E5 (sl-g0, round 0), then E2.
+    // differential: at d8ff048 every one of these reads threw CONFIG_INVALID stepladder_seed_missing.
     const rows = ladderWithdrawn(5, 2);
     const unseeded = new Map([...seedsOf(ids(5))].filter(([id]) => id !== "E2"));
     const stage: BracketStage = { id: "sl", kind: "stepladder", entrants: ids(5), seeds: unseeded };
-    expectInvalid(() => bracketRanks(stage, rows), "stepladder_seed_missing");
-    expectInvalid(() => completeBracketStage(stage, rows), "stepladder_seed_missing");
-    expectInvalid(() => bracketRanks({ id: "sl", kind: "stepladder", entrants: ids(5) }, rows), "stepladder_seed_missing");
+    const last = places("E1", "E3", "E4", "E5", "E2");
+    expect(bracketRanks(stage, rows)).toEqual(last);
+    expect(completeBracketStage(stage, rows).finalRanks).toEqual(last);
+    // No seed map at all (every registration seed null, so the app omits it): the same, elimination round then id.
+    const noSeeds: BracketStage = { id: "sl", kind: "stepladder", entrants: ids(5) };
+    expect(bracketRanks(noSeeds, rows)).toEqual(last);
+    expect(completeBracketStage(noSeeds, rows).finalRanks).toEqual(last);
+    // Mid-ladder too (provisional): her dead seat waits on sl-g1, and she still ranks last, below E5.
+    const mid: BracketFixture[] = [
+      decided("sl-g0", 0, "E4", "E5", "E4"),
+      { id: "sl-g1", round: 1, status: "scheduled", home: "E3", away: "E4" },
+      { id: "sl-g2", round: 2, status: "scheduled" },
+      { id: "sl-g3", round: 3, status: "scheduled", isFinal: true, home: "E1" },
+    ];
+    expect(bracketRanks(noSeeds, mid)).toEqual(places("E1", "E3", "E4", "E5", "E2"));
     // The positive pair: her seed back, she is ranked at her rung (the truth run).
     expect(bracketRanks({ ...stage, seeds: seedsOf(ids(5)) }, rows)).toEqual(places("E1", "E3", "E2", "E4", "E5"));
     // Kind-scoped: a knockout entrant in no fixture with no seed is ranked last, as X-FR-1 has it, and nothing is refused.
@@ -1082,6 +1097,35 @@ describe("X-SP-4 a withdrawn stepladder seed ranks as the loser of the rung they
     const stage: BracketStage = { id: "sl", kind: "stepladder", entrants: ["A", "B", "W", "C"], seeds: seedsOf(["A", "B", "W", "C"]) };
     const rungs = [decided("sl-g0", 0, "B", "C", "B"), decided("sl-g1", 1, "A", "B", "A", { isFinal: true })];
     expect(completeBracketStage(stage, rungs).finalRanks).toEqual(places("A", "B", "C", "W"));
+  });
+
+  it("X-SP-4 a round-0 seat left dead is that rung's loss, while an entrant whose rung seats two others stays last", () => {
+    // T11 review m1. Declared E1, E2, W, E4, E5 (seeds 1–5, k = 5); the ladder was drawn over the other four (W absent):
+    // sl-g0 E4 v E5 (round 0), sl-g1 E2 v climber (1), sl-g2 E1 v climber (2, the final). E5's seat at sl-g0 is dead, so
+    // E4 walks over it; E2 beats E4, and E1 beats E2.
+    //   E5 is ladder place 5 of 5: places k − 1 and k play first (RB4-S1), so she was due at round 0, and sl-g0 holds her
+    //   empty seat — she ranks as its loser (RB4-S4), out at round 0.
+    //   W is place 3, due at round k − 1 − 3 = 1; sl-g1 seats E2 and E4, so no seat there was hers — drawn without her,
+    //   in no fixture, last (X-FR-1).
+    // Rank places, "stepladder: strict 1 … n": E1 (champion), E2 (the final's loser), E4 (sl-g1's, round 1), E5 (sl-g0's,
+    // round 0), W. Each reading that is not the rule moves someone: no round-0 clamp leaves E5 with no rung, tied with W,
+    // and W's seed puts her above E5; checking only the home seat misses E5's away seat, with the same result; checking a
+    // free seat in ANY round reads sl-g0's as W's rung, so W is out at round 1 beside E4 and above him on seed.
+    const entrants = ["E1", "E2", "W", "E4", "E5"];
+    const seeds = seedsOf(entrants);
+    const gen = generateStepladder({ entrants: ["E1", "E2", "E4", "E5"], seeds });
+    const rows: BracketFixture[] = [
+      { id: "sl-g0", round: 0, status: "walkover", home: "E4", winner: "E4" },
+      decided("sl-g1", 1, "E2", "E4", "E2"),
+      decided("sl-g2", 2, "E1", "E2", "E1", { isFinal: true }),
+    ];
+    // Who plays whom: the generator's rungs and concrete seats, E5's away seat at sl-g0 the one left empty.
+    expect(rows.map((r) => [r.id, r.round, r.isFinal === true])).toEqual(gen.fixtures.map((f) => [f.id, f.round, f.isFinal === true]));
+    expect(gen.fixtures.map((f) => [f.home, f.away])).toEqual([["E4", "E5"], ["E2", undefined], ["E1", undefined]]);
+    const stage: BracketStage = { id: "sl", kind: "stepladder", entrants, seeds };
+    const want = places("E1", "E2", "E4", "E5", "W");
+    expect(bracketRanks(stage, rows)).toEqual(want);
+    expect(completeBracketStage(stage, rows).finalRanks).toEqual(want);
   });
 });
 
