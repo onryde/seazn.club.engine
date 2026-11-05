@@ -8,13 +8,16 @@
 // Task 2 — X-SD-4 (ruling 268, RB4-D1, a recorded deviation): seeds are placed by the deterministic fold; X-SD-5 (ruling
 // 268, RB4-D2): byes go to the top seeds as awards. Both are proved on unchanged code, every n = 2..128 (not sampled).
 //
+// Task 3 — X-SP-1 (ruling 274, RB4-S1): the stepladder's rungs; X-SP-2 (ruling 274, RB4-S2): the page playoff's four games.
+// Asserted seat by seat and feed by feed from the rule text, never as "the stage completed". Proved on unchanged code.
+//
 // Expected values come from the rulebook's arithmetic, never from the generator: a field of n is drawn into the next power
 // of two S, S - n byes go to the top seeds (X-SD-5), the final is the one round-(depth - 1) game, and the semi-finals are
 // the two games that feed it.
 // single-sport: bracket code is sport-agnostic (reads no SportModule)
 import { describe, expect, it } from "vitest";
 import { EngineError } from "../core/errors.ts";
-import { generateSingleElim, type BracketFixtureGen } from "./bracket.ts";
+import { generatePagePlayoff, generateSingleElim, generateStepladder, type BracketFixtureGen } from "./bracket.ts";
 
 const ids = (n: number) => Array.from({ length: n }, (_, i) => `e${i + 1}`);
 const seeds = (n: number) => new Map(ids(n).map((id, i) => [id, i + 1]));
@@ -399,5 +402,115 @@ describe("X-SD-5 byes go to the top seeds, and a bye is an award, never a match 
     const seats = linesOf(fixtures, 8).flatMap((f) => (f.award === undefined ? [f.home, f.away] : [f.award]));
     expect([...seats].sort()).toEqual([...remaining].sort());
     expect(JSON.stringify(run())).toBe(JSON.stringify(run()));
+  });
+});
+
+/** RB4-S1: the ladder of k seeded entrants, rung by rung. Game 0 is seed k-1 (home) v seed k (away); game j (1..k-2) is seed
+ *  k-1-j (home) v the winner of game j-1. Each rung waits on the one below it, so game j is round j, and only the last rung,
+ *  against seed 1, is the final. */
+function ladderOf(map: ReadonlyMap<string, number>, k: number): BracketFixtureGen[] {
+  const seed = (s: number) => entrantOfSeed(map, s);
+  const rungs: BracketFixtureGen[] = [{ id: "sl-g0", round: 0, ...(k === 2 ? { isFinal: true } : {}), home: seed(k - 1), away: seed(k) }];
+  for (let j = 1; j <= k - 2; j++) {
+    rungs.push({
+      id: `sl-g${j}`,
+      round: j,
+      ...(j === k - 2 ? { isFinal: true } : {}),
+      home: seed(k - 1 - j),
+      awayFrom: { fixtureId: `sl-g${j - 1}`, side: "winner" },
+    });
+  }
+  return rungs;
+}
+
+describe("X-SP-1 a stepladder: the lowest two seeds first, each winner meets the next seed up, the last rung against seed 1 (RB4-S1)", () => {
+  it("X-SP-1 the empty case first: k=0 and k=1 give no games (counted)", () => {
+    // RB4-S1 is a ladder of k >= 2: below that there is no rung to play.
+    let checked = 0;
+    for (const k of [0, 1]) {
+      expect(generateStepladder({ entrants: ids(k), seeds: seeds(k) })).toEqual({ fixtures: [], rounds: 0 });
+      checked++;
+    }
+    expect(checked).toBe(2);
+  });
+
+  it("X-SP-1 stepladder k=2..16 (counted, 15): game 0 is seed k−1 v seed k, game j is seed k−1−j v the winner of game j−1, only the last is the final", () => {
+    let checked = 0;
+    for (let k = 2; k <= 16; k++) {
+      const { fixtures, rounds } = generateStepladder({ entrants: ids(k), seeds: seeds(k) });
+      expect(fixtures, `k=${k}`).toEqual(ladderOf(seeds(k), k));
+      // k - 1 rungs, one per round
+      expect(fixtures, `k=${k}`).toHaveLength(k - 1);
+      expect(rounds, `k=${k}`).toBe(k - 1);
+      expect(fixtures.filter((f) => f.isFinal === true).map((f) => f.id), `k=${k}`).toEqual([`sl-g${k - 2}`]);
+      // the last rung is against seed 1 (e1), and seed 1 plays no other rung
+      expect(fixtures[k - 2]?.home, `k=${k}`).toBe("e1");
+      expect(fixtures.filter((f) => f.home === "e1" || f.away === "e1"), `k=${k}`).toHaveLength(1);
+      checked++;
+    }
+    expect(checked).toBe(15);
+  });
+
+  it("X-SP-1 a second call is byte-identical, and the input reversed under the same seeds climbs the same ladder (k=2..16, counted)", () => {
+    let checked = 0;
+    for (let k = 2; k <= 16; k++) {
+      const first = generateStepladder({ entrants: ids(k), seeds: seeds(k) });
+      const second = generateStepladder({ entrants: ids(k), seeds: seeds(k) });
+      expect(JSON.stringify(second), `k=${k}`).toBe(JSON.stringify(first));
+      const reversed = generateStepladder({ entrants: [...ids(k)].reverse(), seeds: seeds(k) });
+      expect(reversed.fixtures, `k=${k}`).toEqual(ladderOf(seeds(k), k));
+      checked++;
+    }
+    expect(checked).toBe(15);
+  });
+
+  it("X-SP-1 after a withdrawal: the ladder climbs the remaining seeds in seed order", () => {
+    // The top 5 seeded 1..5; e3 withdraws. 4 remain, in seed order e1, e2, e4, e5: e4 v e5 first, the winner meets e2, that
+    // winner meets e1 in the final.
+    const { fixtures, rounds } = generateStepladder({ entrants: ids(5).filter((e) => e !== "e3"), seeds: seeds(5) });
+    expect(rounds).toBe(3);
+    expect(fixtures).toEqual([
+      { id: "sl-g0", round: 0, home: "e4", away: "e5" },
+      { id: "sl-g1", round: 1, home: "e2", awayFrom: { fixtureId: "sl-g0", side: "winner" } },
+      { id: "sl-g2", round: 2, isFinal: true, home: "e1", awayFrom: { fixtureId: "sl-g1", side: "winner" } },
+    ]);
+  });
+});
+
+describe("X-SP-2 a page playoff of exactly 4: Q1 1 v 2, E 3 v 4, Q2 the loser of Q1 v the winner of E, the final the winners of Q1 and Q2 (RB4-S2)", () => {
+  it("X-SP-2 the empty case first: any field but 4 is refused CONFIG_INVALID, n ∈ {0,1,2,3,5,6,7,8} (counted, 8)", () => {
+    // RB4-S2 takes exactly 4 from a table. n = 3 is also a 4 after a withdrawal.
+    let checked = 0;
+    for (const n of [0, 1, 2, 3, 5, 6, 7, 8]) {
+      const err = refusalOf(() => generatePagePlayoff({ entrants: ids(n), seeds: seeds(n) }));
+      expect(err.code, `n=${n}`).toBe("CONFIG_INVALID");
+      checked++;
+    }
+    expect(checked).toBe(8);
+  });
+
+  it("X-SP-2 page playoff: exactly pp-q1 s1 v s2 and pp-elim s3 v s4 (round 0), pp-q2 loser(pp-q1) v winner(pp-elim) (round 1), pp-final winner(pp-q1) v winner(pp-q2) (round 2), the only final", () => {
+    const map = seeds(4);
+    const s = (k: number) => entrantOfSeed(map, k);
+    const { fixtures, rounds } = generatePagePlayoff({ entrants: ids(4), seeds: map });
+    expect(fixtures).toEqual([
+      { id: "pp-q1", round: 0, home: s(1), away: s(2) },
+      { id: "pp-elim", round: 0, home: s(3), away: s(4) },
+      { id: "pp-q2", round: 1, homeFrom: { fixtureId: "pp-q1", side: "loser" }, awayFrom: { fixtureId: "pp-elim", side: "winner" } },
+      { id: "pp-final", round: 2, isFinal: true, homeFrom: { fixtureId: "pp-q1", side: "winner" }, awayFrom: { fixtureId: "pp-q2", side: "winner" } },
+    ]);
+    // rounds 0, 1 and 2: three in all
+    expect(rounds).toBe(3);
+    expect(fixtures.filter((f) => f.isFinal === true).map((f) => f.id)).toEqual(["pp-final"]);
+  });
+
+  it("X-SP-2 a second call is byte-identical, and the input reversed under the same seeds draws the same four games", () => {
+    const first = generatePagePlayoff({ entrants: ids(4), seeds: seeds(4) });
+    const second = generatePagePlayoff({ entrants: ids(4), seeds: seeds(4) });
+    expect(JSON.stringify(second)).toBe(JSON.stringify(first));
+    const reversed = generatePagePlayoff({ entrants: [...ids(4)].reverse(), seeds: seeds(4) });
+    expect(JSON.stringify(reversed)).toBe(JSON.stringify(first));
+    // seed 1 still opens Q1 at home, whatever order the table was listed in
+    expect(reversed.fixtures[0]).toEqual({ id: "pp-q1", round: 0, home: "e1", away: "e2" });
   });
 });
