@@ -9,7 +9,7 @@ import { EngineError } from "../core/errors.ts";
 import type { EntrantId } from "../core/types.ts";
 import type { TiebreakerKey } from "../sport/module.ts";
 import { isHeadToHeadKey } from "./cascade-rules.ts";
-import type { FinalPlace } from "./stage.ts";
+import type { FinalPlace, FixtureStatus } from "./stage.ts";
 import {
   foldResults,
   resultsAmong,
@@ -447,9 +447,21 @@ export interface PoolTable {
   // this codebase today, matching production behaviour before this session.
   results?: readonly FixtureResult[];
 }
+/** A bracket source's fixture as progression reads it. `roundLosers` reads `round` and `loser` alone. W4 (Task 9) widens
+ *  it with what `firstLossField` (first-loss.ts) reads — every new field optional, so a caller of `roundLosers` types as
+ *  before. The app builds it from the row `toBracketFixture` already makes (apps/web/src/server/engine-db/competition.ts);
+ *  `walkedOver` is `BracketFixture.walkedOver`, the one marker of a forfeit loser (X-PL-4). */
 export interface BracketFixtureRow {
   round: number;
   loser?: EntrantId;
+  id?: string;
+  status?: FixtureStatus;
+  home?: EntrantId;
+  away?: EntrantId;
+  winner?: EntrantId;
+  walkedOver?: "loser" | "both";
+  bracket?: "WB" | "LB" | "GF";
+  thirdPlace?: boolean;
 }
 export interface SourceTables {
   pools: readonly PoolTable[];

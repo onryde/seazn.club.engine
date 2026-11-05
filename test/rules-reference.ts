@@ -60,7 +60,7 @@ export const AWAITING_PROOF: ReadonlyMap<string, string> = new Map<string, strin
   ["X-LE-6", "W4 app PR A"], ["X-LE-7", "W4 app PR A"], ["X-LE-8", "W4 app PR A"], ["X-LE-9", "W4 app PR A"], ["X-LE-10", "W4 app PR A"],
   ["X-LE-11", "W4 app PR A"], ["X-LE-12", "W4 app PR A"], ["X-LE-13", "W4 app PR A"], ["X-LE-14", "W4 app PR B"],
   ["X-LL-1", "W4 app PR A"], ["X-LL-2", "W4 app PR A"], ["X-LL-3", "W4 app PR A"], ["X-LL-4", "W4 app PR A"], ["X-LL-5", "W4 app PR A"],
-  ["X-PL-1", "W4 app PR A"], ["X-PL-2", "W4 app PR B"], ["X-PL-3", "W4 engine PR"], ["X-PL-4", "W4 engine PR"], ["X-PL-5", "W4 app PR B"],
+  ["X-PL-1", "W4 app PR A"], ["X-PL-2", "W4 app PR B"], ["X-PL-5", "W4 app PR B"],
   ["X-PL-6", "W4 app PR B"], ["X-PL-7", "W4 app PR B"], ["X-PL-8", "W4 app PR B"],
   ["X-QM-1", "W4 app PR A"], ["X-QM-2", "W4 app PR A"], ["X-QM-3", "W4 app PR A"], ["X-QM-4", "W4 app PR A"], ["X-QM-5", "W4 app PR A"],
   ["X-TP-1", "W4 app PR B"], ["X-TP-2", "W4 app PR B"], ["X-TP-3", "W4 app PR B"],
