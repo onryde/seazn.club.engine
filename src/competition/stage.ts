@@ -774,10 +774,15 @@ export function bracketRanks(
     const third = Math.max(3, lastRank + 1);
     const playOff = fixtures.find((fixture) => fixture.thirdPlace === true);
     if (playOff === undefined || playOff.status === "void") {
-      // An unsettled semi-final names no loser; its seated sides are in play, so already placed above.
+      // An unsettled semi-final names no loser; its seated sides are in play, so already placed above. X-FR-3 (RB4-R3):
+      // an entrant a walkover put out in an earlier round is out there, so a stale semi-final row naming it a loser
+      // never makes it a semi-final loser.
       const semiLosers = fixtures
         .filter((fixture) => fixture.round === final.round - 1)
-        .flatMap((fixture) => (fixture.loser === undefined ? [] : [fixture.loser]))
+        .flatMap((fixture) => {
+          const loser = fixture.loser;
+          return loser === undefined || (outAt.get(loser) ?? fixture.round) < fixture.round ? [] : [loser];
+        })
         .sort(bySeedThenId);
       for (const id of semiLosers) placeAt(id, third);
     } else if (playOff.walkedOver === "both") {

@@ -759,7 +759,12 @@ describe("resolveProgression", () => {
       placement: "rank_order",
     };
     const { ties } = resolveProgression(spec, [{ poolKeys: [] }], [{ pools: [{ pool: "", rows: tied }] }]);
-    expect(ties).toHaveLength(0); // the resolver never even reaches b/c: rank 1's row (a) already answers rankRange{1,1}
+    // W4 FINDING (Task 8, controller ruling B3-8; reported, owed controller confirmation): was `toHaveLength(0)` — the
+    // resolver found rank 1's row (a) and never reached b/c. rankRange now takes by POSITION, and a, b and c all hold
+    // rank 1, so a's place is shared with b and c: flagged shared_place, never silently ordered (this title's own claim).
+    expect(ties).toEqual([
+      { descriptors: [{ sourceIndex: 0, descriptor: { kind: "rank_range", rank: 1 } }], entrantIds: ["a", "b", "c"], reason: "shared_place" },
+    ]);
   });
 
   // F2 Task 6 review (defect 2): the test above proves only that `ties`

@@ -572,6 +572,30 @@ function rowAtRank(table: PoolTable, rank: number): StandingsRow {
   return row;
 }
 
+/** W4 (RB4-Q2; controller ruling B3-8): `rank_range` takes by POSITION — the table's rows in rank order (a stable sort,
+ *  so a stored snapshot listed in any order reads as before), position `rank` of them. A bracket source's places can
+ *  share a rank (X-FR-1: two semi-final losers both 3rd), so a take never needs a rank nobody holds (1..4 over 1, 2, 3, 3
+ *  takes four). A row whose rank another row shares is returned as a clone flagged `tieUnbroken` with `tieBreak.key:
+ *  "shared_place"`, naming the others: who goes first, or through, is the organiser's call. A strict table (every rank
+ *  once) resolves exactly the rows `rowAtRank` did. A shortfall reads as `rowAtRank`'s, unchanged. `group_rank` and
+ *  `best_nth` keep finding by rank (`rowAtRank`). */
+function rowAtPosition(table: PoolTable, rank: number): StandingsRow {
+  const ordered = [...table.rows].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+  const row = ordered[rank - 1];
+  if (row === undefined) {
+    const available = table.rows.length;
+    const label = table.pool ? `pool "${table.pool}"` : "the previous stage";
+    throw new EngineError(
+      "STAGE_NOT_READY",
+      `${label} takes rank ${rank}, but only ${available} entrant${available === 1 ? "" : "s"} ${available === 1 ? "is" : "are"} available — lower the qualifier count or add entrants`,
+      { pool: table.pool, rank, available },
+    );
+  }
+  const sharing = ordered.filter((other) => other !== row && other.rank === row.rank).map((other) => other.entrantId);
+  if (sharing.length === 0) return row;
+  return { ...row, tieUnbroken: true, tieBreak: { key: "shared_place", with: sharing } };
+}
+
 // UEFA "drop the lowest-ranked pool member's results" normalisation
 // (Decision 2b) — unchanged from qualification.ts's normalisedRow, moved
 // verbatim. A no-op when `results` is absent or empty, which is every
@@ -693,7 +717,7 @@ export function resolveProgression(
     if (d.kind === "group_rank") {
       row = rowAtRank(findPool(src.pools, d.pool), d.rank);
     } else if (d.kind === "rank_range") {
-      row = rowAtRank(rankRangeSource(src.pools), d.rank);
+      row = rowAtPosition(rankRangeSource(src.pools), d.rank);
     } else if (d.kind === "round_loser") {
       row = loserAt(src.bracket, d.round, d.position);
     } else {
