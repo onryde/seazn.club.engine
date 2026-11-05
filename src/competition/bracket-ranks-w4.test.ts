@@ -212,6 +212,17 @@ describe("X-FR-1 at completion only the declared shared places pass (Task 5, con
     }
     expect(checked, "shapes checked").toBe(9);
   });
+
+  it("X-FR-1 the strict check holds a set to the structural one first: a declared entrant missing, or ranks out of order → CONFIG_INVALID", () => {
+    // B3 fix round 1 (review m1): assertCompletedBracketPlaces is exported, so it owes the structural check itself. E8
+    // missing leaves a strict 1 … 7 the walk alone accepts; ranks out of order the walk would refuse only by another
+    // reason. Each is refused here by the structural reason.
+    expectInvalid(() => assertCompletedBracketPlaces(ko8, PLAYOFF8, places("E1", "E2", "E4", "E3", "E5", "E6", "E7")), "missing_entrant");
+    expectInvalid(
+      () => assertCompletedBracketPlaces(ko8, PLAYOFF8, ranked(["E1", 1], ["E2", 2], ["E3", 4], ["E4", 3], ["E5", 5], ["E6", 6], ["E7", 7], ["E8", 8])),
+      "rank_order",
+    );
+  });
 });
 
 describe("X-FR-1 provisional ranks mid-bracket (Task 5, Review Focus 5, controller ruling B3-3)", () => {
@@ -371,7 +382,7 @@ describe("X-FR-1 a knockout's semi-final losers share 3rd unless a play-off deci
     expectInvalid(() => assertCompletedBracketPlaces(stage, rows, ranked(["E1", 1], ["E2", 2], ["E3", 4], ["E4", 4], ["E5", 5], ["E6", 6], ["E7", 7], ["E8", 8])), "undeclared_shared_place");
   });
 
-  it("X-FR-1 a semi lost by walkover (the loser withdrew) still shares 3rd", () => {
+  it("X-FR-1 a semi lost by walkover (the loser withdrew): with no play-off the forfeiter still shares 3rd; with one it is out and 4th alone", () => {
     // RB4-T2 has no exception: E2 forfeits its semi-final to E3, and still ranks 3rd with E4 (seed order within it).
     const shared = knockout(8, { forfeit: new Map([["se-r1-i1", "E2"]]) });
     const want = ranked(["E1", 1], ["E3", 2], ["E2", 3], ["E4", 3], ["E5", 5], ["E6", 6], ["E7", 7], ["E8", 8]);
@@ -578,6 +589,34 @@ describe("X-CH-1 the title: champion, joint winners, vacant (Task 7, Q4; RB4-C1,
     expect(deDone.finalRanks).toEqual(places("E1", "E2", "E3", "E4"));
   });
 
+  it("X-CH-1 no title while a final is still to play: a double elimination's reset scheduled after the grand final", () => {
+    // B3 fix round 1 (review m3, controller ruling): E2, from the losers' bracket, wins the grand final, so the reset is
+    // seated E2 v E1 (the grand final's winner at home) and still to play. Nobody is champion yet: the reset may crown E1. differential: before the fix the
+    // grand final's winner, E2, was named champion. Once the reset is decided (E1), E1 is.
+    let meetings = 0; // E1 v E2: the winners' final, the grand final, the reset
+    const winner = (home: string, away: string): string => {
+      if ([home, away].sort().join() !== "E1,E2") return Number(away.slice(1)) < Number(home.slice(1)) ? away : home;
+      meetings++;
+      return meetings === 2 ? "E2" : "E1";
+    };
+    const decidedRows = playOutBracket(generateDoubleElim({ entrants: ids(4), seeds: seedsOf(ids(4)), bracketReset: true }), { winner });
+    const reset = decidedRows.find((f) => f.id === "gf-reset");
+    expect([reset?.isFinal, reset?.home, reset?.away, reset?.winner]).toEqual([true, "E2", "E1", "E1"]);
+    const pending = decidedRows.map((f): BracketFixture => {
+      if (f.id !== "gf-reset") return f;
+      const { winner: _w, loser: _l, ...seated } = f;
+      return { ...seated, status: "scheduled" };
+    });
+    expect(pending.find((f) => f.id === "gf")?.winner, "the grand final is decided").toBe("E2");
+    expect(bracketTitle(pending)).toBeUndefined();
+    expect(bracketTitle(decidedRows)).toEqual({ kind: "champion", champion: "E1" });
+    // The same holds for a knockout's final: scheduled → no title; decided → its winner.
+    const { rows } = knockout(4);
+    const open = rows.map((f): BracketFixture => (f.isFinal === true ? { id: f.id, round: f.round, isFinal: true, status: "scheduled", home: "E1", away: "E2" } : f));
+    expect(bracketTitle(open)).toBeUndefined();
+    expect(bracketTitle(rows)).toEqual({ kind: "champion", champion: "E1" });
+  });
+
   it("X-CH-1 joint winners: both finalists rank 1st, nobody 2nd, semi-final losers 3rd", () => {
     // differential: before W4 the finalists ranked 1/2 by seed; with no winner recorded and no title read, the unbeaten
     // finalists rank below every loser and completion refuses the shape (rank 3 first).
@@ -692,8 +731,27 @@ describe("X-CH-1 the title: champion, joint winners, vacant (Task 7, Q4; RB4-C1,
     const { stage, rows } = knockout(4, { voided: new Set(["se-r1-i0"]) });
     expect(bracketTitle(rows)).toBeUndefined();
     expectInvalid(() => completeBracketStage(stage, rows), "no_title");
-    // Provisional reads still answer (Review Focus 5): the stage just cannot complete.
-    expect(() => bracketRanks(stage, rows)).not.toThrow();
+    // Provisional reads still answer (Review Focus 5): the stage just cannot complete. B3 fix round 1 (review m2,
+    // controller ruling): the void final decided nothing, so its seated sides E1 and E2 are still in — B3-3: everyone in
+    // ranks above everyone out, fewest losses first, then seed — and the semi-final losers share 3rd below them (SH-3).
+    // differential: before the fix the two finalists ranked LAST, below the entrants they beat.
+    expect(bracketRanks(stage, rows)).toEqual(ranked(["E1", 1], ["E2", 2], ["E3", 3], ["E4", 3]));
+    const eight = knockout(8, { voided: new Set(["se-r2-i0"]) });
+    expect(bracketRanks(eight.stage, eight.rows)).toEqual(
+      ranked(["E1", 1], ["E2", 2], ["E3", 3], ["E4", 3], ["E5", 5], ["E6", 6], ["E7", 7], ["E8", 8]),
+    );
+    // Fewest losses first, not seed: a double elimination whose grand final is void, E2 the unbeaten winners'-bracket
+    // champion (it beat E1 in the winners' final) and E1 back through the losers' bracket with one loss.
+    const upset = (home: string, away: string): string =>
+      [home, away].sort().join() === "E1,E2" ? "E2" : Number(away.slice(1)) < Number(home.slice(1)) ? away : home;
+    const de: BracketStage = { id: "de", kind: "double_elim", entrants: ids(4), seeds: seedsOf(ids(4)) };
+    const deRows = playOutBracket(generateDoubleElim({ entrants: ids(4), seeds: seedsOf(ids(4)), bracketReset: true }), {
+      winner: upset,
+      voided: new Set(["gf"]),
+    });
+    const gf = deRows.find((f) => f.id === "gf");
+    expect([gf?.status, gf?.home, gf?.away]).toEqual(["void", "E2", "E1"]);
+    expect(bracketRanks(de, deRows)).toEqual(places("E2", "E1", "E3", "E4"));
   });
 });
 
@@ -824,7 +882,15 @@ describe("X-FR-3 a walkover loser is out at that fixture, so ranks and seats agr
     // knockout: 4 quarter-finals + 2 semi-finals; double elimination: 4 + 2 + 1 winners' and 2 + 2 + 1 + 1 losers'
     // fixtures — each three ways.
     expect(brackets, "walked-over brackets checked").toBe((6 + 13) * 3);
-    expect(pairs, "(out entrant, later fixture) pairs checked").toBeGreaterThan(brackets);
+    // Pairs, from the bracket shapes the generators build (B3 fix round 1, review m5). Each swept fixture puts out one
+    // entrant per forfeit and two on a double walkover: 1 + 1 + 2 = 4 per later fixture, the one walked-over fixture in
+    // its rows (a dead seat after it is a plain walkover). A fixture of round r is followed by every row of a higher round:
+    //   knockout 8 + play-off — 8 rows: round 0 ×4, round 1 ×2, round 2 ×2 (final, play-off). A quarter-final has 4
+    //   later rows, a semi-final 2: 4 × (4 × 4 + 2 × 2) = 80.
+    //   double elimination 8 — 15 rows: WB rounds 0, 1, 2 (×4, ×2, ×1), LB rounds 3, 4, 5, 6 (×2, ×2, ×1, ×1), grand
+    //   final 7, reset 8. Later rows: 11 (WB r0), 9 (WB r1), 8 (WB r2), 6 (LB r3), 4 (LB r4), 3 (LB r5), 2 (LB r6):
+    //   4 × (4 × 11 + 2 × 9 + 8 + 2 × 6 + 2 × 4 + 3 + 2) = 4 × 95 = 380.
+    expect(pairs, "(out entrant, later fixture) pairs checked").toBe(80 + 380);
   });
 
   it("X-FR-3 page playoff: a pp-q1 forfeit loser is out at round 0, never ranked by a pp-q2 row", () => {

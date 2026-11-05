@@ -546,13 +546,13 @@ function rankRangeSource(pools: readonly PoolTable[]): PoolTable {
 // F2 Task 6 review (defect 4): `rankRange` replaced `topN`, whose old
 // message told an organiser what to DO ("takes the top N, only M
 // available — lower the qualifier count or add entrants" —
-// qualification.ts's isTopN branch, pre-F2). This function is the ONLY
-// place a shortfall like that can be discovered now (both `group_rank` via
-// findPool+rowAtRank and `rank_range` via rankRangeSource+rowAtRank funnel
-// through it), and a generic "no entrant ranked N yet" regressed that —
-// restored here, generalised to name the pool when there is one (the
-// group_rank case) the way topN's flat single-table message never needed
-// to. Still STAGE_NOT_READY (same code topN always used — this message was
+// qualification.ts's isTopN branch, pre-F2). A shortfall like that is
+// discovered here for `group_rank` (findPool+rowAtRank) and `best_nth`, and
+// — since W4 — for `rank_range` in `rowAtPosition` below, which takes by
+// position and repeats this exact message. A generic "no entrant ranked N
+// yet" regressed that — restored here, generalised to name the pool when
+// there is one (the group_rank case) the way topN's flat single-table
+// message never needed to. Still STAGE_NOT_READY (same code topN always used — this message was
 // never in seeding-error.ts's 13-code allowlist either, before or after
 // F2, so it has always reached the organiser via the raw-message fallback,
 // not a wired locale key; wiring one is a separate, scoped effort per

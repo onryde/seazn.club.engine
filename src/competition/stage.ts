@@ -459,9 +459,14 @@ export type BracketTitle =
   | { kind: "vacant" };
 
 /** The title the deciding final crowned (`decidingFinal`), or undefined while no final has decided anything — a void
- *  final included (a double-elimination reset that was not needed decides nothing; the grand final before it does). */
+ *  final included (a double-elimination reset that was not needed decides nothing; the grand final before it does) —
+ *  and undefined while ANY final is still unsettled (B3 fix round 1, controller ruling): a double-elimination reset
+ *  seated after the grand final may yet crown the other side, so the grand final's winner is not the champion yet.
+ *  Every jointWinners row is checked first, whatever the answer. */
 export function bracketTitle(fixtures: readonly BracketFixture[]): BracketTitle | undefined {
-  return decidingFinal(fixtures)?.title;
+  const decided = decidingFinal(fixtures);
+  if (fixtures.some((fixture) => fixture.isFinal === true && !SETTLED.has(fixture.status))) return undefined;
+  return decided?.title;
 }
 
 // Completing a bracket stage is refused, never ranked provisionally, until `isBracketStageComplete` holds (X-CH-7, ruling
@@ -704,14 +709,17 @@ export function bracketRanks(
 
   // B3-3 (provisional reads): an entrant still in play — seated in a fixture not yet settled, and not put out by a
   // walkover — ranks above every entrant out, fewest losses first (a winners'-bracket side above a losers'-bracket one),
-  // then seed, then id. Nobody is in play once every fixture is settled, so a completed stage never reads this.
+  // then seed, then id. B3 fix round 1 (controller ruling): a void final decided nothing, so its seated sides are still
+  // in too — never ranked below the entrants they knocked out. Once every fixture is settled, only a void final's sides
+  // can be in play; a stage completes over a void final only when an earlier final crowned someone (a double-elimination
+  // reset not needed), and the title has placed that pair already.
   const losses = new Map<EntrantId, number>();
   const inPlay = new Set<EntrantId>();
   for (const fixture of fixtures) {
-    if (SETTLED.has(fixture.status)) {
-      if (fixture.loser !== undefined) losses.set(fixture.loser, (losses.get(fixture.loser) ?? 0) + 1);
-      continue;
-    }
+    const settled = SETTLED.has(fixture.status);
+    if (settled && fixture.loser !== undefined) losses.set(fixture.loser, (losses.get(fixture.loser) ?? 0) + 1);
+    const stillIn = !settled || (fixture.isFinal === true && fixture.status === "void");
+    if (!stillIn) continue;
     for (const id of [fixture.home, fixture.away]) if (id !== undefined && !outAt.has(id)) inPlay.add(id);
   }
 

@@ -767,11 +767,12 @@ describe("resolveProgression", () => {
     ]);
   });
 
-  // F2 Task 6 review (defect 2): the test above proves only that `ties`
-  // stays EMPTY — the tied rows are never actually reached, so it cannot
-  // tell a working tie-flag branch from a broken one. This test takes
-  // rankRange{1,2} so the resolver visits BOTH rank 1 (untied) and rank 2
-  // (a real, populated tie), and asserts the actual flagged shape.
+  // F2 Task 6 review (defect 2): the test above was written to prove only
+  // that `ties` stayed EMPTY — its tied rows b and c are never taken, so it
+  // could not tell a working tie-flag branch from a broken one (since W4 it
+  // asserts the shared_place tie its three rank-1 rows make instead). This
+  // test takes rankRange{1,2} so the resolver visits BOTH rank 1 (untied)
+  // and rank 2 (a real, populated tie), and asserts the actual flagged shape.
   it("flags a tie for real when the resolver actually reaches a tied row — not just proves ties stays empty", () => {
     const tied = [
       { entrantId: "a", rank: 1 },
