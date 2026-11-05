@@ -216,7 +216,7 @@ export function generateSingleElim(opts: SingleElimOptions): GeneratedBracket {
   const se = buildSingleElim(opts);
   const fixtures = [...se.fixtures];
   const n = opts.entrants.length;
-  // Below 2 entrants there is no bracket, whatever is asked of it: the app refuses 0 and 1 by name (X-SD-1, X-SD-2), so
+  // Below 2 entrants there is no bracket, whatever is asked of it: the app owes the named refusals (X-SD-1, X-SD-2), so
   // the engine answers with the empty bracket before the third-place rule below is reached.
   if (n < 2) return { fixtures, rounds: se.rounds };
 

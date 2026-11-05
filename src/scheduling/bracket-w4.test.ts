@@ -76,7 +76,7 @@ describe("X-TP-5 a third-place match needs two real semi-finals (RB4-T4)", () =>
     expectThirdPlaceRefusal(refusalOf(run), 2, 0);
   });
 
-  it("X-TP-5 n=4..64 with thirdPlace: exactly one -3p, fed by the losers of the two round rounds-2 fixtures, neither an award (counted)", () => {
+  it("X-TP-5 n=4..64 with thirdPlace: exactly one -3p, fed by the losers of the two round depth-2 fixtures, neither an award (counted)", () => {
     let checked = 0;
     for (let n = 4; n <= 64; n++) {
       const { fixtures, rounds } = generateSingleElim({ entrants: ids(n), seeds: seeds(n), thirdPlace: true });
