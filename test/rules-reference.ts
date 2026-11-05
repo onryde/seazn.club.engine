@@ -47,7 +47,30 @@ export const CHECKER_FILES: readonly string[] = [
  *  W2d Task 21 (the fold) emptied it: all 43 W2d rows now name their proving tests and are signed by ruling 197. */
 /** W2e's rows (spec 2026-10-28 section 8, signed 2026-10-28 by rulings 221-239, which are the design's D1-D19 plus 220): the value names the task of the W2e plan that proves the row. The proving
  *  commit deletes the entry and fills `proved by`; every W2e entry is to be gone before PR A merges. */
-export const AWAITING_PROOF: ReadonlyMap<string, string> = new Map<string, string>([]);
+/** W4's rows (design 2026-11-04-format-matrix-w4-knockout-design.md §12, rulebook-W4-knockout.md; signed 2026-11-04 by rulings 263-274,
+ *  recorded ahead of the code on the owner's "approve and record all rules in engine", ruling 274): the value names the W4 PR whose
+ *  test proves the row, by the design's §6 split (§6.1 the engine PR, §6.2 app PR A, §6.3 app PR B), and the row's citation says the
+ *  same ("not yet implemented" or "proof owed"). The proving commit deletes the entry, fills `proved by` and drops that citation note;
+ *  every W4 entry is to be gone by the W4 close-out. */
+export const AWAITING_PROOF: ReadonlyMap<string, string> = new Map<string, string>([
+  ["X-SD-1", "W4 app PR A"], ["X-SD-2", "W4 app PR A"], ["X-SD-3", "W4 engine PR"], ["X-SD-4", "W4 engine PR"], ["X-SD-5", "W4 engine PR"],
+  ["X-SD-6", "W4 app PR A"], ["X-SD-7", "W4 app PR A"], ["X-SD-8", "W4 app PR A"], ["X-SD-9", "W4 app PR A"], ["X-SD-10", "W4 app PR A"],
+  ["X-SD-11", "W4 app PR B"],
+  ["X-LE-1", "W4 app PR A"], ["X-LE-2", "W4 app PR A"], ["X-LE-3", "W4 app PR A"], ["X-LE-4", "W4 app PR A"], ["X-LE-5", "W4 app PR A"],
+  ["X-LE-6", "W4 app PR A"], ["X-LE-7", "W4 app PR A"], ["X-LE-8", "W4 app PR A"], ["X-LE-9", "W4 app PR A"], ["X-LE-10", "W4 app PR A"],
+  ["X-LE-11", "W4 app PR A"], ["X-LE-12", "W4 app PR A"], ["X-LE-13", "W4 app PR A"], ["X-LE-14", "W4 app PR B"],
+  ["X-LL-1", "W4 app PR A"], ["X-LL-2", "W4 app PR A"], ["X-LL-3", "W4 app PR A"], ["X-LL-4", "W4 app PR A"], ["X-LL-5", "W4 app PR A"],
+  ["X-PL-1", "W4 app PR A"], ["X-PL-2", "W4 app PR B"], ["X-PL-3", "W4 engine PR"], ["X-PL-4", "W4 engine PR"], ["X-PL-5", "W4 app PR B"],
+  ["X-PL-6", "W4 app PR B"], ["X-PL-7", "W4 app PR B"], ["X-PL-8", "W4 app PR B"],
+  ["X-QM-1", "W4 app PR A"], ["X-QM-2", "W4 app PR A"], ["X-QM-3", "W4 app PR A"], ["X-QM-4", "W4 app PR A"], ["X-QM-5", "W4 app PR A"],
+  ["X-TP-1", "W4 app PR B"], ["X-TP-2", "W4 app PR B"], ["X-TP-3", "W4 app PR B"], ["X-TP-4", "W4 engine PR"], ["X-TP-5", "W4 engine PR"],
+  ["X-TP-6", "W4 app PR B"], ["X-TP-7", "W4 app PR B"],
+  ["X-CH-1", "W4 engine PR"], ["X-CH-2", "W4 app PR A"], ["X-CH-3", "W4 app PR B"], ["X-CH-4", "W4 app PR B"], ["X-CH-5", "W4 app PR A"],
+  ["X-CH-6", "W4 app PR B"], ["X-CH-7", "W4 engine PR"], ["X-CH-8", "W4 app PR A"],
+  ["X-FR-1", "W4 engine PR"], ["X-FR-2", "W4 engine PR"], ["X-FR-3", "W4 engine PR"], ["X-FR-4", "W4 app PR B"], ["X-FR-5", "W4 app PR B"],
+  ["X-SP-1", "W4 engine PR"], ["X-SP-2", "W4 engine PR"], ["X-SP-3", "W4 app PR A"], ["X-SP-4", "W4 app PR A"], ["X-SP-5", "W4 app PR A"],
+  ["X-SP-6", "W4 app PR A"], ["X-SP-7", "W4 app PR A"],
+]);
 
 /** Rule rows write every engine path as `packages/engine/...`, in the monorepo and in the engine's own repo alike: the prefix is
  *  part of the row's text, not of the checkout. Rows whose path starts with it are the ENGINE's to check (test/rules-reference.test.ts);
