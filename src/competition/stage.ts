@@ -144,21 +144,32 @@ export function crossGroupRulesOf(stage: TableStage): CrossGroupRules {
 
 export interface BracketStage {
   id: string;
-  // L3/#414 — page_playoff added. bracketRanks/isBracketStageComplete below
-  // read only round/isFinal/loser/status off the fixtures, never stage.kind,
-  // so the fixed 4-team page playoff (scheduling/generatePagePlayoff) needs
-  // no algorithm change — see the page_playoff describe block in
-  // stage.test.ts for why the existing lastLossRound fallback already ranks
-  // it correctly with no thirdPlace fixture involved.
   kind: Extract<StageKind, "knockout" | "double_elim" | "stepladder" | "page_playoff">;
+  /** W4 (X-FR-1, RB4-R1): every entrant of the stage, declared — a withdrawn or disqualified entrant included, and one in
+   *  no fixture at all (a departed qualifier whose line was voided). The ranks cover exactly these, each once; a fixture
+   *  naming anyone else, or a repeat in this list, is a wiring bug (CONFIG_INVALID). */
+  entrants: readonly EntrantId[];
   seeds?: ReadonlyMap<EntrantId, number>;
 }
+
+/** W4 (X-FR-1, RB4-R1): an entrant's place in a stage's ranking. A table stage ranks by position (rank = index + 1); a
+ *  bracket stage's ranks may tie, but only at the declared shared places (`BRACKET_SHARED_RANKS`). */
+export interface FinalPlace {
+  entrantId: EntrantId;
+  rank: number;
+}
+
+/** W4 (X-FR-1; rulings 266, 267; plan Global Constraints, Rank places): the only ranks two entrants of a bracket may share —
+ *  1st (joint winners), 2nd (a vacant title's two finalists), 3rd (the semi-final losers where no play-off decided it) and
+ *  4th (both sides of a play-off neither played). Never more than two at one rank; which of these a stage may use is what
+ *  its own fixtures declare (`assertCompletedBracketPlaces`). */
+export const BRACKET_SHARED_RANKS: ReadonlySet<number> = new Set([1, 2, 3, 4]);
 
 // spec 05 §5 — the structural ledger. (fixtures_generated / fixture_replaced
 // belong to generation, PROMPT-09.)
 export type DivisionEvent =
   | { type: "stage_opened"; stageId: string }
-  | { type: "stage_completed"; stageId: string; finalRanks: EntrantId[] }
+  | { type: "stage_completed"; stageId: string; finalRanks: FinalPlace[] }
   | { type: "rank_lock_required"; stageId: string; group: EntrantId[] }
   // W2d (spec §5.8, PS-5b): `order` and `drawnAt` are the STORED draw's. A draw
   // made in this call has no date yet, so it emits rank_lock_required alone and
@@ -214,16 +225,25 @@ export function undecidedBracketFixtures(fixtures: readonly BracketFixture[]): s
   return fixtures.filter((fixture) => !SETTLED.has(fixture.status)).map((fixture) => fixture.id);
 }
 
+/** Why a bracket stage cannot complete yet (X-CH-7), or null when it can. */
+type BracketCompletionRefusal = { reason: "no_final" } | { reason: "fixtures_undecided"; undecided: string[] };
+
 // Every bracket kind (knockout, double_elim, stepladder, page_playoff): the stage has a final, and EVERY fixture is
 // settled — the final, every earlier round, a third-place play-off (X-TP-4, RB4-T3) and a double-elim bracket reset alike
 // (X-CH-7, ruling 274, RB4-C7). The final alone is not enough: a semi-final still scheduled (CH-1) or a final still
-// in_play (AN-2) leaves the stage open. A voided reset and a walked-over line are settled.
+// in_play (AN-2) leaves the stage open. A voided reset and a walked-over line are settled. No final is checked first:
+// an empty list owes no fixture and would otherwise pass. The one reading of both the predicate and the refusal.
+function bracketCompletionRefusal(fixtures: readonly BracketFixture[]): BracketCompletionRefusal | null {
+  if (!fixtures.some((fixture) => fixture.isFinal === true)) return { reason: "no_final" };
+  const undecided = undecidedBracketFixtures(fixtures);
+  return undecided.length > 0 ? { reason: "fixtures_undecided", undecided } : null;
+}
+
 export function isBracketStageComplete(
   _stage: BracketStage,
   fixtures: readonly BracketFixture[],
 ): boolean {
-  if (!fixtures.some((fixture) => fixture.isFinal === true)) return false;
-  return undecidedBracketFixtures(fixtures).length === 0;
+  return bracketCompletionRefusal(fixtures) === null;
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +375,8 @@ export function completeTableStage(
     poolTables.push({ pool, rows: ranked.rows, results });
   }
 
-  const finalRanks = crossPoolOrder(poolTables);
+  // W4 (X-FR-1): a table stage's places are its positions — rank = index + 1, a level row included.
+  const finalRanks = crossPoolOrder(poolTables).map((entrantId, i) => ({ entrantId, rank: i + 1 }));
   events.push({ type: "stage_completed", stageId: stage.id, finalRanks });
 
   const overall = single ? (poolTables[0] as PoolTable).rows : undefined;
@@ -423,35 +444,93 @@ function crossPoolOrder(pools: readonly PoolTable[]): EntrantId[] {
 
 export interface CompletedBracketStage {
   events: DivisionEvent[];
-  finalRanks: EntrantId[];
+  finalRanks: FinalPlace[];
 }
 
 // Completing a bracket stage is refused, never ranked provisionally, until `isBracketStageComplete` holds (X-CH-7, ruling
-// 274, RB4-C7): STAGE_NOT_READY with `reason: "no_final"` when no fixture is the final (checked first, since an empty list
-// owes no fixture and would otherwise pass), else `reason: "fixtures_undecided"` naming every fixture still owed.
+// 274, RB4-C7): STAGE_NOT_READY with `reason: "no_final"` when no fixture is the final, else `reason:
+// "fixtures_undecided"` naming every fixture still owed. Its ranks then pass the strict check (X-FR-1, B3-1).
 export function completeBracketStage(
   stage: BracketStage,
   fixtures: readonly BracketFixture[],
 ): CompletedBracketStage {
-  if (!fixtures.some((fixture) => fixture.isFinal === true)) {
-    throw new EngineError("STAGE_NOT_READY", `bracket stage "${stage.id}" has no final to complete it`, {
-      stageId: stage.id,
-      reason: "no_final",
-    });
-  }
-  const undecided = undecidedBracketFixtures(fixtures);
-  if (undecided.length > 0) {
-    throw new EngineError(
-      "STAGE_NOT_READY",
-      `bracket stage "${stage.id}" has ${undecided.length} fixture(s) not yet decided or settled: ${undecided.join(", ")}`,
-      { stageId: stage.id, reason: "fixtures_undecided", undecided },
-    );
+  const refusal = bracketCompletionRefusal(fixtures);
+  if (refusal !== null) {
+    const message =
+      refusal.reason === "no_final"
+        ? `bracket stage "${stage.id}" has no final to complete it`
+        : `bracket stage "${stage.id}" has ${refusal.undecided.length} fixture(s) not yet decided or settled: ${refusal.undecided.join(", ")}`;
+    throw new EngineError("STAGE_NOT_READY", message, { stageId: stage.id, ...refusal });
   }
   const finalRanks = bracketRanks(stage, fixtures);
+  assertCompletedBracketPlaces(stage, fixtures, finalRanks);
   return {
     events: [{ type: "stage_completed", stageId: stage.id, finalRanks }],
     finalRanks,
   };
+}
+
+/** A bracket ranking that breaks X-FR-1 is a wiring bug, not a refusal an organiser can act on (CONFIG_INVALID). */
+function placesInvalid(message: string, data: Record<string, unknown>): EngineError {
+  return new EngineError("CONFIG_INVALID", `bracket places: ${message}`, data);
+}
+
+/** W4 (X-FR-1, RB4-R1; controller ruling B3-1): the STRUCTURAL check every bracket ranking passes, provisional or final —
+ *  each declared entrant exactly once (none missing, none repeated, nobody undeclared), every rank a positive integer, and
+ *  ranks never decreasing down the list. It names no shared place: a mid-bracket read is provisional and never refused for
+ *  its shape (Review Focus 5); `assertCompletedBracketPlaces` holds a completed stage to the declared shapes. */
+export function assertBracketPlaces(entrants: readonly EntrantId[], places: readonly FinalPlace[]): void {
+  const declared = new Set(entrants);
+  const seen = new Set<EntrantId>();
+  let previous = 0;
+  places.forEach((place, index) => {
+    const at = { entrantId: place.entrantId, rank: place.rank, index };
+    if (!declared.has(place.entrantId)) {
+      throw placesInvalid(`"${place.entrantId}" is ranked but is not an entrant of the stage`, { reason: "undeclared_entrant", ...at });
+    }
+    if (seen.has(place.entrantId)) {
+      throw placesInvalid(`"${place.entrantId}" is ranked twice`, { reason: "duplicate_entrant", ...at });
+    }
+    seen.add(place.entrantId);
+    if (!Number.isInteger(place.rank) || place.rank < 1) {
+      throw placesInvalid(`"${place.entrantId}" has rank ${place.rank}, not a positive integer`, { reason: "rank_not_positive_integer", ...at });
+    }
+    if (place.rank < previous) {
+      throw placesInvalid(`rank ${place.rank} follows rank ${previous}`, { reason: "rank_order", ...at });
+    }
+    previous = place.rank;
+  });
+  const missing = entrants.filter((id) => !seen.has(id));
+  if (missing.length > 0) {
+    throw placesInvalid(`${missing.length} entrant(s) of the stage are not ranked: ${missing.join(", ")}`, { reason: "missing_entrant", missing });
+  }
+}
+
+/** W4 (X-FR-1, RB4-R1; controller ruling B3-1): the STRICT check a completed bracket's ranks pass, after the structural
+ *  one: standard competition ranking, with a rank shared only where the stage's own fixtures declare it. Never more than
+ *  two at one rank, and a shared rank is always one of `BRACKET_SHARED_RANKS`. No stage declares a shared place here yet,
+ *  so a completed stage ranks strictly, 1 … n. Each refusal names its reason (CONFIG_INVALID). */
+export function assertCompletedBracketPlaces(stage: BracketStage, _fixtures: readonly BracketFixture[], places: readonly FinalPlace[]): void {
+  assertBracketPlaces(stage.entrants, places);
+  let before = 0;
+  while (before < places.length) {
+    const rank = (places[before] as FinalPlace).rank;
+    const holders = places.filter((place) => place.rank === rank).map((place) => place.entrantId);
+    const at = { stageId: stage.id, rank, holders };
+    if (holders.length > 2) {
+      throw placesInvalid(`${holders.length} entrants share rank ${rank}; at most two may`, { reason: "more_than_two", ...at });
+    }
+    if (holders.length === 2 && !BRACKET_SHARED_RANKS.has(rank)) {
+      throw placesInvalid(`rank ${rank} is shared; only ${[...BRACKET_SHARED_RANKS].join(", ")} ever are`, { reason: "not_a_shared_rank", ...at });
+    }
+    if (holders.length === 2) {
+      throw placesInvalid(`rank ${rank} is shared, which stage "${stage.id}" does not declare`, { reason: "undeclared_shared_place", ...at });
+    }
+    if (rank !== before + 1) {
+      throw placesInvalid(`rank ${rank} after ${before} entrant(s) breaks competition ranking (expected ${before + 1})`, { reason: "not_competition_ranking", ...at });
+    }
+    before += holders.length;
+  }
 }
 
 // The entrants a `walkedOver` fixture puts out. Assumptions are guards: a double walkover decided nobody, so a row that
@@ -473,15 +552,30 @@ function walkedOverSides(fixture: BracketFixture): EntrantId[] {
   return [fixture.loser];
 }
 
+// The stage's declared entrants, refused when one repeats (X-FR-1: each entrant exactly once).
+function declaredEntrants(stage: BracketStage): Set<EntrantId> {
+  const declared = new Set<EntrantId>();
+  for (const id of stage.entrants) {
+    if (declared.has(id)) {
+      throw placesInvalid(`stage "${stage.id}" declares "${id}" twice`, { reason: "duplicate_declared_entrant", stageId: stage.id, entrantId: id });
+    }
+    declared.add(id);
+  }
+  return declared;
+}
+
 // Rank entrants by bracket position (spec 05 §1 "ranking" column). Champion =
 // winner of the last `isFinal` game; runner-up = its loser; everyone else is
 // ordered by how late they were eliminated (later round = better), then by
 // seed. An optional 3rd-place playoff fixes ranks 3 and 4 from its result.
+// W4 (X-FR-1): every DECLARED entrant is ranked, one in no fixture last; a fixture naming anyone else reaches the
+// structural guard as a place and is refused there. Mid-bracket the ranks are provisional (B3-3): an entrant still in
+// play ranks above every entrant out.
 export function bracketRanks(
   stage: BracketStage,
   fixtures: readonly BracketFixture[],
-): EntrantId[] {
-  const entrants = new Set<EntrantId>();
+): FinalPlace[] {
+  const entrants = declaredEntrants(stage);
   for (const fixture of fixtures) {
     for (const id of [fixture.home, fixture.away, fixture.winner, fixture.loser]) {
       if (id !== undefined) entrants.add(id);
@@ -518,18 +612,35 @@ export function bracketRanks(
       if (prev === undefined || fixture.round < prev) outAt.set(id, fixture.round);
     }
   }
+  // One that never lost and was never walked over ranks below every round: its line voided, or in no fixture at all.
   const eliminatedIn = (id: EntrantId): number => outAt.get(id) ?? lastLossRound.get(id) ?? -1;
 
+  // B3-3 (provisional reads): an entrant still in play — seated in a fixture not yet settled, and not put out by a
+  // walkover — ranks above every entrant out, fewest losses first (a winners'-bracket side above a losers'-bracket one),
+  // then seed, then id. Nobody is in play once every fixture is settled, so a completed stage never reads this.
+  const losses = new Map<EntrantId, number>();
+  const inPlay = new Set<EntrantId>();
+  for (const fixture of fixtures) {
+    if (SETTLED.has(fixture.status)) {
+      if (fixture.loser !== undefined) losses.set(fixture.loser, (losses.get(fixture.loser) ?? 0) + 1);
+      continue;
+    }
+    for (const id of [fixture.home, fixture.away]) if (id !== undefined && !outAt.has(id)) inPlay.add(id);
+  }
+
   const seedOf = (id: EntrantId): number => stage.seeds?.get(id) ?? Number.MAX_SAFE_INTEGER;
+  const bySeedThenId = (a: EntrantId, b: EntrantId): number => {
+    const sa = seedOf(a);
+    const sb = seedOf(b);
+    if (sa !== sb) return sa - sb;
+    return a < b ? -1 : a > b ? 1 : 0;
+  };
   const rankRest = (ids: EntrantId[]): EntrantId[] =>
     ids.sort((a, b) => {
       const ra = eliminatedIn(a);
       const rb = eliminatedIn(b);
       if (ra !== rb) return rb - ra; // eliminated later ⇒ ranked higher
-      const sa = seedOf(a);
-      const sb = seedOf(b);
-      if (sa !== sb) return sa - sb;
-      return a < b ? -1 : a > b ? 1 : 0;
+      return bySeedThenId(a, b);
     });
 
   const order: EntrantId[] = [];
@@ -545,6 +656,10 @@ export function bracketRanks(
     place(grandFinal.loser);
   }
 
+  const stillInPlay = [...inPlay].filter((id) => !placed.has(id));
+  stillInPlay.sort((a, b) => (losses.get(a) ?? 0) - (losses.get(b) ?? 0) || bySeedThenId(a, b));
+  for (const id of stillInPlay) place(id);
+
   // 3rd-place playoff overrides the semifinal-loser ordering for ranks 3–4.
   const thirdPlace = fixtures.find(
     (fixture) => fixture.thirdPlace === true && SETTLED.has(fixture.status),
@@ -555,7 +670,10 @@ export function bracketRanks(
   }
 
   for (const id of rankRest([...entrants].filter((id) => !placed.has(id)))) place(id);
-  return order;
+  // Ranks are strict: rank = position.
+  const places = order.map((entrantId, i) => ({ entrantId, rank: i + 1 }));
+  assertBracketPlaces(stage.entrants, places);
+  return places;
 }
 
 // ---------------------------------------------------------------------------

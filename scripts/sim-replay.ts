@@ -118,7 +118,7 @@ function replayToken(tokenArg: string): never {
       );
     }
     console.log(
-      `  champion=${sim.champion} finalRanks=[${sim.finalRanks.slice(0, 8).join(", ")}${sim.finalRanks.length > 8 ? ", …" : ""}]`,
+      `  champion=${sim.champion} finalRanks=[${sim.finalRanks.slice(0, 8).map((place) => `${place.rank}:${place.entrantId}`).join(", ")}${sim.finalRanks.length > 8 ? ", …" : ""}]`,
     );
 
     assertDivisionInvariants(sim, module, opts.cfg);

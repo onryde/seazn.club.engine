@@ -14,6 +14,7 @@ import {
   type BracketStage,
   type CompletedTableStage,
   type DivisionEvent,
+  type FinalPlace,
   type TableFixture,
   type TableStage,
 } from "../competition/stage.ts";
@@ -137,7 +138,7 @@ export interface SimStageRecord {
   tables?: SourceTables;
   cascade?: TiebreakerKey[]; // table stages: the ranking cascade applied
   legs?: number; // round robins: pairings repeat exactly this often (Jul3/08 §2)
-  finalRanks: EntrantId[];
+  finalRanks: FinalPlace[];
   qualification?: { spec: ProgressionSpec; seeds: EntrantId[] }; // feed to the next stage
 }
 
@@ -158,7 +159,7 @@ export interface SimulationResult {
   stages: SimStageRecord[];
   divisionEvents: DivisionEvent[];
   champion: EntrantId;
-  finalRanks: EntrantId[];
+  finalRanks: FinalPlace[];
   injection?: SimInjectionRecord;
 }
 
@@ -546,7 +547,7 @@ function toRecord(
 interface PlayedTableStage {
   record: SimStageRecord;
   tables: SourceTables;
-  finalRanks: EntrantId[];
+  finalRanks: FinalPlace[];
 }
 
 function playRoundRobinStage(
@@ -727,13 +728,14 @@ function playSwissStage(
 
 interface PlayedBracketStage {
   record: SimStageRecord;
-  finalRanks: EntrantId[];
+  finalRanks: FinalPlace[];
 }
 
 function playBracketStage(
   ctx: SimContext,
   stageId: string,
   kind: Extract<StageKind, "knockout" | "double_elim" | "stepladder">,
+  entrants: readonly EntrantId[], // the stage's field, as handed to its generator (X-FR-1: the stage declares it)
   generated: readonly BracketFixtureGen[],
   seeds: ReadonlyMap<EntrantId, number>,
 ): PlayedBracketStage {
@@ -826,25 +828,25 @@ function playBracketStage(
     }
   }
 
-  const stage: BracketStage = { id: stageId, kind, seeds };
+  const stage: BracketStage = { id: stageId, kind, entrants, seeds };
   if (!isBracketStageComplete(stage, bracketFixtures)) {
     throw new SimInvariantError(`bracket stage "${stageId}" not complete after playing every fixture`);
   }
   const completed = completeBracketStage(stage, bracketFixtures);
   ctx.divisionEvents.push(...completed.events);
 
-  const entrants = new Set<EntrantId>();
+  const seated = new Set<EntrantId>();
   for (const fixture of bracketFixtures) {
-    if (fixture.home !== undefined) entrants.add(fixture.home);
-    if (fixture.away !== undefined) entrants.add(fixture.away);
-    if (fixture.winner !== undefined) entrants.add(fixture.winner);
+    if (fixture.home !== undefined) seated.add(fixture.home);
+    if (fixture.away !== undefined) seated.add(fixture.away);
+    if (fixture.winner !== undefined) seated.add(fixture.winner);
   }
 
   return {
     record: {
       id: stageId,
       kind,
-      entrants: [...entrants],
+      entrants: [...seated],
       fixtures: records,
       finalRanks: completed.finalRanks,
     },
@@ -927,7 +929,7 @@ export function simulateDivision(opts: SimOptions): SimulationResult {
   };
 
   const stages: SimStageRecord[] = [];
-  let finalRanks: EntrantId[] = [];
+  let finalRanks: FinalPlace[] = [];
 
   switch (opts.format) {
     case "league": {
@@ -988,6 +990,7 @@ export function simulateDivision(opts: SimOptions): SimulationResult {
         ctx,
         "ko",
         "knockout",
+        qualified,
         generateSingleElim({ entrants: qualified, seeds: koSeeds }).fixtures,
         koSeeds,
       );
@@ -1062,6 +1065,7 @@ export function simulateDivision(opts: SimOptions): SimulationResult {
         ctx,
         "ko",
         "knockout",
+        qualified,
         generateSingleElim({ entrants: qualified, seeds: koSeeds }).fixtures,
         koSeeds,
       );
@@ -1084,6 +1088,7 @@ export function simulateDivision(opts: SimOptions): SimulationResult {
         ctx,
         "ko",
         "knockout",
+        qualified,
         generateSingleElim({ entrants: qualified, seeds: koSeeds }).fixtures,
         koSeeds,
       );
@@ -1098,6 +1103,7 @@ export function simulateDivision(opts: SimOptions): SimulationResult {
         ctx,
         "de",
         "double_elim",
+        entrants,
         generateDoubleElim({ entrants, seeds, bracketReset }).fixtures,
         seeds,
       );
@@ -1111,6 +1117,7 @@ export function simulateDivision(opts: SimOptions): SimulationResult {
         ctx,
         "sl",
         "stepladder",
+        entrants,
         generateStepladder({ entrants, seeds }).fixtures,
         seeds,
       );
@@ -1120,9 +1127,10 @@ export function simulateDivision(opts: SimOptions): SimulationResult {
     }
   }
 
-  const champion = finalRanks[0];
+  // W4 (X-FR-1): the champion is the entrant ranked 1st, not the first place listed.
+  const champion = finalRanks.find((place) => place.rank === 1)?.entrantId;
   if (champion === undefined) {
-    throw new SimInvariantError("champion undefined: empty final ranks", { finalRanks });
+    throw new SimInvariantError("champion undefined: nobody ranked 1st", { finalRanks });
   }
 
   return {
@@ -1172,10 +1180,11 @@ export function assertDivisionInvariants(
 
   // Champion well-defined.
   if (!entrantSet.has(sim.champion)) fail(sim, `champion "${sim.champion}" is not an entrant`);
-  if (new Set(sim.finalRanks).size !== sim.finalRanks.length) {
+  const ranked = sim.finalRanks.map((place) => place.entrantId);
+  if (new Set(ranked).size !== ranked.length) {
     fail(sim, "final ranks contain duplicates", sim.finalRanks);
   }
-  for (const id of sim.finalRanks) {
+  for (const id of ranked) {
     if (!entrantSet.has(id)) fail(sim, `final rank lists non-entrant "${id}"`);
   }
 
@@ -1325,7 +1334,7 @@ export function assertDivisionInvariants(
           losses.set(fixture.loser, (losses.get(fixture.loser) ?? 0) + 1);
         }
       }
-      const isChampionStage = stage.finalRanks[0] === sim.champion;
+      const isChampionStage = stage.finalRanks.some((place) => place.rank === 1 && place.entrantId === sim.champion);
       if (isChampionStage) {
         const championLosses = losses.get(sim.champion) ?? 0;
         const cap = stage.kind === "double_elim" ? 2 : 0;

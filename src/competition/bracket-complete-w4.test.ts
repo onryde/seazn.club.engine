@@ -23,7 +23,8 @@ import {
   type BracketStage,
 } from "./stage.ts";
 
-const ko: BracketStage = { id: "ko", kind: "knockout" }; // T5 adds entrants
+const ko: BracketStage = { id: "ko", kind: "knockout", entrants: ["A", "B", "C", "D"] };
+const koS: BracketStage = { ...ko, entrants: ["S1", "S2", "S3", "S4"] };
 const sf = (id: string, h: string, a: string, w: string): BracketFixture =>
   ({ id, round: 0, status: "decided", home: h, away: a, winner: w, loser: w === h ? a : h });
 
@@ -96,7 +97,7 @@ describe("X-CH-7 a bracket stage completes only when every fixture is settled (R
     ];
     let kinds = 0;
     for (const kind of BRACKET_STAGE_KINDS) {
-      const stage: BracketStage = { id: `s-${kind}`, kind: kind as BracketStage["kind"] };
+      const stage: BracketStage = { id: `s-${kind}`, kind: kind as BracketStage["kind"], entrants: ["A", "B", "C", "D"] };
       expect(isBracketStageComplete(stage, f), kind).toBe(false);
       expectNotReady(refusalOf(() => completeBracketStage(stage, f)), { stageId: stage.id, reason: "fixtures_undecided", undecided: ["sf2"] });
       kinds++;
@@ -109,7 +110,7 @@ describe("X-CH-7 a bracket stage completes only when every fixture is settled (R
     // RB4-C7 "decided or settled": void and walkover are settled (spec 02 §6). The 4-entrant double-elimination shape
     // `generateDoubleElim({ bracketReset: true })` writes: S3 withdrew before the losers' first game (a walkover, the
     // loser forfeited), and the WB champion S1 won the grand final, so the reset was voided.
-    const de: BracketStage = { id: "de", kind: "double_elim" };
+    const de: BracketStage = { id: "de", kind: "double_elim", entrants: ["S1", "S2", "S3", "S4"] };
     const f: BracketFixture[] = [
       { ...sf("wb-r0-i0", "S1", "S4", "S1"), bracket: "WB" },
       { ...sf("wb-r0-i1", "S2", "S3", "S2"), bracket: "WB" },
@@ -159,16 +160,16 @@ describe("X-TP-4 a stage with a third-place play-off is not complete until it is
   it("X-TP-4 final decided, -3p scheduled → not complete; undecided ['se-3p']", () => {
     // RB4-T3: the semi-final losers still owe the play-off for 3rd and 4th. differential: today complete.
     const f = seBracket({ id: "se-3p", round: 1, thirdPlace: true, status: "scheduled", home: "S4", away: "S3" });
-    expect(isBracketStageComplete(ko, f)).toBe(false);
+    expect(isBracketStageComplete(koS, f)).toBe(false);
     expect(undecidedBracketFixtures(f)).toEqual(["se-3p"]);
-    expectNotReady(refusalOf(() => completeBracketStage(ko, f)), { stageId: "ko", reason: "fixtures_undecided", undecided: ["se-3p"] });
+    expectNotReady(refusalOf(() => completeBracketStage(koS, f)), { stageId: "ko", reason: "fixtures_undecided", undecided: ["se-3p"] });
   });
 
   it("X-TP-4 -3p walked over (one side withdrew) → complete", () => {
     // RB4-T3 "decided or settled": S3 withdrew before the play-off, which S4 wins by walkover (X-TP-7's one-side-out case).
     const f = seBracket({ id: "se-3p", round: 1, thirdPlace: true, status: "walkover", home: "S4", away: "S3", winner: "S4", loser: "S3", walkedOver: "loser" });
     expect(undecidedBracketFixtures(f)).toEqual([]);
-    expect(isBracketStageComplete(ko, f)).toBe(true);
-    expect(completeBracketStage(ko, f).events).toMatchObject([{ type: "stage_completed", stageId: "ko" }]);
+    expect(isBracketStageComplete(koS, f)).toBe(true);
+    expect(completeBracketStage(koS, f).events).toMatchObject([{ type: "stage_completed", stageId: "ko" }]);
   });
 });

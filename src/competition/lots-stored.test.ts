@@ -16,9 +16,12 @@ import { declaredCfgs } from "../testkit/declared-cfgs.ts";
 import { forEachSport } from "../testkit/for-each-sport.ts";
 import { lineupFromCatalog, makeEnvelope, tableRulesOf } from "../testkit/helpers.ts";
 import { carryDeltas } from "./points.ts";
-import { completeTableStage, type TableFixture, type TableStage } from "./stage.ts";
+import { completeTableStage, type FinalPlace, type TableFixture, type TableStage } from "./stage.ts";
 import { foldResults, type FixtureResult, type StandingsRow } from "./standings.ts";
 import { lotSeed, membersKeyOf, rankStandings, type RankingResult, type StoredLotsDraw } from "./tiebreakers.ts";
+
+/** W4 (X-FR-1): a table stage's places are its positions — the i-th id ranks i + 1. */
+const places = (...ids: string[]): FinalPlace[] => ids.map((entrantId, i) => ({ entrantId, rank: i + 1 }));
 
 /** A goals match on the 3/1/0 table, with the gf/ga/gd ledger `diff` and `for` read. */
 function goals(home: EntrantId, away: EntrantId, hg: number, ag: number): FixtureResult {
@@ -95,7 +98,7 @@ describe("W2d T5 — the empty table (X-TB-6, anti-goal 3)", () => {
     const stage: TableStage = { id: "s", kind: "league", entrants: ["X", "Y", "Z"], rules: tableRulesOf(["points", "lots"]), rngSeed: 1, seeds: new Map([["Z", 1]]) };
     const voided: TableFixture[] = [goals("X", "Y", 1, 1), goals("Y", "Z", 1, 1), goals("Z", "X", 1, 1)].map((result, i) => ({ id: `f${i}`, status: "void", result }));
     const completed = completeTableStage(stage, voided);
-    expect(completed.events).toEqual([{ type: "stage_completed", stageId: "s", finalRanks: ["Z", "X", "Y"] }]);
+    expect(completed.events).toEqual([{ type: "stage_completed", stageId: "s", finalRanks: places("Z", "X", "Y") }]);
     expect(completed.newLotsDraws).toEqual([]);
     expect(completed.tables.overall?.map((row) => row.level)).toEqual([true, true, true]);
 
@@ -137,10 +140,10 @@ describe("W2d T5 — the empty table (X-TB-6, anti-goal 3)", () => {
     expect(played.events).toEqual([
       { type: "rank_lock_required", stageId: "s", group: ["X", "Y", "Z"] },
       { type: "rank_lock", stageId: "s", method: "lots", group: ["X", "Y", "Z"], order, drawnAt: DRAWN_AT },
-      { type: "stage_completed", stageId: "s", finalRanks: order },
+      { type: "stage_completed", stageId: "s", finalRanks: places(...order) },
     ]);
     const allVoid = completeTableStage(stage, draws.map((result, i) => ({ id: `f${i}`, status: "void", result })));
-    expect(allVoid.events).toEqual([{ type: "stage_completed", stageId: "s", finalRanks: ["Z", "X", "Y"] }]);
+    expect(allVoid.events).toEqual([{ type: "stage_completed", stageId: "s", finalRanks: places("Z", "X", "Y") }]);
     expect(allVoid.newLotsDraws).toEqual([]);
     expect(allVoid.tables.overall?.map((row) => [row.level, row.tieBreak?.drawnAt])).toEqual([[true, undefined], [true, undefined], [true, undefined]]);
   });
@@ -154,7 +157,7 @@ describe("W2d T5 — the empty table (X-TB-6, anti-goal 3)", () => {
     const zero = carryDeltas(foldResults(["X", "Y", "Z"], []), "points");
     expect(zero).toHaveLength(3);
     const nothing = completeTableStage({ ...stage, openingDeltas: zero }, voidXY);
-    expect(nothing.events).toEqual([{ type: "stage_completed", stageId: "s", finalRanks: ["Z", "X", "Y"] }]);
+    expect(nothing.events).toEqual([{ type: "stage_completed", stageId: "s", finalRanks: places("Z", "X", "Y") }]);
     expect(nothing.newLotsDraws).toEqual([]);
     expect(nothing.tables.overall?.map((row) => row.level)).toEqual([true, true, true]);
 
@@ -319,7 +322,7 @@ describe("W2d T5 — the stored, seeded drawing of lots (X-TB-4, ruling 70)", ()
     const unstored = completeTableStage(stage, fixtures);
     expect(unstored.events).toEqual([
       { type: "rank_lock_required", stageId: "s", group: ["X", "Y", "Z"] },
-      { type: "stage_completed", stageId: "s", finalRanks: fresh.order },
+      { type: "stage_completed", stageId: "s", finalRanks: places(...fresh.order) },
     ]);
     expect(unstored.newLotsDraws).toStrictEqual([{ pool: "", membersKey: "X,Y,Z", members: ["X", "Y", "Z"], drawnOrder: fresh.order, seed: fresh.seed }]);
 
@@ -330,7 +333,7 @@ describe("W2d T5 — the stored, seeded drawing of lots (X-TB-4, ruling 70)", ()
     expect(withStore.events).toEqual([
       { type: "rank_lock_required", stageId: "s", group: ["X", "Y", "Z"] },
       { type: "rank_lock", stageId: "s", method: "lots", group: ["X", "Y", "Z"], order, drawnAt: DRAWN_AT },
-      { type: "stage_completed", stageId: "s", finalRanks: order },
+      { type: "stage_completed", stageId: "s", finalRanks: places(...order) },
     ]);
     expect(withStore.newLotsDraws).toEqual([]);
     expect(withStore.tables.overall?.map((row) => row.tieBreak?.drawnAt)).toEqual([DRAWN_AT, DRAWN_AT, DRAWN_AT]);

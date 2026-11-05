@@ -9,6 +9,7 @@ import { EngineError } from "../core/errors.ts";
 import type { EntrantId } from "../core/types.ts";
 import type { TiebreakerKey } from "../sport/module.ts";
 import { isHeadToHeadKey } from "./cascade-rules.ts";
+import type { FinalPlace } from "./stage.ts";
 import {
   foldResults,
   resultsAmong,
@@ -780,12 +781,34 @@ export function resolveProgression(
   return { qualifiers, ties: [...tieGroups.values()], newLotsDraws };
 }
 
-// L3/#414 — wraps any finish order as a single-pool PoolTable, unchanged
-// from qualification.ts.
-export function placementTable(finalRanks: readonly EntrantId[]): PoolTable {
+// W4 (X-FR-1): a finish order as places. An EntrantId list (a table stage's order, a pre-W4 caller) ranks by position,
+// i + 1; a FinalPlace list keeps its ranks, a shared place included. Assumptions are guards: a list mixing the two forms,
+// or places out of rank order, is a wiring bug (CONFIG_INVALID).
+function placesOf(finalRanks: readonly EntrantId[] | readonly FinalPlace[]): FinalPlace[] {
+  const items: readonly (EntrantId | FinalPlace)[] = finalRanks;
+  const ids = items.filter((item): item is EntrantId => typeof item === "string");
+  if (ids.length === items.length) return ids.map((entrantId, i) => ({ entrantId, rank: i + 1 }));
+  if (ids.length > 0) {
+    throw new EngineError("CONFIG_INVALID", "placementTable: a finish order mixes entrant ids and places", { reason: "mixed_places" });
+  }
+  const places = items.filter((item): item is FinalPlace => typeof item !== "string");
+  places.forEach((place, i) => {
+    const previous = places[i - 1];
+    if (previous !== undefined && place.rank < previous.rank) {
+      throw new EngineError("CONFIG_INVALID", `placementTable: "${place.entrantId}" (rank ${place.rank}) follows rank ${previous.rank}`, {
+        reason: "places_out_of_order",
+        entrantId: place.entrantId,
+      });
+    }
+  });
+  return places.map(({ entrantId, rank }) => ({ entrantId, rank }));
+}
+
+// L3/#414 — wraps any finish order as a single-pool PoolTable (from qualification.ts); W4: by place, ties kept.
+export function placementTable(finalRanks: readonly EntrantId[] | readonly FinalPlace[]): PoolTable {
   return {
     pool: "",
-    rows: finalRanks.map((entrantId, i) => ({
+    rows: placesOf(finalRanks).map(({ entrantId, rank }) => ({
       entrantId,
       played: 0,
       won: 0,
@@ -793,7 +816,7 @@ export function placementTable(finalRanks: readonly EntrantId[]): PoolTable {
       lost: 0,
       points: 0,
       metrics: {},
-      rank: i + 1,
+      rank,
     })),
   };
 }

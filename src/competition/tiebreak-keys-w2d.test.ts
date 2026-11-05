@@ -19,9 +19,12 @@ import { hockey } from "../sports/hockey/hockey.ts";
 import { declaredCfgs } from "../testkit/declared-cfgs.ts";
 import { forEachSport } from "../testkit/for-each-sport.ts";
 import { lineupFromCatalog, makeEnvelope, tableRulesOf } from "../testkit/helpers.ts";
-import { completeTableStage, type TableFixture } from "./stage.ts";
+import { completeTableStage, type FinalPlace, type TableFixture } from "./stage.ts";
 import { foldResults, type FixtureResult, type StandingsRow } from "./standings.ts";
 import { buildSwissLedger, directEncounter, rankStandings, type RankContext, type RankingResult, type SwissGame, type SwissTable } from "./tiebreakers.ts";
+
+/** W4 (X-FR-1): a table stage's places are its positions — the i-th id ranks i + 1. */
+const places = (...ids: string[]): FinalPlace[] => ids.map((entrantId, i) => ({ entrantId, rank: i + 1 }));
 
 // ---------------------------------------------------------------------------
 // Builders
@@ -616,9 +619,9 @@ describe("W2d T4 — the new tie-break keys (spec §5.6)", () => {
         { id: "s", kind: "league", entrants: ["A", "B", "C", "D"], rules: tableRulesOf(IIHF), rngSeed: 1 },
         games.map((result, i) => ({ id: `f${i}`, status: i === voided ? ("void" as const) : ("decided" as const), result })),
       ).events.find((e) => e.type === "stage_completed");
-    expect(stageAt(null)).toEqual({ type: "stage_completed", stageId: "s", finalRanks: ["A", "B", "C", "D"] });
-    expect(stageAt(4)).toEqual({ type: "stage_completed", stageId: "s", finalRanks: ["C", "A", "B", "D"] });
-    expect(stageAt(null)).toEqual({ type: "stage_completed", stageId: "s", finalRanks: ["A", "B", "C", "D"] });
+    expect(stageAt(null)).toEqual({ type: "stage_completed", stageId: "s", finalRanks: places("A", "B", "C", "D") });
+    expect(stageAt(4)).toEqual({ type: "stage_completed", stageId: "s", finalRanks: places("C", "A", "B", "D") });
+    expect(stageAt(null)).toEqual({ type: "stage_completed", stageId: "s", finalRanks: places("A", "B", "C", "D") });
 
     // A second rank call is identical, and neither call writes to its input (frozen: a write would throw).
     const frozen = foldResults(["A", "B", "C", "D"], games).map((r) => Object.freeze({ ...r, metrics: Object.freeze({ ...r.metrics }) }));

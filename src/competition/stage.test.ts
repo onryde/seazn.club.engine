@@ -15,9 +15,13 @@ import {
   withdrawTableEntrant,
   type BracketFixture,
   type BracketStage,
+  type FinalPlace,
   type TableFixture,
   type TableStage,
 } from "./stage.ts";
+
+/** W4 (X-FR-1): a strict order as places — the i-th id ranks i + 1. */
+const places = (...ids: string[]): FinalPlace[] => ids.map((entrantId, i) => ({ entrantId, rank: i + 1 }));
 
 function fb(home: string, away: string, hg: number, ag: number): FixtureResult {
   const draw = hg === ag;
@@ -114,7 +118,7 @@ describe("completion predicates (spec 05 §1)", () => {
   });
 
   it("a bracket completes when its final is decided, and not while another fixture is still owed", () => {
-    const stage: BracketStage = { id: "ko", kind: "knockout" };
+    const stage: BracketStage = { id: "ko", kind: "knockout", entrants: ["A", "B", "C", "D"] };
     const semis: BracketFixture[] = [
       { id: "sf1", round: 0, status: "decided", home: "A", away: "B", winner: "A", loser: "B" },
       { id: "fin", round: 1, isFinal: true, status: "scheduled", home: "A", away: "C" },
@@ -147,7 +151,7 @@ describe("completeTableStage — division events (spec 05 §3/§5)", () => {
     expect(tables.pools.map((p) => p.pool)).toEqual(["A", "B"]);
     // rank-1s first (A1, B1), then rank-2s (A2, B2).
     const completed = events.find((e) => e.type === "stage_completed");
-    expect(completed).toEqual({ type: "stage_completed", stageId: "grp", finalRanks: ["A1", "B1", "A2", "B2"] });
+    expect(completed).toEqual({ type: "stage_completed", stageId: "grp", finalRanks: places("A1", "B1", "A2", "B2") });
   });
 
   it("emits rank_lock_required + rank_lock when the cascade exhausts to lots", () => {
@@ -173,7 +177,7 @@ describe("completeTableStage — division events (spec 05 §3/§5)", () => {
 });
 
 describe("bracketRanks (spec 05 §1)", () => {
-  const stage: BracketStage = { id: "ko", kind: "knockout", seeds: new Map([["S1", 1], ["S2", 2], ["S3", 3], ["S4", 4]]) };
+  const stage: BracketStage = { id: "ko", kind: "knockout", entrants: ["S1", "S2", "S3", "S4"], seeds: new Map([["S1", 1], ["S2", 2], ["S3", 3], ["S4", 4]]) };
   const bracket: BracketFixture[] = [
     { id: "sf1", round: 0, status: "decided", home: "S1", away: "S4", winner: "S1", loser: "S4" },
     { id: "sf2", round: 0, status: "decided", home: "S2", away: "S3", winner: "S2", loser: "S3" },
@@ -181,7 +185,7 @@ describe("bracketRanks (spec 05 §1)", () => {
   ];
 
   it("ranks champion, runner-up, then losers by elimination round & seed", () => {
-    expect(bracketRanks(stage, bracket)).toEqual(["S1", "S2", "S3", "S4"]);
+    expect(bracketRanks(stage, bracket)).toEqual(places("S1", "S2", "S3", "S4"));
   });
 
   it("a 3rd-place playoff fixes ranks 3 and 4 from its result", () => {
@@ -189,12 +193,12 @@ describe("bracketRanks (spec 05 §1)", () => {
       ...bracket,
       { id: "3p", round: 1, thirdPlace: true, status: "decided", home: "S3", away: "S4", winner: "S4", loser: "S3" },
     ];
-    expect(bracketRanks(stage, withThird)).toEqual(["S1", "S2", "S4", "S3"]);
+    expect(bracketRanks(stage, withThird)).toEqual(places("S1", "S2", "S4", "S3"));
   });
 
   it("completeBracketStage emits stage_completed with those ranks", () => {
     const { events, finalRanks } = completeBracketStage(stage, bracket);
-    expect(finalRanks).toEqual(["S1", "S2", "S3", "S4"]);
+    expect(finalRanks).toEqual(places("S1", "S2", "S3", "S4"));
     expect(events).toEqual([{ type: "stage_completed", stageId: "ko", finalRanks }]);
   });
 });
@@ -211,6 +215,7 @@ describe("bracketRanks — page_playoff (L3/#414, spec 2026-07-19)", () => {
   const stage: BracketStage = {
     id: "pp",
     kind: "page_playoff",
+    entrants: ["S1", "S2", "S3", "S4"],
     seeds: new Map([["S1", 1], ["S2", 2], ["S3", 3], ["S4", 4]]),
   };
   // Q1 (major semi) S1 beats S2; Eliminator (minor semi) S3 beats S4; Q2
@@ -237,7 +242,7 @@ describe("bracketRanks — page_playoff (L3/#414, spec 2026-07-19)", () => {
     // lost Q2 (round 1) — later elimination ⇒ ranked above S4, who never got
     // a 2nd life and is out after round 0. No thirdPlace fixture is involved:
     // this is the lastLossRound fallback alone.
-    expect(bracketRanks(stage, bracket)).toEqual(["S1", "S2", "S3", "S4"]);
+    expect(bracketRanks(stage, bracket)).toEqual(places("S1", "S2", "S3", "S4"));
   });
 
   it("page playoff completes when all four fixtures are settled", () => {
@@ -252,7 +257,7 @@ describe("bracketRanks — page_playoff (L3/#414, spec 2026-07-19)", () => {
 
   it("completeBracketStage emits stage_completed with the page_playoff ranks", () => {
     const { events, finalRanks } = completeBracketStage(stage, bracket);
-    expect(finalRanks).toEqual(["S1", "S2", "S3", "S4"]);
+    expect(finalRanks).toEqual(places("S1", "S2", "S3", "S4"));
     expect(events).toEqual([{ type: "stage_completed", stageId: "pp", finalRanks }]);
   });
 });
@@ -329,7 +334,7 @@ describe("withdrawal policies (spec 05 §5)", () => {
   });
 
   it("bracket_walkover advances the opponent in each pending fixture", () => {
-    const koStage: BracketStage = { id: "ko", kind: "knockout" };
+    const koStage: BracketStage = { id: "ko", kind: "knockout", entrants: ["W", "P", "Q"] };
     const fixtures: BracketFixture[] = [
       { id: "qf", round: 0, status: "decided", home: "W", away: "P", winner: "W", loser: "P" },
       { id: "sf", round: 1, status: "scheduled", home: "W", away: "Q" },
