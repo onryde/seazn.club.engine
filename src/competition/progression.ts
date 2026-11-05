@@ -7,6 +7,7 @@
 // one resolver. Pure — no DB, no tenant, idempotent.
 import { EngineError } from "../core/errors.ts";
 import type { EntrantId } from "../core/types.ts";
+import type { BracketSlotRef } from "../scheduling/bracket.ts";
 import type { TiebreakerKey } from "../sport/module.ts";
 import { isHeadToHeadKey } from "./cascade-rules.ts";
 import { firstLossField, type FirstLossField } from "./first-loss.ts";
@@ -494,6 +495,10 @@ export interface BracketFixtureRow {
   walkedOver?: "loser" | "both";
   bracket?: "WB" | "LB" | "GF";
   thirdPlace?: boolean;
+  /** `BracketFixture.homeFrom` / `awayFrom`: the feed of each seat. The app must pass it on dead-seat rows (final review
+   *  I2): `firstLossField` reads a withdrawn entrant's empty seat through it (`resolveDeadSeats`, stage.ts). */
+  homeFrom?: BracketSlotRef;
+  awayFrom?: BracketSlotRef;
 }
 export interface SourceTables {
   pools: readonly PoolTable[];

@@ -11,7 +11,7 @@
 import { EngineError } from "../core/errors.ts";
 import type { EntrantId } from "../core/types.ts";
 import type { BracketFixtureRow } from "./progression.ts";
-import { SETTLED_FIXTURE_STATUSES, type FixtureStatus } from "./stage.ts";
+import { resolveDeadSeats, SETTLED_FIXTURE_STATUSES, type FixtureStatus } from "./stage.ts";
 
 /** One entrant's first loss: the fixture it came in and that fixture's (engine) round. */
 export interface FirstLoss {
@@ -71,7 +71,9 @@ const forfeitedBy = (row: FieldRow, entrant: EntrantId): boolean =>
   (row.walkedOver === "loser" && row.loser === entrant) || row.walkedOver === "both";
 
 export function firstLossField(rows: readonly BracketFixtureRow[]): FirstLossField {
-  const all = fieldRows(rows);
+  // A dead seat is read through its feed (final review I2, `resolveDeadSeats`): a bye holder or a round-0 walkover winner
+  // who withdrew before their round-1 opponent was known sits in that fixture, and the walkover over it is their forfeit.
+  const all = resolveDeadSeats(fieldRows(rows));
   const place = new Map(all.map((row, i) => [row.id, i]));
   const opening = all.filter((row) => row.round === 0);
   // Rows but no round 0 is a draw numbered some other way (the app's 1-based round_no): refused by name, never read as a

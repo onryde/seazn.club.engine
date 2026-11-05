@@ -678,24 +678,27 @@ describe("X-CH-1 the title: champion, joint winners, vacant (Task 7, Q4; RB4-C1,
   });
 
   it("X-CH-1 jointWinners on a semi, with a winner, or on a scheduled final throws", () => {
-    // Assumption → guard (wiring bugs, plain Error; B3-4: one case each). The final row every case starts from is valid.
+    // Assumption → guard (wiring bugs, the house CONFIG_INVALID with a named reason — final review F-m; B3-4: one case
+    // each). The final row every case starts from is valid.
     const ok: BracketFixture = { id: "f", round: 1, isFinal: true, status: "decided", home: "E1", away: "E2", jointWinners: true };
     expect(bracketTitle([ok])).toEqual({ kind: "joint", winners: ["E1", "E2"] });
     const { away: _away, ...noAway } = ok;
     const { home: _home, ...noHome } = ok;
-    const cases: [string, BracketFixture, RegExp][] = [
-      ["on a semi-final", { ...ok, isFinal: false }, /not the final/],
-      ["with no away side", noAway, /both sides seated/],
-      ["with no home side", noHome, /both sides seated/],
-      ["with a winner", { ...ok, winner: "E1" }, /winner or a loser/],
-      ["with a loser", { ...ok, loser: "E2" }, /winner or a loser/],
-      ["walked over", { ...ok, status: "walkover", walkedOver: "both" }, /walkedOver/],
-      ["on a scheduled final", { ...ok, status: "scheduled" }, /decided/],
+    const cases: [string, BracketFixture, RegExp, string][] = [
+      ["on a semi-final", { ...ok, isFinal: false }, /not the final/, "joint_winners_not_final"],
+      ["with no away side", noAway, /both sides seated/, "joint_winners_side_missing"],
+      ["with no home side", noHome, /both sides seated/, "joint_winners_side_missing"],
+      ["with a winner", { ...ok, winner: "E1" }, /winner or a loser/, "joint_winners_result_named"],
+      ["with a loser", { ...ok, loser: "E2" }, /winner or a loser/, "joint_winners_result_named"],
+      ["walked over", { ...ok, status: "walkover", walkedOver: "both" }, /walkedOver/, "joint_winners_walked_over"],
+      ["on a scheduled final", { ...ok, status: "scheduled" }, /decided/, "joint_winners_not_decided"],
     ];
     let thrown = 0;
-    for (const [what, row, message] of cases) {
+    for (const [what, row, message, reason] of cases) {
       expect(() => bracketTitle([row]), what).toThrow(message);
-      expect(() => bracketTitle([row]), what).not.toThrow(EngineError);
+      const err = refusalOf(() => bracketTitle([row]));
+      expect(err.code, what).toBe("CONFIG_INVALID");
+      expect(err.data, what).toEqual({ reason, fixtureId: "f" });
       thrown++;
     }
     expect(thrown, "jointWinners guards reached").toBe(7);
@@ -1254,5 +1257,233 @@ describe("X-SP-5 a withdrawn page-playoff entrant gets no second life and ranks 
     }
     expect(rankOf(bracketRanks({ id: "pp", kind: "page_playoff", entrants: ids(4), seeds: seedsOf(ids(4)) }, rows))).toMatchObject({ E1: 4, E4: 3 });
     expect(checked, "other kinds checked").toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Final review I1 — a withdrawn entrant on a dead seat loses that walkover (controller ruling F-I1/I2; RB4-R3, RB4-C2)
+// ---------------------------------------------------------------------------------------------------------------------
+// An entrant withdraws while their next opponent is still to be decided. The app stamps their onward seat DEAD — empty —
+// and, once the other side arrives, awards that side the walkover (X-WD-3, ruling 116): the row names no loser. The
+// seat's FEED (`homeFrom` / `awayFrom`, the generator's wiring, which the app keeps on the row) still names them, and the
+// engine attributes the walkover loss to them. Rows: the real generator played out to seed (`playOutBracket`), its feeds
+// kept, and the withdrawal hand-built from the app's shape (controller ruling B5-1). Expected ranks come from RB4-C2,
+// RB4-R3, RB4-C3, B3-3 and the Rank places table, never from bracketRanks.
+
+/** The app's rows keep the generator's feeds: each row with its generated fixture's `homeFrom` / `awayFrom`. */
+function withFeeds(gen: GeneratedBracket, rows: readonly BracketFixture[]): BracketFixture[] {
+  const byId = new Map(gen.fixtures.map((f) => [f.id, f]));
+  return rows.map((row) => {
+    const g = byId.get(row.id);
+    return { ...row, ...(g?.homeFrom === undefined ? {} : { homeFrom: g.homeFrom }), ...(g?.awayFrom === undefined ? {} : { awayFrom: g.awayFrom }) };
+  });
+}
+/** The same rows with every feed dropped: a caller that does not pass them (the pre-fix input). */
+const withoutFeeds = (rows: readonly BracketFixture[]): BracketFixture[] =>
+  rows.map(({ homeFrom: _h, awayFrom: _a, ...row }) => row);
+/** The app's row once the side in `dead` left before the other side arrived: that seat empty (dead), the side that
+ *  arrived awarded the walkover with no loser (ruling 116), the feeds kept. */
+function walkedOverDeadSeat(row: BracketFixture, dead: "home" | "away"): BracketFixture {
+  const { home, away, winner: _w, loser: _l, walkedOver: _o, ...rest } = row;
+  const present = dead === "home" ? away : home;
+  if (present === undefined) throw new Error(`walkedOverDeadSeat: ${row.id} has no side present`);
+  return { ...rest, status: "walkover", ...(dead === "home" ? { away: present } : { home: present }), winner: present };
+}
+/** The row not yet played: its result gone, its seats kept only when asked, its feeds kept. */
+function notYetPlayed(row: BracketFixture, keepSeats: boolean): BracketFixture {
+  const { home, away, winner: _w, loser: _l, walkedOver: _o, ...rest } = row;
+  return { ...rest, status: "scheduled", ...(keepSeats && home !== undefined ? { home } : {}), ...(keepSeats && away !== undefined ? { away } : {}) };
+}
+const rowIn = (rows: readonly BracketFixture[], id: string): BracketFixture => {
+  const row = rows.find((r) => r.id === id);
+  if (row === undefined) throw new Error(`no row ${id}`);
+  return row;
+};
+const replacing = (rows: readonly BracketFixture[], swaps: Record<string, (row: BracketFixture) => BracketFixture>): BracketFixture[] =>
+  rows.map((row) => swaps[row.id]?.(row) ?? row);
+
+/** The 8-draw (seed fold 1v8, 5v4, 3v6, 7v2), every match to seed, feeds kept: semi-finals se-r1-i0 E1 > E4 and
+ *  se-r1-i1 E2 > E3, final se-r2-i0 E1 v E2 (home fed by se-r1-i0's winner). */
+function fed8(thirdPlace: boolean): { stage: BracketStage; rows: BracketFixture[] } {
+  const entrants = ids(8);
+  const seeds = seedsOf(entrants);
+  const gen = generateSingleElim({ entrants, seeds, ...(thirdPlace ? { thirdPlace } : {}) });
+  return { stage: { id: "ko", kind: "knockout", entrants, seeds }, rows: withFeeds(gen, playOutBracket(gen, { seeds })) };
+}
+/** I1a: E1 won semi-final A, then withdrew while semi-final B was still to play; E2 won it and walked over E1's dead
+ *  seat in the final. */
+const finalistWithdrew = (rows: readonly BracketFixture[]): BracketFixture[] =>
+  replacing(rows, { "se-r2-i0": (row) => walkedOverDeadSeat(row, "home") });
+
+describe("X-FR-3 a withdrawn entrant on a dead seat loses that walkover (final review I1; controller ruling F-I1; RB4-R3, RB4-C2)", () => {
+  it("X-FR-3 the fixture's premise: the final's home seat is fed by semi-final A's winner, the play-off's home seat by its loser", () => {
+    const { rows } = fed8(true);
+    expect(rowIn(rows, "se-r2-i0").homeFrom).toEqual({ fixtureId: "se-r1-i0", side: "winner" });
+    expect(rowIn(rows, "se-3p").homeFrom).toEqual({ fixtureId: "se-r1-i0", side: "loser" });
+    expect([rowIn(rows, "se-r1-i0").winner, rowIn(rows, "se-r1-i0").loser]).toEqual(["E1", "E4"]);
+    expect([rowIn(rows, "se-r1-i1").winner, rowIn(rows, "se-r1-i1").loser]).toEqual(["E2", "E3"]);
+  });
+
+  it("X-FR-3 I1a, no play-off: the semi-final A winner withdraws while semi-final B is unplayed — completion ranks E2 1, E1 2, E3 3, E4 3, then strict", () => {
+    // RB4-C2: one finalist out → the final is a walkover, the other finalist (E2) is champion. RB4-R3: the walkover loser
+    // (E1, whose dead seat the feed names) is out at the final — its loser, 2nd. Rank places, "n ≥ 4, Shared": the two
+    // semi-final losers E3, E4 share 3rd (seed order), then the quarter-final losers strict, by seed: 5, 6, 7, 8.
+    // differential: today completion throws CONFIG_INVALID not_competition_ranking (E1, never beaten, ranked last).
+    const { stage, rows } = fed8(false);
+    const done = finalistWithdrew(rows);
+    const want = ranked(["E2", 1], ["E1", 2], ["E3", 3], ["E4", 3], ["E5", 5], ["E6", 6], ["E7", 7], ["E8", 8]);
+    const completed = completeBracketStage(stage, done);
+    expect(completed.finalRanks).toEqual(want);
+    expect(completed.title).toEqual({ kind: "champion", champion: "E2" });
+    expect(bracketRanks(stage, done)).toEqual(want);
+    // A second call on the same rows gives the same answer, and leaves the rows as they were.
+    const frozen = done.map((row) => Object.freeze({ ...row }));
+    expect(completeBracketStage(stage, frozen).finalRanks).toEqual(want);
+    expect(frozen).toEqual(done);
+  });
+
+  it("X-FR-3 I1b, play-off on: E1 withdraws after semi-final A and E4, its loser, before the play-off — 1 E2, 2 E1, 3 E3, 4 E4, then strict", () => {
+    // Both left while semi-final B was still to play: E1's final seat and E4's play-off seat are dead. E2 then beat E3,
+    // walked over E1's seat in the final, and E3 walked over E4's in the play-off. RB4-C2 + RB4-R3: E2 champion, E1 the
+    // final's walkover loser, 2nd. Rank places, "n ≥ 4, Play-off decided": the play-off's winner E3 3rd, its walkover
+    // loser E4 4th (RB4-R3: out at the play-off). Then the quarter-final losers strict, 5 … 8.
+    // differential: today it completes SILENTLY with E1 9th (2nd read as vacant, E1 never beaten so ranked last).
+    const { stage, rows } = fed8(true);
+    const done = replacing(rows, {
+      "se-r2-i0": (row) => walkedOverDeadSeat(row, "home"),
+      "se-3p": (row) => walkedOverDeadSeat(row, "home"),
+    });
+    expect([rowIn(done, "se-3p").away, rowIn(done, "se-3p").winner]).toEqual(["E3", "E3"]);
+    const want = places("E2", "E1", "E3", "E4", "E5", "E6", "E7", "E8");
+    expect(completeBracketStage(stage, done).finalRanks).toEqual(want);
+    expect(bracketRanks(stage, done)).toEqual(want);
+  });
+
+  it("X-FR-3 I1c sequence: before semi-final B is played the read is provisional and obeys B3-3; then it completes as I1a", () => {
+    // E1 has withdrawn; semi-final B (E3 v E2) is still to play, so the final is scheduled with nobody seated: E1's seat
+    // is dead, the other is still to come. The walkover is not settled, so E1 is not out yet. B3-3: everyone not out
+    // ranks above everyone out — E1 (its seat named by the final's feed), E2, E3, fewest losses then seed; then E4 (semi-
+    // final loser), then the quarter-final losers by seed.
+    // differential: today E1, never beaten and in no unsettled seat, ranks LAST, below every entrant out (B3-3's trap).
+    const { stage, rows } = fed8(false);
+    const midway = replacing(rows, {
+      "se-r1-i1": (row) => notYetPlayed(row, true),
+      "se-r2-i0": (row) => notYetPlayed(row, false),
+    });
+    const provisional = places("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8");
+    expect(bracketRanks(stage, midway)).toEqual(provisional);
+    expect(bracketRanks(stage, midway)).toEqual(provisional); // a second call
+    expect(bracketTitle(midway)).toBeUndefined();
+    expect(refusalOf(() => completeBracketStage(stage, midway)).code).toBe("STAGE_NOT_READY");
+    // Semi-final B played (E2 > E3); E2 arrives and walks over E1's dead seat: the stage completes, as I1a.
+    const done = finalistWithdrew(rows);
+    expect(completeBracketStage(stage, done).finalRanks).toEqual(ranked(["E2", 1], ["E1", 2], ["E3", 3], ["E4", 3], ["E5", 5], ["E6", 6], ["E7", 7], ["E8", 8]));
+  });
+
+  it("X-FR-3 no-feed control: the same rows without the feed read as before — completion still refused, provisional reads never throw", () => {
+    // The pre-fix answer, unchanged when the caller passes no feed (final review I1): the final's loser is unknown, 2nd is
+    // read as vacant (B3-6), and E1 — never beaten — ranks below every round (eliminatedIn −1). E2 1, the semi-final
+    // losers E3, E4 at max(3, 1 + 1) = 3, then each max(previous rank + 1, placed + 1) (X-FR-2): E5 4, E6 5, E7 6, E8 7,
+    // E1 8 — which the strict check refuses (two at 3rd straight after a vacant 2nd).
+    const { stage, rows } = fed8(false);
+    const done = withoutFeeds(finalistWithdrew(rows));
+    expectInvalid(() => completeBracketStage(stage, done), "not_competition_ranking");
+    expect(bracketRanks(stage, done)).toEqual(ranked(["E2", 1], ["E3", 3], ["E4", 3], ["E5", 4], ["E6", 5], ["E7", 6], ["E8", 7], ["E1", 8]));
+    // Mid-way, with no feed, E1 is in no seat and ranks last — and the read does not throw.
+    const midway = withoutFeeds(replacing(rows, { "se-r1-i1": (row) => notYetPlayed(row, true), "se-r2-i0": (row) => notYetPlayed(row, false) }));
+    expect(bracketRanks(stage, midway).at(-1)).toEqual({ entrantId: "E1", rank: 8 });
+  });
+
+  it("X-FR-3 the strict check reads the attributed runner-up: 2nd vacant is refused over a final whose dead seat's feed names E1, accepted where nothing does", () => {
+    // B3-6: 2nd is vacant only when the final was a walkover over a dead seat with nobody to rank there. With the feed
+    // naming E1 the final HAS a loser, so a ranking that leaves 2nd vacant breaks competition ranking.
+    const { stage, rows } = fed8(false);
+    const done = finalistWithdrew(rows);
+    const vacantSecond = ranked(["E2", 1], ["E1", 3], ["E3", 4], ["E4", 5], ["E5", 6], ["E6", 7], ["E7", 8], ["E8", 9]);
+    expectInvalid(() => assertCompletedBracketPlaces(stage, done, vacantSecond), "not_competition_ranking");
+    // Its positive pair: the same rows with no feed have no runner-up, so the vacancy is declared and the shape passes.
+    expect(() => assertCompletedBracketPlaces(stage, withoutFeeds(done), vacantSecond)).not.toThrow();
+  });
+
+  it("X-FR-3 a dead seat whose feed names nobody attributes nothing: a semi-final double walkover keeps B3-6's 1, 3, 4 … with the feeds passed", () => {
+    // B3-6 (controller call), pinned above without feeds: E2 and E3 both walk over semi-final B, so the final's away seat
+    // is dead and its feed (se-r1-i1's winner) names nobody. E1 wins the final by walkover, 2nd stays vacant.
+    const entrants = ids(8);
+    const seeds = seedsOf(entrants);
+    const gen = generateSingleElim({ entrants, seeds });
+    const rows = withFeeds(gen, playOutBracket(gen, { seeds, doubleWalkover: new Set(["se-r1-i1"]) }));
+    expect(rowIn(rows, "se-r2-i0").awayFrom).toEqual({ fixtureId: "se-r1-i1", side: "winner" });
+    const want = ranked(["E1", 1], ["E4", 3], ["E2", 4], ["E3", 5], ["E5", 6], ["E6", 7], ["E7", 8], ["E8", 9]);
+    expect(completeBracketStage({ id: "ko", kind: "knockout", entrants, seeds }, rows).finalRanks).toEqual(want);
+  });
+
+  it("X-FR-3 both finalists withdrew before the final (a double walkover over two dead seats): the title is vacant, both rank 2nd", () => {
+    // RB4-C3: both finalists out → the title is vacant, both rank 2nd, nobody 1st. Rank places, "Vacant title": 2, 2,
+    // then the 3rd-place block (E3, E4 at 3), then 5 …. Each dead seat's feed names its semi-final's winner.
+    // differential: today the double walkover is missing both sides and throws, on a provisional read too.
+    const { stage, rows } = fed8(false);
+    const done = replacing(rows, {
+      "se-r2-i0": (row) => {
+        const { home: _h, away: _a, winner: _w, loser: _l, ...rest } = row;
+        return { ...rest, status: "walkover", walkedOver: "both" };
+      },
+    });
+    const want = ranked(["E1", 2], ["E2", 2], ["E3", 3], ["E4", 3], ["E5", 5], ["E6", 6], ["E7", 7], ["E8", 8]);
+    expect(bracketRanks(stage, done)).toEqual(want);
+    const completed = completeBracketStage(stage, done);
+    expect(completed.finalRanks).toEqual(want);
+    expect(completed.title).toEqual({ kind: "vacant" });
+  });
+
+  it("X-FR-3 a LOSER feed: in a double elimination, a winners'-bracket loser who withdrew before their losers'-bracket fixture is out there", () => {
+    // 8-entrant double elimination (no reset), to seed, except: E5 lost wb-r0-i1 to E4 by play, then withdrew while
+    // wb-r0-i0 (E1 v E8) was still to play. Its lb-r0-i0 seat (fed by wb-r0-i1's LOSER) is dead, and E8, arriving,
+    // walks over it; E4 then beats E8 in lb-r1-i0. RB4-R3: E5 is out at lb-r0-i0 (round 3), as E7 is (lost lb-r0-i1 by
+    // play). Rank places, "double_elim: strict 1 … n", X-FR-2 below the final: elimination round (later first), then seed:
+    // E1 (GF winner), E2 (GF loser), E3 (out round 6), E4 (5), E6 and E8 (4, seed order), E5 and E7 (3, seed order).
+    // differential: today E5 is out at its last LOSS, the winners'-bracket round 0, so last — below E7.
+    const entrants = ids(8);
+    const seeds = seedsOf(entrants);
+    const gen = generateDoubleElim({ entrants, seeds });
+    const e8OverE5 = (home: string, away: string): string =>
+      [home, away].includes("E5") && [home, away].includes("E8") ? "E8" : (seeds.get(away) ?? 0) < (seeds.get(home) ?? 0) ? away : home;
+    const rows = withFeeds(gen, playOutBracket(gen, { seeds, winner: e8OverE5 }));
+    expect(rowIn(rows, "lb-r0-i0")).toMatchObject({ home: "E8", away: "E5", awayFrom: { fixtureId: "wb-r0-i1", side: "loser" } });
+    expect(rowIn(rows, "wb-r0-i1")).toMatchObject({ winner: "E4", loser: "E5" });
+    const done = replacing(rows, { "lb-r0-i0": (row) => walkedOverDeadSeat(row, "away") });
+    const want = places("E1", "E2", "E3", "E4", "E6", "E8", "E5", "E7");
+    expect(completeBracketStage({ id: "de", kind: "double_elim", entrants, seeds }, done).finalRanks).toEqual(want);
+  });
+
+  it("X-FR-3 every bracket kind: the fed finalist who withdrew before their final ranks 2nd, behind the side that walked over their seat (counted)", () => {
+    // RB4-C2 + RB4-R3 over the Rank places table ("double_elim, stepladder, page_playoff: strict 1 … n"): the walkover
+    // winner is champion, the walkover loser — the finalist whose dead seat the feed names — is the final's loser, 2nd.
+    // The withdrawn side is the final's FED seat (a stepladder's top seed is seated by the draw, its climber fed).
+    // differential: today the withdrawn finalist, never beaten, ranks LAST and 2nd reads as vacant.
+    const cases: [string, BracketStage["kind"], number, (entrants: string[], seeds: Map<string, number>) => GeneratedBracket][] = [
+      ["knockout 8", "knockout", 8, (entrants, seeds) => generateSingleElim({ entrants, seeds })],
+      ["double elimination 8", "double_elim", 8, (entrants, seeds) => generateDoubleElim({ entrants, seeds })],
+      ["stepladder 5", "stepladder", 5, (entrants, seeds) => generateStepladder({ entrants, seeds })],
+      ["page playoff 4", "page_playoff", 4, (entrants, seeds) => generatePagePlayoff({ entrants, seeds })],
+    ];
+    let checked = 0;
+    for (const [what, kind, n, generate] of cases) {
+      const entrants = ids(n);
+      const seeds = seedsOf(entrants);
+      const gen = generate(entrants, seeds);
+      const rows = withFeeds(gen, playOutBracket(gen, { seeds }));
+      const finals = rows.filter((row) => row.isFinal === true);
+      expect(finals, what).toHaveLength(1);
+      const final = finals[0] as BracketFixture;
+      const dead = final.homeFrom !== undefined ? "home" : "away";
+      const withdrawn = final[dead];
+      const champion = dead === "home" ? final.away : final.home;
+      expect(withdrawn, what).toBeDefined();
+      const done = replacing(rows, { [final.id]: (row) => walkedOverDeadSeat(row, dead) });
+      const got = rankOf(completeBracketStage({ id: "s", kind, entrants, seeds }, done).finalRanks);
+      expect([got[champion ?? "?"], got[withdrawn ?? "?"]], what).toEqual([1, 2]);
+      checked++;
+    }
+    expect(checked, "bracket kinds checked").toBe(4);
   });
 });

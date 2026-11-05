@@ -363,3 +363,135 @@ describe("firstLossField refuses rows it cannot read (CONFIG_INVALID, controller
     expect(gfOnly.data).toEqual({ reason: "first_loss_not_single_elimination", fixtureId: gf?.id, bracket: "GF" });
   });
 });
+
+// Final review I2 (controller ruling F-I1/I2). An entrant who withdraws while their next opponent is still to be decided
+// leaves that seat EMPTY and stamped dead (X-WD-3, ruling 116); the side that arrives walks over it, and the row names no
+// loser. The row's feed (`homeFrom` / `awayFrom`, the generator's wiring, which the app keeps on the row) still names
+// them, so the walkover is their first match and their loss by withdrawal — excluded (RB4-P2). Rows: the generator played
+// out, its feeds kept, the withdrawal hand-built from the app's shape (controller ruling B5-1).
+
+/** The rows with the generator's feeds, as the app keeps them on the row. */
+function withFeeds(gen: GeneratedBracket, rows: readonly BracketFixtureRow[]): BracketFixtureRow[] {
+  const byId = new Map(gen.fixtures.map((f) => [f.id, f]));
+  return rows.map((row) => {
+    const g = row.id === undefined ? undefined : byId.get(row.id);
+    return { ...row, ...(g?.homeFrom === undefined ? {} : { homeFrom: g.homeFrom }), ...(g?.awayFrom === undefined ? {} : { awayFrom: g.awayFrom }) };
+  });
+}
+const withoutFeeds = (rows: readonly BracketFixtureRow[]): BracketFixtureRow[] => rows.map(({ homeFrom: _h, awayFrom: _a, ...row }) => row);
+/** The app's row once the side in `dead` left before the other arrived: that seat empty, the walkover to the side present. */
+function walkedOverDeadSeat(row: BracketFixtureRow, dead: "home" | "away"): BracketFixtureRow {
+  const { home, away, winner: _w, loser: _l, walkedOver: _o, ...rest } = row;
+  const present = dead === "home" ? away : home;
+  if (present === undefined) throw new Error(`walkedOverDeadSeat: ${row.id ?? "?"} has no side present`);
+  return { ...rest, status: "walkover", ...(dead === "home" ? { away: present } : { home: present }), winner: present };
+}
+const rowAt = (rows: readonly BracketFixtureRow[], id: string): BracketFixtureRow => {
+  const row = rows.find((r) => r.id === id);
+  if (row === undefined) throw new Error(`no row ${id}`);
+  return row;
+};
+const swapping = (rows: readonly BracketFixtureRow[], swaps: Record<string, (row: BracketFixtureRow) => BracketFixtureRow>): BracketFixtureRow[] =>
+  rows.map((row) => (row.id === undefined ? row : swaps[row.id]?.(row) ?? row));
+
+describe("X-PL-4 a first loss by withdrawal on a dead seat does not enter the plate, and the field completes (final review I2, RB4-P2)", () => {
+  // n=6 (8-draw), to seed: byes to e1 (line se-r0-i0) and e2 (se-r0-i3); round 1 plays se-r0-i1 (e5 v e4) and se-r0-i2
+  // (e3 v e6). Round 2: se-r1-i0 = e1 v the winner of se-r0-i1, se-r1-i1 = e3 v e2.
+  const n6 = (): BracketFixtureRow[] => withFeeds(knockout(6), played(6));
+
+  it("X-PL-4 the fixture's premise: bye holder e1's round-2 seat is fed by its bye line, and e4 beats e5 to reach it", () => {
+    const rows = n6();
+    expect(rowAt(rows, "se-r0-i0")).toMatchObject({ status: "walkover", winner: "e1" });
+    expect(rowAt(rows, "se-r1-i0")).toMatchObject({ home: "e1", away: "e4", homeFrom: { fixtureId: "se-r0-i0", side: "winner" } });
+    expect(rowAt(rows, "se-r0-i1")).toMatchObject({ winner: "e4", loser: "e5" });
+  });
+
+  it("X-PL-4 I2 sequence: bye holder e1 withdraws before round 2 while e4 v e5 is unplayed — pending names e1's own round-2 line, then the field completes with e1 excluded", () => {
+    const rows = n6();
+    // (1) e1 has withdrawn; se-r0-i1 (e5 v e4) and se-r1-i1 (e3 v e2) are still to play, se-r1-i0 seats nobody (e1's seat
+    // dead, the other still to come). e1's first match is se-r1-i0 — its seat, though empty — and it is unplayed, so it
+    // is owed; so are e4's and e5's (se-r0-i1) and e2's (se-r1-i1). e6 lost round 1 to e3: a first loss (RB4-P1).
+    // differential: today pending names e1's BYE line se-r0-i0, already settled, and never clears.
+    const unplayedRow = (keepSeats: boolean) => (row: BracketFixtureRow): BracketFixtureRow => ({
+      ...unplayed(row, keepSeats),
+      ...(row.homeFrom === undefined ? {} : { homeFrom: row.homeFrom }),
+      ...(row.awayFrom === undefined ? {} : { awayFrom: row.awayFrom }),
+    });
+    const before = swapping(rows, {
+      "se-r0-i1": unplayedRow(true),
+      "se-r1-i0": unplayedRow(false),
+      "se-r1-i1": unplayedRow(true),
+      "se-r2-i0": unplayedRow(false),
+    });
+    expect(firstLossField(before)).toEqual({
+      complete: false,
+      losers: [{ entrantId: "e6", fixtureId: "se-r0-i2", round: 0 }],
+      excluded: [],
+      pending: ["se-r0-i1", "se-r1-i0", "se-r1-i1"],
+    });
+    // (2) e4 beats e5 and arrives: se-r1-i0 is a walkover to e4 over e1's dead seat. RB4-P2: e1's first match is a loss by
+    // withdrawal, excluded. se-r1-i1 still owed (e2's first match).
+    const arrived = swapping(rows, {
+      "se-r1-i0": (row) => walkedOverDeadSeat(row, "home"),
+      "se-r1-i1": unplayedRow(true),
+      "se-r2-i0": unplayedRow(false),
+    });
+    expect(rowAt(arrived, "se-r1-i0")).toMatchObject({ status: "walkover", away: "e4", winner: "e4" });
+    expect(firstLossField(arrived)).toEqual({
+      complete: false,
+      losers: [{ entrantId: "e5", fixtureId: "se-r0-i1", round: 0 }, { entrantId: "e6", fixtureId: "se-r0-i2", round: 0 }],
+      excluded: [{ entrantId: "e1", fixtureId: "se-r1-i0", round: 1 }],
+      pending: ["se-r1-i1"],
+    });
+    // (3) The other round-2 row settles (e2 beats e3: e2's first match a win; e3's loss follows its round-1 win). The field
+    // is complete: e5 and e6 (RB4-P1), e1 excluded (RB4-P2), nothing owed.
+    // differential: today complete stays false and pending stays ["se-r0-i0"] forever.
+    const done = swapping(rows, { "se-r1-i0": (row) => walkedOverDeadSeat(row, "home") });
+    const want = {
+      complete: true,
+      losers: [{ entrantId: "e5", fixtureId: "se-r0-i1", round: 0 }, { entrantId: "e6", fixtureId: "se-r0-i2", round: 0 }],
+      excluded: [{ entrantId: "e1", fixtureId: "se-r1-i0", round: 1 }],
+      pending: [],
+    };
+    expect(firstLossField(done)).toEqual(want);
+    // A second call answers the same and leaves the rows untouched.
+    const frozen = done.map((row) => Object.freeze({ ...row }));
+    expect(firstLossField(frozen)).toEqual(want);
+    expect(frozen).toEqual(done);
+  });
+
+  it("X-PL-4 a round-1 walkover winner who withdraws before round 2 (their seat dead) is excluded there, and the field completes", () => {
+    // n=8, to seed, except e4 forfeits its round-1 line (se-r0-i1) to e5 — e4 excluded at round 1 (RB4-P2). e5 then
+    // withdraws while e1 v e8 is unplayed: its se-r1-i0 seat is dead, and e1, arriving, walks over it. e5's first match
+    // (it won round 1 without playing) is that walkover, a loss by withdrawal: excluded too. Round 1's played lines go to
+    // seed: e8, e6, e7 lose (RB4-P1). differential: today e5's line se-r0-i1 is pending forever.
+    const rows = withFeeds(knockout(8), played(8, { forfeit: new Map([["se-r0-i1", "e4"]]) }));
+    expect(rowAt(rows, "se-r1-i0")).toMatchObject({ home: "e1", away: "e5", awayFrom: { fixtureId: "se-r0-i1", side: "winner" } });
+    const done = swapping(rows, { "se-r1-i0": (row) => walkedOverDeadSeat(row, "away") });
+    expect(firstLossField(done)).toEqual({
+      complete: true,
+      losers: [
+        { entrantId: "e8", fixtureId: "se-r0-i0", round: 0 },
+        { entrantId: "e6", fixtureId: "se-r0-i2", round: 0 },
+        { entrantId: "e7", fixtureId: "se-r0-i3", round: 0 },
+      ],
+      excluded: [
+        { entrantId: "e4", fixtureId: "se-r0-i1", round: 0 },
+        { entrantId: "e5", fixtureId: "se-r1-i0", round: 1 },
+      ],
+      pending: [],
+    });
+  });
+
+  it("X-PL-4 no-feed control: the same rows without the feed read as before — the bye holder's line stays pending, nothing thrown", () => {
+    // The pre-fix answer the final review recorded (I2): with no feed the dead seat names nobody, so e1 is seated in no
+    // round-2 row and its settled bye line stays owed. Unchanged for a caller that passes no feed.
+    const done = withoutFeeds(swapping(n6(), { "se-r1-i0": (row) => walkedOverDeadSeat(row, "home") }));
+    expect(firstLossField(done)).toEqual({
+      complete: false,
+      losers: [{ entrantId: "e5", fixtureId: "se-r0-i1", round: 0 }, { entrantId: "e6", fixtureId: "se-r0-i2", round: 0 }],
+      excluded: [],
+      pending: ["se-r0-i0"],
+    });
+  });
+});
