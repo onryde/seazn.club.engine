@@ -24,9 +24,6 @@ import {
   type TableStage,
 } from "./stage.ts";
 
-/** W4 (X-FR-1): a strict order as places — the i-th id ranks i + 1. */
-const places = (...ids: string[]): FinalPlace[] => ids.map((entrantId, i) => ({ entrantId, rank: i + 1 }));
-
 const CFG: GenericCfg = {
   resultMode: "score",
   allowDraws: true,
@@ -163,9 +160,11 @@ function runDivision(): { champion: string | undefined; events: DivisionEvent[];
 describe("full division: group → knockout, generic sport (spec 05 acceptance)", () => {
   it("crowns the top seed and produces a complete final ranking", () => {
     const { champion, finalRanks } = runDivision();
-    // a1 tops pool A, b1 tops pool B; seeds a1,b1,a2,b2 → a1 wins the bracket.
+    // a1 tops pool A, b1 tops pool B; seeds a1,b1,a2,b2 → a1 wins the bracket. No play-off, so the two semi-final
+    // losers share 3rd (SH-3; C4: standard competition ranking).
     expect(champion).toBe("a1");
-    expect(finalRanks).toEqual(places("a1", "b1", "a2", "b2"));
+    // ruling 270: was 3/4 by seed
+    expect(finalRanks).toEqual([{ entrantId: "a1", rank: 1 }, { entrantId: "b1", rank: 2 }, { entrantId: "a2", rank: 3 }, { entrantId: "b2", rank: 3 }]);
   });
 
   it("logs the structural division events for both stages (spec 05 §5)", () => {
@@ -173,7 +172,8 @@ describe("full division: group → knockout, generic sport (spec 05 acceptance)"
     expect(events.filter((e) => e.type === "stage_opened").map((e) => e.stageId)).toEqual(["groups", "ko"]);
     const completed = events.filter((e) => e.type === "stage_completed");
     expect(completed).toHaveLength(2);
-    expect(completed[1]).toMatchObject({ stageId: "ko", finalRanks: places("a1", "b1", "a2", "b2") });
+    // ruling 270: was 3/4 by seed
+    expect(completed[1]).toMatchObject({ stageId: "ko", finalRanks: [{ entrantId: "a1", rank: 1 }, { entrantId: "b1", rank: 2 }, { entrantId: "a2", rank: 3 }, { entrantId: "b2", rank: 3 }] });
   });
 
   it("is idempotent — re-running the division reproduces it exactly (spec 05 §3)", () => {

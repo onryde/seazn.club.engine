@@ -337,16 +337,39 @@ describe("X-DW-2: a double walkover in a bracket puts both sides out in its roun
     fx("f", 2, "E8", undefined, "E8", { isFinal: true, status: "walkover" }),
   ];
 
-  it("X-DW-2: E2 and E3 double-walk-over in the semi-final and both go out in round 1, level with E4", () => {
+  it("X-DW-2: E2 and E3 double-walk-over in the semi-final and both go out in round 1, ranked below E4, the semi-final's one loser", () => {
     const dw = fx("sf-1", 1, "E2", "E3", undefined, { status: "walkover", walkedOver: "both" });
-    // Champion E8; round 1: E2, E3, E4 (seed order); round 0: E1, E5, E6, E7.
-    expect(bracketRanks(stage, field(dw))).toEqual(places("E8", "E2", "E3", "E4", "E1", "E5", "E6", "E7"));
+    // Champion E8 by walkover over the dead seat, so nobody is 2nd (B3-6, controller call). E4, the one semi-final loser,
+    // ranks 3rd (SH-3: a knockout with no play-off); E2 and E3, out in round 1 with no loser's place, then E1, E5, E6,
+    // E7 (round 0, seed order), each max(previous rank + 1, placed + 1) (C4: standard competition ranking).
+    // ruling 270: was 3/4 by seed (E2 2, E3 3, E4 4: round 1 by seed, then round 0)
+    expect(bracketRanks(stage, field(dw))).toEqual([
+      { entrantId: "E8", rank: 1 },
+      { entrantId: "E4", rank: 3 },
+      { entrantId: "E2", rank: 4 },
+      { entrantId: "E3", rank: 5 },
+      { entrantId: "E1", rank: 6 },
+      { entrantId: "E5", rank: 7 },
+      { entrantId: "E6", rank: 8 },
+      { entrantId: "E7", rank: 9 },
+    ]);
   });
 
   it("empty case: an entrant neither beaten nor walked over (its line voided) ranks last, below every elimination round", () => {
     const voided = fx("sf-1", 1, "E2", "E3", undefined, { status: "void" });
-    // E2 and E3 lost nothing settled: below round-0 losers E1, E5, E6, E7; seed order between them.
-    expect(bracketRanks(stage, field(voided))).toEqual(places("E8", "E4", "E1", "E5", "E6", "E7", "E2", "E3"));
+    // E2 and E3 lost nothing settled: below round-0 losers E1, E5, E6, E7; seed order between them. Nobody is 2nd (the
+    // final's other seat is dead, B3-6) and E4 is the semi-final's one loser, 3rd (SH-3); C4: standard competition ranking.
+    // ruling 270: was 3/4 by seed (E4 2, E1 3 … E3 8)
+    expect(bracketRanks(stage, field(voided))).toEqual([
+      { entrantId: "E8", rank: 1 },
+      { entrantId: "E4", rank: 3 },
+      { entrantId: "E1", rank: 4 },
+      { entrantId: "E5", rank: 5 },
+      { entrantId: "E6", rank: 6 },
+      { entrantId: "E7", rank: 7 },
+      { entrantId: "E2", rank: 8 },
+      { entrantId: "E3", rank: 9 },
+    ]);
   });
 
   it("X-DW-2: a double walkover row that names a winner or a loser, or a forfeit row that names no loser, is refused", () => {

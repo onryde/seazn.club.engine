@@ -11,6 +11,14 @@
 // single-sport: bracket code is sport-agnostic (reads no SportModule)
 import { describe, expect, it } from "vitest";
 import { EngineError } from "../core/errors.ts";
+import {
+  generateDoubleElim,
+  generatePagePlayoff,
+  generateSingleElim,
+  generateStepladder,
+  type GeneratedBracket,
+} from "../scheduling/bracket.ts";
+import { playOutBracket, type PlayOutOptions } from "../testkit/bracket-play.ts";
 import { tableRulesOf } from "../testkit/helpers.ts";
 import { placementTable } from "./progression.ts";
 import type { FixtureResult } from "./standings.ts";
@@ -298,5 +306,232 @@ describe("X-FR-1 the event and the progression read places (Task 5)", () => {
     const mixed = [{ entrantId: "S1", rank: 1 }, "S2"] as unknown as FinalPlace[];
     expectInvalid(() => placementTable(mixed), "mixed_places");
     expectInvalid(() => placementTable(ranked(["S1", 1], ["S3", 3], ["S2", 2])), "places_out_of_order");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Task 6 — shared 3rd, the play-off's places, strict below the semi-finals (SH-3, Q4; RB4-T2, T3, T6, R2; X-FR-2)
+// ---------------------------------------------------------------------------------------------------------------------
+
+const ids = (n: number): string[] => Array.from({ length: n }, (_, i) => `E${i + 1}`);
+/** A generated single-elimination bracket played out, every match to seed unless `opts` says otherwise. */
+function knockout(n: number, opts: { thirdPlace?: boolean } & PlayOutOptions = {}): { stage: BracketStage; rows: BracketFixture[] } {
+  const entrants = ids(n);
+  const seeds = seedsOf(entrants);
+  const { thirdPlace, ...play } = opts;
+  const rows = playOutBracket(generateSingleElim({ entrants, seeds, ...(thirdPlace === true ? { thirdPlace } : {}) }), { seeds, ...play });
+  return { stage: { id: "ko", kind: "knockout", entrants, seeds }, rows };
+}
+/** Each entrant's rank, by id: a whole place set compared in one line. */
+const rankOf = (set: readonly FinalPlace[]): Record<string, number> => Object.fromEntries(set.map((p) => [p.entrantId, p.rank]));
+
+// The 4-draw stage.test.ts pins ("bracketRanks (spec 05 §1)"): S1 > S4, S2 > S3, S1 > S2, no play-off.
+const DRAW4: BracketFixture[] = [
+  decided("sf1", 0, "S1", "S4", "S1"),
+  decided("sf2", 0, "S2", "S3", "S2"),
+  decided("fin", 1, "S1", "S2", "S1", { isFinal: true }),
+];
+const SHARED4 = ranked(["S1", 1], ["S2", 2], ["S3", 3], ["S4", 3]);
+
+describe("X-FR-1 a knockout's semi-final losers share 3rd unless a play-off decides it (Task 6, SH-3, ruling 270)", () => {
+  it("X-FR-1 shared 3rd: the 4-draw from stage.test.ts ranks S3 and S4 both 3rd, nobody 4th", () => {
+    // differential: today S3 3, S4 4
+    // Rank places, "n ≥ 4, Shared (no -3p)": 1, 2, 3, 3. Within the shared rank, seed then id: S3 before S4, though S4's
+    // semi-final is listed first.
+    const stage: BracketStage = { id: "ko", kind: "knockout", entrants: ["S1", "S2", "S3", "S4"], seeds: S4_SEEDS };
+    expect(bracketRanks(stage, DRAW4)).toEqual(SHARED4);
+    expect(completeBracketStage(stage, DRAW4).finalRanks).toEqual(SHARED4);
+    expect(SHARED4.some((p) => p.rank === 4), "nobody 4th").toBe(false);
+    // The declared pair is 3rd in standard competition ranking, after a 1st and a 2nd: a shared 3rd with nobody 2nd is
+    // refused (the final had a runner-up), as is a shared 2nd.
+    expectInvalid(() => assertCompletedBracketPlaces(stage, DRAW4, ranked(["S1", 1], ["S3", 3], ["S4", 3], ["S2", 4])), "not_competition_ranking");
+    expectInvalid(() => assertCompletedBracketPlaces(stage, DRAW4, ranked(["S1", 1], ["S2", 2], ["S3", 2], ["S4", 4])), "undeclared_shared_place");
+  });
+
+  it("X-FR-1 a play-off with both sides out: 1, 2, 4, 4, 5 …", () => {
+    // differential: today 3/4 by seed
+    // Rank places, "Play-off both out (DW)": 1, 2, 4, 4, then 5 … strict; 3rd is vacant. The play-off is E4 v E3.
+    const { stage, rows } = knockout(8, { thirdPlace: true, doubleWalkover: new Set(["se-3p"]) });
+    const want = ranked(["E1", 1], ["E2", 2], ["E3", 4], ["E4", 4], ["E5", 5], ["E6", 6], ["E7", 7], ["E8", 8]);
+    expect(bracketRanks(stage, rows)).toEqual(want);
+    expect(completeBracketStage(stage, rows).finalRanks).toEqual(want);
+    // A shared 3rd is not declared by a play-off both sides walked over, nor two 4ths with 3rd held.
+    expectInvalid(() => assertCompletedBracketPlaces(stage, rows, ranked(["E1", 1], ["E2", 2], ["E3", 3], ["E4", 3], ["E5", 5], ["E6", 6], ["E7", 7], ["E8", 8])), "undeclared_shared_place");
+    expectInvalid(() => assertCompletedBracketPlaces(stage, rows, ranked(["E1", 1], ["E2", 2], ["E5", 3], ["E3", 4], ["E4", 4], ["E6", 6], ["E7", 7], ["E8", 8])), "not_competition_ranking");
+  });
+
+  it("X-FR-1 a voided play-off: both semi-final losers 3rd", () => {
+    // Review Focus 4 (plan's call, B3-6): Rank places, "Play-off voided": 1, 2, 3, 3, 5 …
+    const { stage, rows } = knockout(8, { thirdPlace: true, voided: new Set(["se-3p"]) });
+    const want = ranked(["E1", 1], ["E2", 2], ["E3", 3], ["E4", 3], ["E5", 5], ["E6", 6], ["E7", 7], ["E8", 8]);
+    expect(bracketRanks(stage, rows)).toEqual(want);
+    expect(completeBracketStage(stage, rows).finalRanks).toEqual(want);
+    // A voided play-off declares the shared 3rd, not the play-off-both-out shape.
+    expectInvalid(() => assertCompletedBracketPlaces(stage, rows, ranked(["E1", 1], ["E2", 2], ["E3", 4], ["E4", 4], ["E5", 5], ["E6", 6], ["E7", 7], ["E8", 8])), "undeclared_shared_place");
+  });
+
+  it("X-FR-1 a semi lost by walkover (the loser withdrew) still shares 3rd", () => {
+    // RB4-T2 has no exception: E2 forfeits its semi-final to E3, and still ranks 3rd with E4 (seed order within it).
+    const shared = knockout(8, { forfeit: new Map([["se-r1-i1", "E2"]]) });
+    const want = ranked(["E1", 1], ["E3", 2], ["E2", 3], ["E4", 3], ["E5", 5], ["E6", 6], ["E7", 7], ["E8", 8]);
+    expect(completeBracketStage(shared.stage, shared.rows).finalRanks).toEqual(want);
+    // With a play-off, E2 is out at the semi-final (X-FR-3; B3-10: its loser's seat in the play-off is dead), so E4 wins
+    // the play-off by walkover: Rank places, "Play-off decided" — E4 3rd, E2 4th.
+    const playOff = knockout(8, { thirdPlace: true, forfeit: new Map([["se-r1-i1", "E2"]]) });
+    expect(completeBracketStage(playOff.stage, playOff.rows).finalRanks).toEqual(places("E1", "E3", "E4", "E2", "E5", "E6", "E7", "E8"));
+  });
+
+  it("X-FR-1 n=3: the one real semi-final loser ranks 3rd alone", () => {
+    // RB4-E5: Rank places, "n = 3": 1, 2, 3 — E1's semi-final is a bye, which has no loser.
+    const { stage, rows } = knockout(3);
+    expect(completeBracketStage(stage, rows).finalRanks).toEqual(places("E1", "E2", "E3"));
+    // n = 2: one final, no semi-final round. Rank places, "n = 2": 1, 2.
+    const two = knockout(2);
+    expect(completeBracketStage(two.stage, two.rows).finalRanks).toEqual(places("E1", "E2"));
+  });
+
+  it("X-FR-1 double_elim, stepladder and page_playoff stay strict 1..n", () => {
+    // Rank places, "double_elim, stepladder, page_playoff: strict 1 … n". Every match to seed, so the strict order is the
+    // seed order (X-FR-2: a later elimination first, then seed).
+    const cases: [string, BracketStage["kind"], GeneratedBracket, number][] = [
+      ["double elimination, 8, with a bracket reset", "double_elim", generateDoubleElim({ entrants: ids(8), seeds: seedsOf(ids(8)), bracketReset: true }), 8],
+      ["stepladder, 4", "stepladder", generateStepladder({ entrants: ids(4), seeds: seedsOf(ids(4)) }), 4],
+      ["page playoff, 4", "page_playoff", generatePagePlayoff({ entrants: ids(4), seeds: seedsOf(ids(4)) }), 4],
+    ];
+    let checked = 0;
+    for (const [what, kind, gen, n] of cases) {
+      const stage: BracketStage = { id: "s", kind, entrants: ids(n), seeds: seedsOf(ids(n)) };
+      const rows = playOutBracket(gen, { seeds: seedsOf(ids(n)) });
+      expect(completeBracketStage(stage, rows).finalRanks, what).toEqual(places(...ids(n)));
+      checked++;
+    }
+    // The same 4-draw rows the knockout shares 3rd on, read as each other kind: strict. Only a knockout's semi-final
+    // losers share (SH-3); the rows are identical, so the kind alone moves S4 from 3rd to 4th.
+    for (const kind of ["double_elim", "stepladder", "page_playoff"] as const) {
+      const stage: BracketStage = { id: "s", kind, entrants: ["S1", "S2", "S3", "S4"], seeds: S4_SEEDS };
+      expect(completeBracketStage(stage, DRAW4).finalRanks, kind).toEqual(places("S1", "S2", "S3", "S4"));
+      // …and a shared 3rd is never declared for it.
+      expectInvalid(() => assertCompletedBracketPlaces(stage, DRAW4, SHARED4), "undeclared_shared_place");
+      checked++;
+    }
+    expect(checked, "kinds checked: three played out, three read over the 4-draw").toBe(6);
+  });
+
+  it("X-FR-1 mid-bracket: a semi-final loser ranks below the three still in play (provisional, B3-3)", () => {
+    // An 8-draw, no play-off: the quarter-finals to seed, the first semi-final E1 > E4, the second (E3 v E2) and the
+    // final (E1 seated) still to play. In play first — E1, E2, E3 by seed — then E4, the semi-final's loser, below them:
+    // 3rd is never above an entrant still in play. Then the quarter-final losers by seed.
+    const rows: BracketFixture[] = [
+      ...QUARTERS,
+      decided("se-r1-i0", 1, "E1", "E4", "E1"),
+      { id: "se-r1-i1", round: 1, status: "scheduled", home: "E3", away: "E2" },
+      { id: "se-r2-i0", round: 2, isFinal: true, status: "scheduled", home: "E1" },
+    ];
+    expect(bracketRanks(ko8, rows)).toEqual(places("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"));
+  });
+
+  it("X-FR-1 a malformed knockout with three semi-final losers is refused at completion (more_than_two), ranked provisionally", () => {
+    // Assumption → guard: a knockout has two semi-finals. Three fixtures in the round before the final give three losers
+    // at 3rd; the structural check lets a provisional read through (B3-1), completion refuses it by name.
+    const stage: BracketStage = { id: "ko", kind: "knockout", entrants: ["A", "B", "C", "D", "E", "F"], seeds: seedsOf(["A", "B", "C", "D", "E", "F"]) };
+    const rows: BracketFixture[] = [
+      decided("s1", 0, "A", "B", "A"),
+      decided("s2", 0, "C", "D", "C"),
+      decided("s3", 0, "E", "F", "E"),
+      decided("f", 1, "A", "C", "A", { isFinal: true }),
+    ];
+    expect(bracketRanks(stage, rows).filter((p) => p.rank === 3).map((p) => p.entrantId)).toEqual(["B", "D", "F"]);
+    expectInvalid(() => completeBracketStage(stage, rows), "more_than_two");
+  });
+
+  it("X-FR-1 a semi-final both sides walked over: the other semi's winner takes the final by walkover, nobody ranks 2nd", () => {
+    // B3-6 (controller call): E2 and E3 both walk over their semi-final, so the final's other seat is dead and E1 wins it
+    // by walkover. Rank 2 is vacant — a declared shape only because the final was a walkover over a dead seat. E4, the
+    // one semi-final loser, ranks 3rd; E2 and E3, out in the semi-final with no loser's place, rank in the strict block
+    // (plan's call), each max(previous rank + 1, placed + 1): 4, 5, then the quarter-final losers 6 … 9.
+    const { stage, rows } = knockout(8, { doubleWalkover: new Set(["se-r1-i1"]) });
+    const want = ranked(["E1", 1], ["E4", 3], ["E2", 4], ["E3", 5], ["E5", 6], ["E6", 7], ["E7", 8], ["E8", 9]);
+    expect(completeBracketStage(stage, rows).finalRanks).toEqual(want);
+    // The vacancy is the final's, so the strict check refuses it where the final had a runner-up.
+    expectInvalid(() => assertCompletedBracketPlaces(ko8, PLAYOFF8, want), "not_competition_ranking");
+  });
+});
+
+describe("X-FR-1 counted sweep over the Rank places table (Task 6)", () => {
+  // Rank places table: n = 2 → 1, 2; n = 3 → 1, 2, 3; n ≥ 4 Shared (no -3p) → 1, 2, 3, 3, then 5 … n strict; Play-off
+  // decided → 1 … n. Typed from the table, never read from bracketRanks.
+  const tableRow = (n: number, playOff: boolean): number[] => {
+    if (n === 2) return [1, 2];
+    if (n === 3) return [1, 2, 3];
+    const strictBelow = Array.from({ length: n - 4 }, (_, i) => i + 5);
+    return playOff ? [1, 2, 3, 4, ...strictBelow] : [1, 2, 3, 3, ...strictBelow];
+  };
+  // Every match to seed, so the semi-final losers are seeds 3 and 4 and each round's losers the next seeds down: seed k
+  // ranks k, except that seed 4 shares 3rd with seed 3 when no play-off is played (X-FR-2: by round, then seed).
+  const rankBySeed = (n: number, playOff: boolean): Record<string, number> =>
+    Object.fromEntries(ids(n).map((id, i) => [id, !playOff && n >= 4 && i + 1 === 4 ? 3 : i + 1]));
+  let checked = 0;
+
+  it("X-FR-1 Shared n=2..64: the rank multiset is the table's row, and each seed sits where the table puts it", () => {
+    for (let n = 2; n <= 64; n++) {
+      const { stage, rows } = knockout(n);
+      const got = completeBracketStage(stage, rows).finalRanks;
+      expect(got.map((p) => p.rank), `n=${n}`).toEqual(tableRow(n, false));
+      expect(rankOf(got), `n=${n}`).toEqual(rankBySeed(n, false));
+      expect(() => assertBracketPlaces(stage.entrants, got), `n=${n}`).not.toThrow();
+      checked++;
+    }
+  });
+
+  it("X-FR-1 Play-off n=4..64 (T1 refuses it below 4): the rank multiset is 1 … n", () => {
+    for (let n = 4; n <= 64; n++) {
+      const { stage, rows } = knockout(n, { thirdPlace: true });
+      const got = completeBracketStage(stage, rows).finalRanks;
+      expect(got.map((p) => p.rank), `n=${n}`).toEqual(tableRow(n, true));
+      expect(rankOf(got), `n=${n}`).toEqual(rankBySeed(n, true));
+      expect(() => assertBracketPlaces(stage.entrants, got), `n=${n}`).not.toThrow();
+      checked++;
+    }
+  });
+
+  it("X-FR-1 the sweep checked 124 brackets (63 Shared + 61 Play-off)", () => {
+    expect(checked).toBe(124);
+  });
+});
+
+describe("X-FR-2 below the semi-finals ranks stay strict (Task 6, ruling 273, RB4-R2)", () => {
+  it("X-FR-2 below the semi-finals: quarter-final losers rank 5–8 by seed, then id; equal 5th is not used (S7)", () => {
+    // 8 entrants, E1 … E6 seeded and U, V not. The generator seats E1 v V, E5 v E4, E3 v E6, U v E2; two upsets, E5 > E4
+    // and E6 > E3, so bracket position is not seed order. The semi-finals E1 > E5, E2 > E6, the final E1 > E2.
+    const entrants = ["E1", "E2", "E3", "E4", "E5", "E6", "U", "V"];
+    const seeds = seedsOf(entrants.slice(0, 6));
+    const upset = new Map([["E4", "E5"], ["E3", "E6"]]); // favourite → who beats it
+    const seedOf = (id: string): number => seeds.get(id) ?? Number.MAX_SAFE_INTEGER;
+    const winner = (home: string, away: string): string =>
+      upset.get(home) === away ? away : upset.get(away) === home ? home : seedOf(away) < seedOf(home) ? away : home;
+    const rows = playOutBracket(generateSingleElim({ entrants, seeds }), { winner });
+    const stage: BracketStage = { id: "ko", kind: "knockout", entrants, seeds };
+    // Rank places, "n ≥ 4, Shared": E1, E2, then the semi-final losers E5, E6 level 3rd; then the four quarter-final
+    // losers, all out in one round, strict 5 … 8 by seed (E3, E4) and then the unseeded by id (U, V). differential: by
+    // seed alone E3 and E4 would rank 3rd and 4th.
+    const want = ranked(["E1", 1], ["E2", 2], ["E5", 3], ["E6", 3], ["E3", 5], ["E4", 6], ["U", 7], ["V", 8]);
+    expect(completeBracketStage(stage, rows).finalRanks).toEqual(want);
+    expect(want.filter((p) => p.rank === 5), "equal 5th is not used").toHaveLength(1);
+  });
+
+  it("X-FR-2 sequence: a second call agrees, and after a withdrawal at a quarter-final the table's row still holds", () => {
+    // 16-draw, no play-off; E1 forfeits its quarter-final (se-r1-i0) to E8. E8 then loses its semi-final to E4, E2 beats
+    // E3 and wins the final. Rank places, "n ≥ 4, Shared": E2, E4, then E3 and E8 level 3rd; the quarter-final losers by
+    // seed — E1 (out at the fixture it forfeited, X-FR-3), E5, E6, E7 — 5 … 8; the round-0 losers E9 … E16, 9 … 16.
+    const { stage, rows } = knockout(16, { forfeit: new Map([["se-r1-i0", "E1"]]) });
+    const want = ranked(
+      ["E2", 1], ["E4", 2], ["E3", 3], ["E8", 3], ["E1", 5], ["E5", 6], ["E6", 7], ["E7", 8],
+      ...ids(16).slice(8).map((id, i): [string, number] => [id, i + 9]),
+    );
+    const first = completeBracketStage(stage, rows).finalRanks;
+    expect(first).toEqual(want);
+    expect(first.map((p) => p.rank)).toEqual([1, 2, 3, 3, ...Array.from({ length: 12 }, (_, i) => i + 5)]);
+    expect(completeBracketStage(stage, rows).finalRanks, "a second call").toEqual(first);
+    expect(bracketRanks(stage, rows), "the provisional read agrees once complete").toEqual(first);
   });
 });

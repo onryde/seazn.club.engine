@@ -184,8 +184,14 @@ describe("bracketRanks (spec 05 §1)", () => {
     { id: "fin", round: 1, isFinal: true, status: "decided", home: "S1", away: "S2", winner: "S1", loser: "S2" },
   ];
 
-  it("ranks champion, runner-up, then losers by elimination round & seed", () => {
-    expect(bracketRanks(stage, bracket)).toEqual(places("S1", "S2", "S3", "S4"));
+  it("ranks champion, runner-up, then both semi-final losers level 3rd: no play-off, nobody 4th (SH-3)", () => {
+    // ruling 270: was 3/4 by seed
+    expect(bracketRanks(stage, bracket)).toEqual([
+      { entrantId: "S1", rank: 1 },
+      { entrantId: "S2", rank: 2 },
+      { entrantId: "S3", rank: 3 },
+      { entrantId: "S4", rank: 3 },
+    ]);
   });
 
   it("a 3rd-place playoff fixes ranks 3 and 4 from its result", () => {
@@ -198,19 +204,25 @@ describe("bracketRanks (spec 05 §1)", () => {
 
   it("completeBracketStage emits stage_completed with those ranks", () => {
     const { events, finalRanks } = completeBracketStage(stage, bracket);
-    expect(finalRanks).toEqual(places("S1", "S2", "S3", "S4"));
+    // ruling 270: was 3/4 by seed
+    expect(finalRanks).toEqual([
+      { entrantId: "S1", rank: 1 },
+      { entrantId: "S2", rank: 2 },
+      { entrantId: "S3", rank: 3 },
+      { entrantId: "S4", rank: 3 },
+    ]);
     expect(events).toEqual([{ type: "stage_completed", stageId: "ko", finalRanks }]);
   });
 });
 
-// L3/#414 — page_playoff is a NEW BracketStage.kind, but bracketRanks reads
-// only round/isFinal/loser (never stage.kind — grep confirms no branch on it
-// anywhere in this file), so the fixed 4-team IPL-style page playoff
-// (scheduling/generatePagePlayoff: pp-q1 + pp-elim at round 0, pp-q2 feeding
-// from both at round 1, pp-final isFinal at round 2 — no thirdPlace fixture)
-// needs zero changes to bracketRanks itself, only the type widen below. This
-// is the regression proving that: without `"page_playoff"` in BracketStage's
-// kind union this file fails to typecheck (TS2322).
+// L3/#414 — page_playoff is a NEW BracketStage.kind. bracketRanks branches on
+// stage.kind in one place only since W4 (SH-3, ruling 270): a "knockout"'s
+// semi-final losers share 3rd. Every other kind — this fixed 4-team IPL-style
+// page playoff among them (scheduling/generatePagePlayoff: pp-q1 + pp-elim at
+// round 0, pp-q2 feeding from both at round 1, pp-final isFinal at round 2 —
+// no thirdPlace fixture) — ranks strictly by round/isFinal/loser. Without
+// `"page_playoff"` in BracketStage's kind union this file fails to typecheck
+// (TS2322).
 describe("bracketRanks — page_playoff (L3/#414, spec 2026-07-19)", () => {
   const stage: BracketStage = {
     id: "pp",
@@ -246,12 +258,17 @@ describe("bracketRanks — page_playoff (L3/#414, spec 2026-07-19)", () => {
   });
 
   it("page playoff completes when all four fixtures are settled", () => {
-    const beforeFinal = bracket.map((f) => (f.id === "pp-final" ? { ...f, status: "scheduled" as const, winner: undefined, loser: undefined } : f));
-    expect(isBracketStageComplete(stage, beforeFinal)).toBe(false);
-    // RB4-C7 (every fixture settled): the Final decided while Qualifier 2 is still scheduled leaves the stage open. Before
-    // W4 the Final alone decided it (true here).
-    const beforeQ2 = bracket.map((f) => (f.id === "pp-q2" ? { ...f, status: "scheduled" as const, winner: undefined, loser: undefined } : f));
-    expect(isBracketStageComplete(stage, beforeQ2)).toBe(false);
+    const open = (id: string): BracketFixture[] =>
+      bracket.map((f) => (f.id === id ? { ...f, status: "scheduled" as const, winner: undefined, loser: undefined } : f));
+    expect(isBracketStageComplete(stage, open("pp-final"))).toBe(false);
+    // RB4-C7 (every fixture settled): the Final decided while any other fixture is still scheduled leaves the stage open.
+    // Before W4 the Final alone decided it (true for each of these).
+    let opened = 0;
+    for (const id of ["pp-q1", "pp-elim", "pp-q2"]) {
+      expect(isBracketStageComplete(stage, open(id)), id).toBe(false);
+      opened++;
+    }
+    expect(opened, "non-final fixtures opened").toBe(3);
     expect(isBracketStageComplete(stage, bracket)).toBe(true);
   });
 

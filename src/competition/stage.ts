@@ -506,13 +506,41 @@ export function assertBracketPlaces(entrants: readonly EntrantId[], places: read
   }
 }
 
+/** The shapes a completed bracket's own fixtures declare (Rank places table). `pairs`: a rank two share in standard
+ *  competition ranking (3, 3, then 5). `pairsBelowVacancy`: a rank two share with the rank above it left vacant (4, 4
+ *  after 1, 2). `vacancies`: a rank nobody holds, the next single holder taking the rank after it. */
+interface DeclaredPlaces {
+  pairs: ReadonlySet<number>;
+  pairsBelowVacancy: ReadonlySet<number>;
+  vacancies: ReadonlySet<number>;
+}
+
+// SH-3 (ruling 270): only a knockout shares its 3rd — its semi-final losers, when it played no play-off or voided it
+// (X-TP-3, plan's call); a play-off both sides walked over ranks both 4th, 3rd vacant (X-TP-7). B3-6 (controller call):
+// a final won by walkover over a dead seat has no runner-up, so 2nd is vacant.
+function declaredPlaces(stage: BracketStage, fixtures: readonly BracketFixture[]): DeclaredPlaces {
+  const pairs = new Set<number>();
+  const pairsBelowVacancy = new Set<number>();
+  const vacancies = new Set<number>();
+  if (stage.kind === "knockout") {
+    const playOff = fixtures.find((fixture) => fixture.thirdPlace === true);
+    if (playOff === undefined || playOff.status === "void") pairs.add(3);
+    else if (playOff.walkedOver === "both") pairsBelowVacancy.add(4);
+  }
+  const final = decidingFinal(fixtures);
+  if (final !== undefined && final.loser === undefined) vacancies.add(2);
+  return { pairs, pairsBelowVacancy, vacancies };
+}
+
 /** W4 (X-FR-1, RB4-R1; controller ruling B3-1): the STRICT check a completed bracket's ranks pass, after the structural
- *  one: standard competition ranking, with a rank shared only where the stage's own fixtures declare it. Never more than
- *  two at one rank, and a shared rank is always one of `BRACKET_SHARED_RANKS`. No stage declares a shared place here yet,
- *  so a completed stage ranks strictly, 1 … n. Each refusal names its reason (CONFIG_INVALID). */
-export function assertCompletedBracketPlaces(stage: BracketStage, _fixtures: readonly BracketFixture[], places: readonly FinalPlace[]): void {
+ *  one: standard competition ranking, with a rank shared — or left vacant — only where the stage's own fixtures declare
+ *  it (`declaredPlaces`). Never more than two at one rank, and a shared rank is always one of `BRACKET_SHARED_RANKS`.
+ *  Each refusal names its reason (CONFIG_INVALID). */
+export function assertCompletedBracketPlaces(stage: BracketStage, fixtures: readonly BracketFixture[], places: readonly FinalPlace[]): void {
   assertBracketPlaces(stage.entrants, places);
+  const declared = declaredPlaces(stage, fixtures);
   let before = 0;
+  let vacant = 0; // declared vacancies already passed: each moves every rank below it down one
   while (before < places.length) {
     const rank = (places[before] as FinalPlace).rank;
     const holders = places.filter((place) => place.rank === rank).map((place) => place.entrantId);
@@ -523,14 +551,30 @@ export function assertCompletedBracketPlaces(stage: BracketStage, _fixtures: rea
     if (holders.length === 2 && !BRACKET_SHARED_RANKS.has(rank)) {
       throw placesInvalid(`rank ${rank} is shared; only ${[...BRACKET_SHARED_RANKS].join(", ")} ever are`, { reason: "not_a_shared_rank", ...at });
     }
-    if (holders.length === 2) {
+    if (holders.length === 2 && !declared.pairs.has(rank) && !declared.pairsBelowVacancy.has(rank)) {
       throw placesInvalid(`rank ${rank} is shared, which stage "${stage.id}" does not declare`, { reason: "undeclared_shared_place", ...at });
     }
-    if (rank !== before + 1) {
-      throw placesInvalid(`rank ${rank} after ${before} entrant(s) breaks competition ranking (expected ${before + 1})`, { reason: "not_competition_ranking", ...at });
+    const competition = before + 1 + vacant;
+    const fits =
+      rank === competition
+        ? !(holders.length === 2 && declared.pairsBelowVacancy.has(rank))
+        : rank === competition + 1 &&
+          (holders.length === 2 ? declared.pairsBelowVacancy.has(rank) : declared.vacancies.has(competition));
+    if (!fits) {
+      throw placesInvalid(`rank ${rank} after ${before} entrant(s) breaks competition ranking (expected ${competition})`, { reason: "not_competition_ranking", ...at });
     }
+    if (holders.length === 1 && rank === competition + 1) vacant += 1;
     before += holders.length;
   }
+}
+
+// The deciding game: the latest-round settled final that produced a winner. A voided final (DE bracket reset skipped
+// because the WB champion won GF1, spec 05 §2.4) is settled for completion but decides nothing — without the winner
+// filter it would shadow GF1 and leave the champion undefined.
+function decidingFinal(fixtures: readonly BracketFixture[]): BracketFixture | undefined {
+  return fixtures
+    .filter((fixture) => fixture.isFinal === true && SETTLED.has(fixture.status) && fixture.winner !== undefined)
+    .sort((a, b) => b.round - a.round)[0];
 }
 
 // The entrants a `walkedOver` fixture puts out. Assumptions are guards: a double walkover decided nobody, so a row that
@@ -567,7 +611,7 @@ function declaredEntrants(stage: BracketStage): Set<EntrantId> {
 // Rank entrants by bracket position (spec 05 §1 "ranking" column). Champion =
 // winner of the last `isFinal` game; runner-up = its loser; everyone else is
 // ordered by how late they were eliminated (later round = better), then by
-// seed. An optional 3rd-place playoff fixes ranks 3 and 4 from its result.
+// seed. A knockout's semi-final losers share 3rd unless a 3rd-place play-off decides 3rd and 4th (SH-3, W4).
 // W4 (X-FR-1): every DECLARED entrant is ranked, one in no fixture last; a fixture naming anyone else reaches the
 // structural guard as a place and is refused there. Mid-bracket the ranks are provisional (B3-3): an entrant still in
 // play ranks above every entrant out.
@@ -582,17 +626,7 @@ export function bracketRanks(
     }
   }
 
-  // The deciding game: the latest-round settled final that produced a winner.
-  // A voided final (DE bracket reset skipped because the WB champion won GF1,
-  // spec 05 §2.4) is settled for completion but decides nothing — without the
-  // winner filter it would shadow GF1 and leave the champion undefined.
-  const decidedFinals = fixtures
-    .filter(
-      (fixture) =>
-        fixture.isFinal === true && SETTLED.has(fixture.status) && fixture.winner !== undefined,
-    )
-    .sort((a, b) => b.round - a.round);
-  const grandFinal = decidedFinals[0];
+  const grandFinal = decidingFinal(fixtures);
 
   const lastLossRound = new Map<EntrantId, number>();
   for (const fixture of fixtures) {
@@ -643,35 +677,56 @@ export function bracketRanks(
       return bySeedThenId(a, b);
     });
 
-  const order: EntrantId[] = [];
+  const places: FinalPlace[] = [];
   const placed = new Set<EntrantId>();
-  const place = (id: EntrantId | undefined): void => {
+  let lastRank = 0;
+  const placeAt = (id: EntrantId | undefined, rank: number): void => {
     if (id === undefined || placed.has(id)) return;
-    order.push(id);
+    places.push({ entrantId: id, rank });
     placed.add(id);
+    lastRank = rank;
   };
+  // X-FR-2 (ruling 273, RB4-R2): outside a shared place every rank is strict — max(previous rank + 1, entrants already
+  // placed + 1) — so a shared 3rd's second holder still uses up a place (3, 3, then 5) and a vacant rank stays vacant.
+  const placeNext = (id: EntrantId | undefined): void => placeAt(id, Math.max(lastRank + 1, placed.size + 1));
 
   if (grandFinal !== undefined) {
-    place(grandFinal.winner);
-    place(grandFinal.loser);
+    placeNext(grandFinal.winner);
+    placeNext(grandFinal.loser);
   }
 
   const stillInPlay = [...inPlay].filter((id) => !placed.has(id));
   stillInPlay.sort((a, b) => (losses.get(a) ?? 0) - (losses.get(b) ?? 0) || bySeedThenId(a, b));
-  for (const id of stillInPlay) place(id);
+  for (const id of stillInPlay) placeNext(id);
 
-  // 3rd-place playoff overrides the semifinal-loser ordering for ranks 3–4.
-  const thirdPlace = fixtures.find(
-    (fixture) => fixture.thirdPlace === true && SETTLED.has(fixture.status),
-  );
-  if (thirdPlace !== undefined) {
-    place(thirdPlace.winner);
-    place(thirdPlace.loser);
+  // SH-3 (ruling 270; RB4-T2, T3, T6): a knockout's third-place block, after the title (and, mid-bracket, after every
+  // entrant still in play: `third` is never above them). Its semi-finals are the fixtures of the final's round before
+  // (the play-off is in the final's round). With no play-off, or a voided one (plan's call), every semi-final loser
+  // ranks 3rd (X-TP-3), by seed then id. A decided play-off gives its winner 3rd and its loser 4th; both its sides
+  // walked over, both rank 4th and 3rd stays vacant (X-TP-7). An unsettled play-off names no winner or loser yet, so it
+  // places nobody: the strict order below (completion refuses it, X-TP-4). A semi-final both sides walked over has no
+  // loser: its two sides rank in the strict block (plan's call). Every other kind ranks strictly below its title (Rank
+  // places table). A final in round 0 (two entrants) has no semi-final round.
+  const final = fixtures.find((fixture) => fixture.isFinal === true);
+  if (stage.kind === "knockout" && final !== undefined) {
+    const third = Math.max(3, lastRank + 1);
+    const playOff = fixtures.find((fixture) => fixture.thirdPlace === true);
+    if (playOff === undefined || playOff.status === "void") {
+      // An unsettled semi-final names no loser; its seated sides are in play, so already placed above.
+      const semiLosers = fixtures
+        .filter((fixture) => fixture.round === final.round - 1)
+        .flatMap((fixture) => (fixture.loser === undefined ? [] : [fixture.loser]))
+        .sort(bySeedThenId);
+      for (const id of semiLosers) placeAt(id, third);
+    } else if (playOff.walkedOver === "both") {
+      for (const id of walkedOverSides(playOff).sort(bySeedThenId)) placeAt(id, third + 1);
+    } else {
+      placeAt(playOff.winner, third);
+      placeAt(playOff.loser, third + 1);
+    }
   }
 
-  for (const id of rankRest([...entrants].filter((id) => !placed.has(id)))) place(id);
-  // Ranks are strict: rank = position.
-  const places = order.map((entrantId, i) => ({ entrantId, rank: i + 1 }));
+  for (const id of rankRest([...entrants].filter((id) => !placed.has(id)))) placeNext(id);
   assertBracketPlaces(stage.entrants, places);
   return places;
 }
