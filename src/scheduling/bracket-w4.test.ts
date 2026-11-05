@@ -191,7 +191,11 @@ describe("X-SD-3 a knockout of 2 entrants is one final (RB4-E3)", () => {
 
 /** RB4-D1 checked seat by seat on a generated bracket of the n entrants `map` seeds 1..n; returns the section levels checked.
  *  Line i is round-0 fixture i; a bye stands for a seed beyond n, so an award line holds one real seed s and the bye S + 1 - s. */
-function expectFold(fixtures: readonly BracketFixtureGen[], n: number, map: ReadonlyMap<string, number>): number {
+function expectFold(
+  fixtures: readonly BracketFixtureGen[],
+  n: number,
+  map: ReadonlyMap<string, number>,
+): { levels: number; pairings: number } {
   const size = drawSizeOf(n);
   const at = `n=${n} S=${size}`;
   const lines = linesOf(fixtures, size);
@@ -203,6 +207,9 @@ function expectFold(fixtures: readonly BracketFixtureGen[], n: number, map: Read
   const lineOfSeed = new Map<number, number>();
   let realSeats = 0;
   let byeSeats = 0;
+  let pairings = 0;
+  // the seed that comes out of each line when the higher seed (the lower number) always wins
+  const winners: number[] = [];
   lines.forEach((f, i) => {
     if (f.award === undefined) {
       const h = seedOf(f.home);
@@ -211,6 +218,7 @@ function expectFold(fixtures: readonly BracketFixtureGen[], n: number, map: Read
       expect(h + a, `${at} line ${i}`).toBe(size + 1);
       lineOfSeed.set(h, i).set(a, i);
       realSeats += 2;
+      winners.push(Math.min(h, a));
     } else {
       // the award holder's fold partner, S + 1 - s, is beyond n: a bye, no entrant
       const s = seedOf(f.award);
@@ -218,8 +226,27 @@ function expectFold(fixtures: readonly BracketFixtureGen[], n: number, map: Read
       lineOfSeed.set(s, i);
       realSeats += 1;
       byeSeats += 1;
+      // a bye stands for a seed beyond n, so it loses
+      winners.push(s);
     }
+    pairings++;
   });
+  // RB4-D1 round by round, which is what places seeds 3 and 4 onward: with the higher seed always winning, the survivors
+  // meet by seat adjacency (lines 2i and 2i + 1 in round 1, those winners pairwise in round 2, and so on), and every
+  // round-r pairing sums to S / 2^r + 1, so the semi-finals are 1 v 4 and 2 v 3. Seat order only; no feed is read.
+  let field = winners;
+  for (let r = 1; field.length > 1; r++) {
+    const next: number[] = [];
+    for (let i = 0; i < field.length; i += 2) {
+      const a = field[i] as number;
+      const b = field[i + 1] as number;
+      expect(a + b, `${at} round ${r} game ${i / 2}: seed ${a} v seed ${b}`).toBe(size / 2 ** r + 1);
+      next.push(Math.min(a, b));
+      pairings++;
+    }
+    field = next;
+  }
+  expect(field, `${at}: seed 1 is the last one standing`).toEqual([1]);
   // seed 1 at the top: line 0, home
   expect(lines[0]?.home, `${at}: seed 1 at the top`).toBe(entrantOfSeed(map, 1));
   // seed 2 at the bottom: line S/2 - 1. Ruling C2: an award line seats its real side at home (X-SD-5), so seed 2 is home
@@ -254,7 +281,7 @@ function expectFold(fixtures: readonly BracketFixtureGen[], n: number, map: Read
     }
     levels++;
   }
-  return levels;
+  return { levels, pairings };
 }
 
 describe("X-SD-4 seeded entrants are placed by the deterministic fold (RB4-D1, deviation 268)", () => {
@@ -268,23 +295,30 @@ describe("X-SD-4 seeded entrants are placed by the deterministic fold (RB4-D1, d
     expect(checked).toBe(2);
   });
 
-  it("X-SD-4 the fold, written from RB4-D1 not from seedPositions: line seats sum to S + 1, seed 1 top, seed 2 bottom, seeds 1..2^k in 2^k sections (n=2..128, counted)", () => {
+  it("X-SD-4 the fold, written from RB4-D1 not from seedPositions: with the higher seed always winning, every round-r pairing sums to S/2^r + 1; seed 1 top, seed 2 bottom, seeds 1..2^k in 2^k sections (n=2..128, counted)", () => {
     // n - 1 after a withdrawal is one of these sizes: the fold is the same rule over whatever field is drawn.
     let checked = 0;
     let levels = 0;
+    let pairings = 0;
     for (const n of SIZES) {
       const { fixtures } = generateSingleElim({ entrants: ids(n), seeds: seeds(n) });
-      levels += expectFold(fixtures, n, seeds(n));
+      const fold = expectFold(fixtures, n, seeds(n));
+      levels += fold.levels;
+      pairings += fold.pairings;
       checked++;
     }
     expect(checked).toBe(127);
     // log2(S) + 1 levels per size, by S: 2 (1 size, 2 levels), 4 (2 sizes, 3), 8 (4, 4), 16 (8, 5), 32 (16, 6), 64 (32, 7),
     // 128 (64, 8)
     expect(levels).toBe(2 + 6 + 16 + 40 + 96 + 224 + 512);
+    // S - 1 pairings per size (S/2 + S/4 + ... + 1), by S: 2 (1 size, 1), 4 (2 sizes, 3), 8 (4, 7), 16 (8, 15), 32 (16, 31),
+    // 64 (32, 63), 128 (64, 127)
+    expect(pairings).toBe(1 + 6 + 28 + 120 + 496 + 2016 + 8128);
   });
 
   it("X-SD-4 the seeds map decides the fold, not the input order: reversed input, and a map reversing the input, still put seed 1 at the top (n=2..128, counted)", () => {
     let checked = 0;
+    let pairings = 0;
     for (const n of SIZES) {
       const forward = generateSingleElim({ entrants: ids(n), seeds: seeds(n) });
       // the same map over the input reversed: the same bracket, seed 1 (e1) at the top
@@ -296,10 +330,12 @@ describe("X-SD-4 seeded entrants are placed by the deterministic fold (RB4-D1, d
       const reversedMap = new Map(ids(n).map((id, i) => [id, n - i]));
       const byMap = generateSingleElim({ entrants: ids(n), seeds: reversedMap });
       expect(byMap.fixtures[0]?.home, `n=${n}`).toBe(`e${n}`);
-      expectFold(byMap.fixtures, n, reversedMap);
+      pairings += expectFold(byMap.fixtures, n, reversedMap).pairings;
       checked++;
     }
     expect(checked).toBe(127);
+    // S - 1 pairings per size, as in the fold sweep above
+    expect(pairings).toBe(1 + 6 + 28 + 120 + 496 + 2016 + 8128);
   });
 
   it("X-SD-4 a second call is byte-identical (n=2..128, counted)", () => {
@@ -468,6 +504,7 @@ describe("X-SP-1 a stepladder: the lowest two seeds first, each winner meets the
     // The top 5 seeded 1..5; e3 withdraws. 4 remain, in seed order e1, e2, e4, e5: e4 v e5 first, the winner meets e2, that
     // winner meets e1 in the final.
     const { fixtures, rounds } = generateStepladder({ entrants: ids(5).filter((e) => e !== "e3"), seeds: seeds(5) });
+    // RB4-S1: k - 1 rungs, one per round, with k = 4 remaining
     expect(rounds).toBe(3);
     expect(fixtures).toEqual([
       { id: "sl-g0", round: 0, home: "e4", away: "e5" },
@@ -484,6 +521,7 @@ describe("X-SP-2 a page playoff of exactly 4: Q1 1 v 2, E 3 v 4, Q2 the loser of
     for (const n of [0, 1, 2, 3, 5, 6, 7, 8]) {
       const err = refusalOf(() => generatePagePlayoff({ entrants: ids(n), seeds: seeds(n) }));
       expect(err.code, `n=${n}`).toBe("CONFIG_INVALID");
+      expect(err.message, `n=${n}`).toBe(`page playoffs need exactly 4 entrants, got ${n}`);
       checked++;
     }
     expect(checked).toBe(8);
