@@ -68,7 +68,7 @@ export const AWAITING_PROOF: ReadonlyMap<string, string> = new Map<string, strin
   ["X-CH-2", "W4 app PR A"], ["X-CH-3", "W4 app PR B"], ["X-CH-4", "W4 app PR B"], ["X-CH-5", "W4 app PR A"],
   ["X-CH-6", "W4 app PR B"], ["X-CH-8", "W4 app PR A"],
   ["X-FR-4", "W4 app PR B"], ["X-FR-5", "W4 app PR B"],
-  ["X-SP-3", "W4 app PR A"], ["X-SP-4", "W4 app PR A"], ["X-SP-5", "W4 app PR A"],
+  ["X-SP-3", "W4 app PR A"],
   ["X-SP-6", "W4 app PR A"], ["X-SP-7", "W4 app PR A"],
 ]);
 

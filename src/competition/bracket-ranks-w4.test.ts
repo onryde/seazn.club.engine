@@ -913,3 +913,302 @@ describe("X-FR-3 a walkover loser is out at that fixture, so ranks and seats agr
     check([...rows, decided("pp-q2-stale", 1, "E3", "E2", "E3")], "with a stale pp-q2 row");
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Task 11 — a withdrawn stepladder seed and a page-playoff withdrawal (RB4-S4, RB4-S5; X-SP-4, X-SP-5)
+// ---------------------------------------------------------------------------------------------------------------------
+// The rows are the ones the app writes after the withdrawal, hand-built (controller ruling B5-1) from the app's shape:
+// a seat the withdrawal emptied is stamped dead (X-WD-3, ruling 116), the side that arrives walks over it, and
+// `toBracketFixture` (apps/web engine-db/competition.ts) omits the empty seat while `bracketWinnerLoser` drops the loser
+// an award names for the copy alone (she holds no seat in it). A forfeit with both sides seated names its loser,
+// `walkedOver: "loser"`. Expected ranks come from RB4-S4 / RB4-S5 and the Rank places table, never from bracketRanks.
+
+/** A walkover over a dead seat: only the side that arrived is seated, and it wins; no loser (ruling 116). */
+const overDeadSeat = (id: string, round: number, present: string, extra: Partial<BracketFixture> = {}): BracketFixture =>
+  ({ id, round, status: "walkover", away: present, winner: present, ...extra });
+/** A forfeit with both sides seated: the other side wins, the forfeiter is out here (X-FR-3). */
+const forfeited = (id: string, round: number, home: string, away: string, forfeiter: string): BracketFixture =>
+  ({ id, round, status: "walkover", home, away, winner: forfeiter === home ? away : home, loser: forfeiter, walkedOver: "loser" });
+
+/** A k-stepladder (seed i is `E${i}`) played to seed, in which waiting seed s (s ≤ k − 2) withdrew before the climber
+ *  reached her rung: her seat there is dead and the climber walks over it. Every played rung goes to the higher seed. */
+function ladderWithdrawn(k: number, s: number): BracketFixture[] {
+  const e = ids(k);
+  const at = (i: number): string => e[i] as string;
+  const rows: BracketFixture[] = [decided("sl-g0", 0, at(k - 2), at(k - 1), at(k - 2))];
+  let climber = at(k - 2);
+  for (let j = 1; j <= k - 2; j++) {
+    const final = j === k - 2 ? { isFinal: true } : {};
+    const waiting = at(k - 2 - j); // seed k − 1 − j (RB4-S1: each winner meets the next seed up)
+    if (k - 1 - j === s) {
+      rows.push(overDeadSeat(`sl-g${j}`, j, climber, final));
+    } else {
+      rows.push(decided(`sl-g${j}`, j, waiting, climber, waiting, final));
+      climber = waiting;
+    }
+  }
+  return rows;
+}
+
+/** RB4-S4 over the Rank places table, read off the rows (never off bracketRanks): a stepladder ranks its champion 1st,
+ *  then each rung's loser, the final's first and round 0's last; a rung walked over a dead seat has as its loser the
+ *  seed whose seat it was. */
+function ladderOrderByRule(rows: readonly BracketFixture[], withdrawn: string): string[] {
+  const final = rows.find((r) => r.isFinal === true);
+  const rungs = [...rows].sort((a, b) => b.round - a.round);
+  return [final?.winner ?? "?", ...rungs.map((r) => r.loser ?? withdrawn)];
+}
+
+describe("X-SP-4 a withdrawn stepladder seed ranks as the loser of the rung they were due to enter (Task 11, RB4-S4)", () => {
+  it("X-SP-4 the empty case first: a stepladder with no entrants ranks nobody; one with every seed seated places nobody at a rung", () => {
+    // RB4-R1: no entrant, no place.
+    expect(bracketRanks({ id: "sl", kind: "stepladder", entrants: [] }, [])).toEqual([]);
+    // Nobody withdrew: every entrant is in a fixture, so no rung is read — Rank places, "stepladder: strict 1 … n", every
+    // match to seed: E1 … E5. With no seed map at all nothing is refused either: a rung is read only for an entrant in no
+    // fixture (the seed guard's positive pair), and the ranks are elimination round, then id.
+    const rows = playOutBracket(generateStepladder({ entrants: ids(5), seeds: seedsOf(ids(5)) }), { seeds: seedsOf(ids(5)) });
+    expect(completeBracketStage({ id: "sl", kind: "stepladder", entrants: ids(5), seeds: seedsOf(ids(5)) }, rows).finalRanks).toEqual(places(...ids(5)));
+    expect(completeBracketStage({ id: "sl", kind: "stepladder", entrants: ids(5) }, rows).finalRanks).toEqual(places(...ids(5)));
+  });
+
+  it("X-SP-4 truth run: k = 5, seed 2 withdrawn before the climber arrived ranks 3rd — below the final's loser, above the round-1 and round-0 losers", () => {
+    // k = 5: sl-g0 E4 v E5 (round 0), sl-g1 E3 v climber (1), sl-g2 E2 v climber (2), sl-g3 E1 v climber (3, the final).
+    // E2 withdrew before sl-g1 was played: her seat in sl-g2 is dead, and E3 (who won sl-g1) walks over it.
+    const stage: BracketStage = { id: "sl", kind: "stepladder", entrants: ids(5), seeds: seedsOf(ids(5)) };
+    const rows = ladderWithdrawn(5, 2);
+    // Who plays whom (RB4-S1, X-SP-1): the generator's rungs, every waiting seed at home on its own rung except E2's.
+    const gen = generateStepladder({ entrants: ids(5), seeds: seedsOf(ids(5)) });
+    expect(rows.map((r) => [r.id, r.round, r.isFinal === true])).toEqual(gen.fixtures.map((f) => [f.id, f.round, f.isFinal === true]));
+    expect(rows.map((r) => r.home)).toEqual(["E4", "E3", undefined, "E1"]);
+    expect(rows.find((r) => r.id === "sl-g2")).toEqual({ id: "sl-g2", round: 2, status: "walkover", away: "E3", winner: "E3" });
+    // RB4-S4: E2 is the loser of sl-g2 (round 2), so she ranks below sl-g3's loser E3 (2nd) and above sl-g1's loser E4 and
+    // sl-g0's loser E5 — Rank places, "stepladder: strict 1 … n": E1, E3, E2, E4, E5.
+    // differential: today E1, E3, E4, E5, E2 (E2 is in no fixture, so she ranks last).
+    const want = places("E1", "E3", "E2", "E4", "E5");
+    expect(bracketRanks(stage, rows)).toEqual(want);
+    expect(completeBracketStage(stage, rows).finalRanks).toEqual(want);
+    // X-SP-4: every seed appears in the final ranks.
+    expect(completeBracketStage(stage, rows).finalRanks.map((p) => p.entrantId).sort()).toEqual(ids(5));
+  });
+
+  it("X-SP-4 counted: every waiting seed s of every k = 3..8, withdrawn at their rung, ranks s + 1 — that rung's loser", () => {
+    // RB4-S1: seed s ≤ k − 2 waits for round k − 1 − s; the Rank places table ranks the loser of round r k − r (the final's
+    // loser 2nd, round 0's last), so seed s ranks k − (k − 1 − s) = s + 1. The whole order is ladderOrderByRule's.
+    // differential: today seed s ranks k, last, for every s here (s + 1 ≤ k − 1).
+    let checked = 0;
+    for (let k = 3; k <= 8; k++) {
+      const stage: BracketStage = { id: "sl", kind: "stepladder", entrants: ids(k), seeds: seedsOf(ids(k)) };
+      const gen = generateStepladder({ entrants: ids(k), seeds: seedsOf(ids(k)) });
+      for (let s = 1; s <= k - 2; s++) {
+        const rows = ladderWithdrawn(k, s);
+        const what = `k=${k}, seed ${s} withdrawn`;
+        // The rows are the generator's rungs, and the dead seat is the one the generator gave seed s.
+        expect(rows.map((r) => [r.id, r.round, r.isFinal === true]), what).toEqual(gen.fixtures.map((f) => [f.id, f.round, f.isFinal === true]));
+        const dead = rows.find((r) => r.home === undefined);
+        expect(gen.fixtures.find((f) => f.id === dead?.id)?.home, what).toBe(`E${s}`);
+        const got = completeBracketStage(stage, rows).finalRanks;
+        expect(got, what).toEqual(places(...ladderOrderByRule(rows, `E${s}`)));
+        expect(rankOf(got)[`E${s}`], what).toBe(s + 1);
+        checked++;
+      }
+    }
+    // Σ (k − 2) for k = 3..8 = 1 + 2 + 3 + 4 + 5 + 6.
+    expect(checked, "withdrawn ladders checked").toBe(21);
+  });
+
+  it("X-SP-4 the rung is read from seed ORDER, as the ladder is drawn: gapped seeds name the same rung, tied seeds draw in the order given", () => {
+    // The generator draws a ladder in seed order (`seedOrder`), so seeds 10 … 50 draw the same rungs as 1 … 5 — the app
+    // passes an entrant's own seed, which need not run 1 … k. E2 (seed 20, ladder place 2) is due at round 2 as before.
+    const gapped = new Map(ids(5).map((id, i) => [id, (i + 1) * 10]));
+    const gen = generateStepladder({ entrants: ids(5), seeds: gapped });
+    expect(gen.fixtures).toEqual(generateStepladder({ entrants: ids(5), seeds: seedsOf(ids(5)) }).fixtures);
+    const stage: BracketStage = { id: "sl", kind: "stepladder", entrants: ids(5), seeds: gapped };
+    // RB4-S4, as the truth run: E1, E3, E2, E4, E5. differential: a raw seed of 20 read as the place puts E2 at round 0,
+    // where no seat is empty, and so last.
+    expect(completeBracketStage(stage, ladderWithdrawn(5, 2)).finalRanks).toEqual(places("E1", "E3", "E2", "E4", "E5"));
+    // Tied seeds draw in the order given (`seedOrder`): E2 and E3 both seed 2, so E3 is ladder place 3, home on sl-g1
+    // (round 1). Withdrawn there, she ranks as sl-g1's loser, 4th (RB4-S4: s + 1 for place 3). differential: a place read
+    // without the tie order counts E3 2nd, due at round 2, whose seats are both filled — and so last.
+    const tied = new Map([["E1", 1], ["E2", 2], ["E3", 2], ["E4", 3], ["E5", 4]]);
+    expect(generateStepladder({ entrants: ids(5), seeds: tied }).fixtures.find((f) => f.id === "sl-g1")?.home).toBe("E3");
+    const rows = ladderWithdrawn(5, 3);
+    expect(completeBracketStage({ id: "sl", kind: "stepladder", entrants: ids(5), seeds: tied }, rows).finalRanks).toEqual(places(...ladderOrderByRule(rows, "E3")));
+    expect(rankOf(bracketRanks({ id: "sl", kind: "stepladder", entrants: ids(5), seeds: tied }, rows)).E3).toBe(4);
+  });
+
+  it("X-SP-4 sequence: before the climber reaches her dead seat she already ranks out at her rung (provisional); completion agrees, and a second call is stable", () => {
+    const stage: BracketStage = { id: "sl", kind: "stepladder", entrants: ids(5), seeds: seedsOf(ids(5)) };
+    // E2 withdrew with sl-g1 still to play: her sl-g2 seat is dead, its other seat waits on sl-g1, and E1 waits in the final.
+    const mid: BracketFixture[] = [
+      decided("sl-g0", 0, "E4", "E5", "E4"),
+      { id: "sl-g1", round: 1, status: "scheduled", home: "E3", away: "E4" },
+      { id: "sl-g2", round: 2, status: "scheduled" },
+      { id: "sl-g3", round: 3, status: "scheduled", isFinal: true, home: "E1" },
+    ];
+    // B3-3: E1, E3 and E4 are in play (no losses; by seed) 1–3; then the out by elimination round — E2 at her rung (2),
+    // E5 at round 0. differential: today E5 4th, E2 5th.
+    const before = structuredClone(mid);
+    expect(bracketRanks(stage, mid)).toEqual(places("E1", "E3", "E4", "E2", "E5"));
+    expect(bracketRanks(stage, mid)).toEqual(places("E1", "E3", "E4", "E2", "E5"));
+    expect(mid).toEqual(before);
+    // Played out: E3 beats E4, walks over E2's dead seat, and loses the final to E1 — the truth run's rows and ranks.
+    const done = ladderWithdrawn(5, 2);
+    expect(done.map((r) => r.id)).toEqual(mid.map((r) => r.id));
+    expect(completeBracketStage(stage, done).finalRanks).toEqual(places("E1", "E3", "E2", "E4", "E5"));
+    expect(completeBracketStage(stage, done).finalRanks).toEqual(places("E1", "E3", "E2", "E4", "E5"));
+  });
+
+  it("X-SP-4 a stepladder entrant in no fixture with no seed → CONFIG_INVALID (her rung cannot be named); a knockout's is never refused", () => {
+    // Assumption → guard: the rung is read from the seed. E2 is in no fixture and the seed map leaves her out.
+    const rows = ladderWithdrawn(5, 2);
+    const unseeded = new Map([...seedsOf(ids(5))].filter(([id]) => id !== "E2"));
+    const stage: BracketStage = { id: "sl", kind: "stepladder", entrants: ids(5), seeds: unseeded };
+    expectInvalid(() => bracketRanks(stage, rows), "stepladder_seed_missing");
+    expectInvalid(() => completeBracketStage(stage, rows), "stepladder_seed_missing");
+    expectInvalid(() => bracketRanks({ id: "sl", kind: "stepladder", entrants: ids(5) }, rows), "stepladder_seed_missing");
+    // The positive pair: her seed back, she is ranked at her rung (the truth run).
+    expect(bracketRanks({ ...stage, seeds: seedsOf(ids(5)) }, rows)).toEqual(places("E1", "E3", "E2", "E4", "E5"));
+    // Kind-scoped: a knockout entrant in no fixture with no seed is ranked last, as X-FR-1 has it, and nothing is refused.
+    const ko: BracketStage = { id: "ko", kind: "knockout", entrants: ["S1", "S2", "S3", "S4", "W"], seeds: S4_SEEDS };
+    expect(completeBracketStage(ko, PLAYOFF4).finalRanks).toEqual(places("S1", "S2", "S4", "S3", "W"));
+  });
+
+  it("X-SP-4 an entrant whose due rung holds no empty seat was drawn without them: ranked last, as one in no fixture", () => {
+    // W is ladder place 3 of 4 (seeds A 1, B 2, W 3, C 4), so due at round 0 — but the ladder was drawn over A, B and C
+    // alone (B v C, then A v B), and its round-0 rung seats both B and C: there is no seat of W's to have left. Rank places,
+    // "stepladder: strict 1 … n": A, B, C, then W in no fixture (X-FR-1). (No rung at all at the due round is X-FR-1's own
+    // case above: W seeded 1 of 4 is due at round 2, which that ladder does not have.) A rung read without its empty
+    // seat would put W at round 0 beside C, and above C on seed.
+    const stage: BracketStage = { id: "sl", kind: "stepladder", entrants: ["A", "B", "W", "C"], seeds: seedsOf(["A", "B", "W", "C"]) };
+    const rungs = [decided("sl-g0", 0, "B", "C", "B"), decided("sl-g1", 1, "A", "B", "A", { isFinal: true })];
+    expect(completeBracketStage(stage, rungs).finalRanks).toEqual(places("A", "B", "C", "W"));
+  });
+});
+
+/** A page playoff (seed i is `E${i}`) in which `withdrawn`, a Qualifier 1 side, withdrew before it: Q1 walked over to the
+ *  other side, Q2 walked over the dead loser-edge seat to E's winner (`eWinner`), and the final won by `champion`. */
+function pageQ1Withdrawn(withdrawn: "E1" | "E2", eWinner: "E3" | "E4", champion: "q1" | "q2"): BracketFixture[] {
+  const q1Winner = withdrawn === "E1" ? "E2" : "E1";
+  return [
+    forfeited("pp-q1", 0, "E1", "E2", withdrawn),
+    decided("pp-elim", 0, "E3", "E4", eWinner),
+    overDeadSeat("pp-q2", 1, eWinner),
+    decided("pp-final", 2, q1Winner, eWinner, champion === "q1" ? q1Winner : eWinner, { isFinal: true }),
+  ];
+}
+
+describe("X-SP-5 a withdrawn page-playoff entrant gets no second life and ranks below everyone still in the stage (Task 11, RB4-S5)", () => {
+  it("X-SP-5 the empty case first: a page playoff with no entrants ranks nobody; one nobody left keeps round, then seed", () => {
+    // RB4-R1: no entrant, no place.
+    expect(bracketRanks({ id: "pp", kind: "page_playoff", entrants: [] }, [])).toEqual([]);
+    // Nobody walked over: no forfeit to order. Rank places, "page_playoff: strict 1 … n", every match to seed — E1 beats
+    // E2 then E2 beats E3 in Qualifier 2: E1, E2, E3 (out at Q2, round 1), E4 (out at E, round 0).
+    const rows = playOutBracket(generatePagePlayoff({ entrants: ids(4), seeds: seedsOf(ids(4)) }), { seeds: seedsOf(ids(4)) });
+    expect(rows.some((r) => r.walkedOver !== undefined)).toBe(false);
+    expect(completeBracketStage({ id: "pp", kind: "page_playoff", entrants: ids(4), seeds: seedsOf(ids(4)) }, rows).finalRanks).toEqual(places(...ids(4)));
+  });
+
+  it("X-SP-5 truth run: a Q1 withdrawal walks Q1 over, then Q2 over to E's winner, and ranks 4th, below the Eliminator loser", () => {
+    // E1 withdrew before Qualifier 1: E2 wins it by walkover (both seated), and E1's loser-edge seat in Qualifier 2 is dead
+    // (no second life, X-DE-1 by analogy), so E3 — the Eliminator's winner over E4 — walks over it. E2 beats E3 in the final.
+    const stage: BracketStage = { id: "pp", kind: "page_playoff", entrants: ids(4), seeds: seedsOf(ids(4)) };
+    const rows: BracketFixture[] = [
+      forfeited("pp-q1", 0, "E1", "E2", "E1"),
+      decided("pp-elim", 0, "E3", "E4", "E3"),
+      overDeadSeat("pp-q2", 1, "E3"),
+      decided("pp-final", 2, "E2", "E3", "E2", { isFinal: true }),
+    ];
+    // Who plays whom (RB4-S2, RB4-S5): the generator's fixtures; Qualifier 2 seats E's winner and nobody from Qualifier 1;
+    // the final seats Qualifier 1's winner and Qualifier 2's.
+    const gen = generatePagePlayoff({ entrants: ids(4), seeds: seedsOf(ids(4)) });
+    expect(rows.map((r) => [r.id, r.round, r.isFinal === true])).toEqual(gen.fixtures.map((f) => [f.id, f.round, f.isFinal === true]));
+    expect(rows.map((r) => [r.home, r.away])).toEqual([["E1", "E2"], ["E3", "E4"], [undefined, "E3"], ["E2", "E3"]]);
+    expect(expectRanksAndSeatsAgree(stage, rows, "Q1 withdrawal"), "later fixtures checked against E1").toBe(2);
+    // RB4-S5: E1 ranks below everyone still in the stage when she left — E2 and E3 (the final), and E4, the Eliminator
+    // loser, out in the same round as her. Rank places, "page_playoff: strict 1 … n": E2, E3, E4, E1.
+    // differential: today E2, E3, E1, E4 (E1 and E4 both out at round 0, and E1's seed is the better).
+    const want = places("E2", "E3", "E4", "E1");
+    expect(bracketRanks(stage, rows)).toEqual(want);
+    expect(completeBracketStage(stage, rows).finalRanks).toEqual(want);
+  });
+
+  it("X-SP-5 counted: either Q1 side's withdrawal, whoever wins E and the final, ranks 4th, below the Eliminator loser", () => {
+    // RB4-S5 over the Rank places table: the final's winner 1st and loser 2nd; then the Eliminator's loser, still in the
+    // stage when the Q1 side left; the withdrawn last. differential: today the withdrawn (seed 1 or 2) ranks 3rd, above
+    // the Eliminator loser (seed 3 or 4), in every case.
+    const stage: BracketStage = { id: "pp", kind: "page_playoff", entrants: ids(4), seeds: seedsOf(ids(4)) };
+    let checked = 0;
+    for (const withdrawn of ["E1", "E2"] as const) {
+      for (const eWinner of ["E3", "E4"] as const) {
+        for (const champion of ["q1", "q2"] as const) {
+          const rows = pageQ1Withdrawn(withdrawn, eWinner, champion);
+          const what = `${withdrawn} withdrew, ${eWinner} won E, the ${champion} side won the final`;
+          const final = rows.find((r) => r.isFinal === true);
+          const eLoser = eWinner === "E3" ? "E4" : "E3";
+          expect(expectRanksAndSeatsAgree(stage, rows, what), what).toBe(2);
+          expect(completeBracketStage(stage, rows).finalRanks, what).toEqual(places(final?.winner ?? "?", final?.loser ?? "?", eLoser, withdrawn));
+          checked++;
+        }
+      }
+    }
+    expect(checked, "Q1 withdrawals checked: 2 sides × 2 Eliminator winners × 2 champions").toBe(8);
+  });
+
+  it("X-SP-5 only a same-round tie moves: a withdrawal before Qualifier 2 still ranks above the Eliminator loser, out already", () => {
+    // E1 beats E2 in Q1 and E3 beats E4 in E; then E2 withdraws with both Q2 seats filled — a forfeit at round 1. E4 was
+    // out before E2 left, so RB4-S5 does not put E2 below E4: Rank places, strict by elimination round (X-FR-2) — E1, E3
+    // (the final), E2 (round 1), E4 (round 0). The positive pair of the truth run, and the same as before Task 11.
+    const stage: BracketStage = { id: "pp", kind: "page_playoff", entrants: ids(4), seeds: seedsOf(ids(4)) };
+    const rows: BracketFixture[] = [
+      decided("pp-q1", 0, "E1", "E2", "E1"),
+      decided("pp-elim", 0, "E3", "E4", "E3"),
+      forfeited("pp-q2", 1, "E2", "E3", "E2"),
+      decided("pp-final", 2, "E1", "E3", "E1", { isFinal: true }),
+    ];
+    expect(completeBracketStage(stage, rows).finalRanks).toEqual(places("E1", "E3", "E2", "E4"));
+  });
+
+  it("X-SP-5 sequence: mid-bracket the Q1 withdrawal ranks below the three still in play; a second withdrawal in round 0 ranks with her, below the finalists", () => {
+    const stage: BracketStage = { id: "pp", kind: "page_playoff", entrants: ids(4), seeds: seedsOf(ids(4)) };
+    // E1 withdrew before Q1; E is still to play. Q2's E1 seat is dead and its other seat waits on E; E2 waits in the final.
+    const mid: BracketFixture[] = [
+      forfeited("pp-q1", 0, "E1", "E2", "E1"),
+      { id: "pp-elim", round: 0, status: "scheduled", home: "E3", away: "E4" },
+      { id: "pp-q2", round: 1, status: "scheduled" },
+      { id: "pp-final", round: 2, status: "scheduled", isFinal: true, home: "E2" },
+    ];
+    // B3-3: E2, E3 and E4 are in play (no losses; by seed) 1–3; E1 is out (round 0) — below everyone still in.
+    const before = structuredClone(mid);
+    expect(bracketRanks(stage, mid)).toEqual(places("E2", "E3", "E4", "E1"));
+    expect(bracketRanks(stage, mid)).toEqual(places("E2", "E3", "E4", "E1"));
+    expect(mid).toEqual(before);
+    // Then E4 withdraws too: E walks over to E3, who walks over E1's dead Q2 seat and beats E2 in the final. RB4-S5 puts each
+    // withdrawn entrant below everyone still in the stage, so both below the finalists E3 and E2. Which of the two ranks
+    // 3rd is the plan's call, not pinned here: the rows carry no order of the two withdrawals (both round-0 walkovers),
+    // and the order between two walkovers of one round is X-FR-2's seed, then id.
+    const done: BracketFixture[] = [
+      forfeited("pp-q1", 0, "E1", "E2", "E1"),
+      forfeited("pp-elim", 0, "E3", "E4", "E4"),
+      overDeadSeat("pp-q2", 1, "E3"),
+      decided("pp-final", 2, "E2", "E3", "E3", { isFinal: true }),
+    ];
+    const got = rankOf(completeBracketStage(stage, done).finalRanks);
+    expect([got.E3, got.E2]).toEqual([1, 2]);
+    expect([got.E1, got.E4].sort()).toEqual([3, 4]);
+    expect(expectRanksAndSeatsAgree(stage, done, "two round-0 withdrawals"), "(out entrant, later fixture) pairs").toBe(4);
+  });
+
+  it("X-SP-5 kind-scoped: the same rows read as any other bracket kind keep round, then seed (X-FR-2)", () => {
+    // The truth run's rows. Only a page playoff puts the forfeiter below the Eliminator loser; every other kind ranks the
+    // two round-0 losers by seed — E1 3rd, E4 4th (X-FR-2: elimination round, then seed, then id).
+    const rows = pageQ1Withdrawn("E1", "E3", "q1");
+    let checked = 0;
+    for (const kind of ["knockout", "double_elim", "stepladder"] as const) {
+      const got = rankOf(bracketRanks({ id: "s", kind, entrants: ids(4), seeds: seedsOf(ids(4)) }, rows));
+      expect([got.E1, got.E4], kind).toEqual([3, 4]);
+      checked++;
+    }
+    expect(rankOf(bracketRanks({ id: "pp", kind: "page_playoff", entrants: ids(4), seeds: seedsOf(ids(4)) }, rows))).toMatchObject({ E1: 4, E4: 3 });
+    expect(checked, "other kinds checked").toBe(3);
+  });
+});

@@ -667,21 +667,53 @@ function declaredEntrants(stage: BracketStage): Set<EntrantId> {
   return declared;
 }
 
+// W4 (X-SP-4, RB4-S4; RB4-S1): the round each declared stepladder entrant in no fixture was due to enter. The ladder is
+// drawn in seed order over the stage's entrants (`generateStepladder`): of k, ladder places k − 1 and k play first, at
+// round 0, and place p ≤ k − 2 waits for round k − 1 − p. One in no fixture left before their rung was played, so that
+// rung holds an empty seat — theirs, dead (X-WD-3, ruling 116) — and they rank as its loser. A rung with no empty seat
+// was drawn without them (as is no rung at all): they stay in no fixture, last. Assumption → guard: the rung is read
+// from the seed, so a stepladder entrant in no fixture with no seed is a wiring bug (CONFIG_INVALID).
+function stepladderDueRounds(stage: BracketStage, fixtures: readonly BracketFixture[], named: ReadonlySet<EntrantId>): Map<EntrantId, number> {
+  const due = new Map<EntrantId, number>();
+  const k = stage.entrants.length;
+  const seedKey = (id: EntrantId): number => stage.seeds?.get(id) ?? Number.MAX_SAFE_INTEGER;
+  stage.entrants.forEach((id, index) => {
+    if (named.has(id)) return;
+    const seed = stage.seeds?.get(id);
+    if (seed === undefined) {
+      throw placesInvalid(`stepladder stage "${stage.id}": "${id}" is in no fixture and has no seed, so the rung they were due to enter cannot be named`, {
+        reason: "stepladder_seed_missing",
+        stageId: stage.id,
+        entrantId: id,
+      });
+    }
+    // Their ladder place, as the generator's seed order draws it: by seed, a tie by declared order.
+    const place = 1 + stage.entrants.filter((other, i) => seedKey(other) < seed || (seedKey(other) === seed && i < index)).length;
+    const round = place >= k - 1 ? 0 : k - 1 - place;
+    if (fixtures.some((fixture) => fixture.round === round && (fixture.home === undefined || fixture.away === undefined))) due.set(id, round);
+  });
+  return due;
+}
+
 // Rank entrants by bracket position (spec 05 §1 "ranking" column). Champion =
 // winner of the last `isFinal` game; runner-up = its loser; everyone else is
 // ordered by how late they were eliminated (later round = better), then by
 // seed. A knockout's semi-final losers share 3rd unless a 3rd-place play-off decides 3rd and 4th (SH-3, W4).
-// W4 (X-FR-1): every DECLARED entrant is ranked, one in no fixture last; a fixture naming anyone else reaches the
-// structural guard as a place and is refused there. Mid-bracket the ranks are provisional (B3-3): an entrant still in
-// play ranks above every entrant out.
+// W4 (X-FR-1): every DECLARED entrant is ranked, one in no fixture last (a stepladder seed: at their rung, X-SP-4); a
+// fixture naming anyone else reaches the structural guard as a place and is refused there. Mid-bracket the ranks are
+// provisional (B3-3): an entrant still in play ranks above every entrant out.
 export function bracketRanks(
   stage: BracketStage,
   fixtures: readonly BracketFixture[],
 ): FinalPlace[] {
   const entrants = declaredEntrants(stage);
+  const named = new Set<EntrantId>();
   for (const fixture of fixtures) {
     for (const id of [fixture.home, fixture.away, fixture.winner, fixture.loser]) {
-      if (id !== undefined) entrants.add(id);
+      if (id !== undefined) {
+        entrants.add(id);
+        named.add(id);
+      }
     }
   }
 
@@ -705,8 +737,10 @@ export function bracketRanks(
       if (prev === undefined || fixture.round < prev) outAt.set(id, fixture.round);
     }
   }
+  // W4 (X-SP-4, RB4-S4): a stepladder seed in no fixture is out at the rung they were due to enter (`stepladderDueRounds`).
+  const dueRound = stage.kind === "stepladder" ? stepladderDueRounds(stage, fixtures, named) : new Map<EntrantId, number>();
   // One that never lost and was never walked over ranks below every round: its line voided, or in no fixture at all.
-  const eliminatedIn = (id: EntrantId): number => outAt.get(id) ?? lastLossRound.get(id) ?? -1;
+  const eliminatedIn = (id: EntrantId): number => outAt.get(id) ?? lastLossRound.get(id) ?? dueRound.get(id) ?? -1;
 
   // B3-3 (provisional reads): an entrant still in play — seated in a fixture not yet settled, and not put out by a
   // walkover — ranks above every entrant out, fewest losses first (a winners'-bracket side above a losers'-bracket one),
@@ -731,11 +765,16 @@ export function bracketRanks(
     if (sa !== sb) return sa - sb;
     return a < b ? -1 : a > b ? 1 : 0;
   };
+  // W4 (X-SP-5, RB4-S5): a page-playoff entrant a walkover put out — a withdrawal — ranks below everyone still in the
+  // stage when they left, so below one out by play in the same round (a Qualifier 1 withdrawal below the Eliminator's
+  // loser). Every other kind keeps elimination round, then seed, then id (X-FR-2).
+  const forfeitsLast = stage.kind === "page_playoff";
   const rankRest = (ids: EntrantId[]): EntrantId[] =>
     ids.sort((a, b) => {
       const ra = eliminatedIn(a);
       const rb = eliminatedIn(b);
       if (ra !== rb) return rb - ra; // eliminated later ⇒ ranked higher
+      if (forfeitsLast && outAt.has(a) !== outAt.has(b)) return outAt.has(a) ? 1 : -1;
       return bySeedThenId(a, b);
     });
 
