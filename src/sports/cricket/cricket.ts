@@ -1533,8 +1533,19 @@ function applyDelivery(
       // Exception: the incoming batter after a wicket/retire has not faced
       // yet. The next ball may name a different eligible person at that end
       // only — same window as a new-over bowler (`currentBowler === null`).
-      const adopted = adoptUnfacedIncoming(fine, payload, ctx.battingOrder);
-      if (adopted === null && ctx.strictFold) {
+      //
+      // Exception (CK-SS-1, ruling 277; S2-4 phone ruling 76): a hand strike
+      // swap. A ball that names exactly the fold's pair reversed (the same two
+      // batters, ends swapped) is accepted on the write path too: the scorer
+      // corrects who is on strike, e.g. after a run the fold could not see (a
+      // short run, a crossing on a catch). Nothing else moves: the unfaced
+      // incoming batter is still unfaced, and no other batter may come in by
+      // this door. Replay already adopted the ledger's pair, and a reversed
+      // pair changes both ends so `adoptUnfacedIncoming` never adopted one, so
+      // a stored ledger folds byte for byte as before.
+      const swapped = striker !== null && nonStriker !== null && payload.striker === nonStriker && payload.nonStriker === striker;
+      const adopted = swapped ? null : adoptUnfacedIncoming(fine, payload, ctx.battingOrder);
+      if (!swapped && adopted === null && ctx.strictFold) {
         invalid("striker/non-striker do not match the ledger", {
           expected: { striker, nonStriker },
           got: { striker: payload.striker, nonStriker: payload.nonStriker },
