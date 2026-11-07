@@ -36,6 +36,9 @@ export {
   // exported so the pad's default-picker reuses it instead of forking a
   // third copy; see its own doc (cricket.ts) for the live 422 that caused.
   soEligibleBatters,
+  // S2-4 phone ruling 71 (engine ruling 276) — the order the fold builds from a team sheet, so a phone orders a lineup
+  // exactly as the server does instead of re-deriving the starting/role filter.
+  orderFromLineup,
   // Pad wave P2 — the runs the final innings needs, so the pad shows a Test's fourth-innings target off the engine's own
   // aggregation instead of omitting it (its narrow input type is the skin's to fill; see its own doc).
   chaseTarget,

@@ -36,10 +36,12 @@ import {
   FIELDER_OPTIONAL_KINDS,
   FREE_HIT_DISMISSAL_KINDS,
   NO_BALL_DEFAULT_RUNS,
+  NO_BALL_DISMISSAL_KINDS,
   PENALTY_RUNS,
   SUPER_OVER_EVENT_TYPES,
   VARIABLE_OUT_KINDS,
   WIDE_DEFAULT_RUNS,
+  WIDE_DISMISSAL_KINDS,
   WicketKind,
 } from "../sports/cricket/cricket.ts";
 import type { CricketPadRules } from "./types.ts";
@@ -53,6 +55,8 @@ export const cricketPadRules: CricketPadRules = Object.freeze({
   fielderCreditedKinds: Object.freeze(Object.keys(FIELDER_CREDIT_COLUMN)),
   fielderOptionalKinds: Object.freeze([...FIELDER_OPTIONAL_KINDS]),
   freeHitDismissalKinds: Object.freeze([...FREE_HIT_DISMISSAL_KINDS]),
+  noBallDismissalKinds: Object.freeze([...NO_BALL_DISMISSAL_KINDS]),
+  wideDismissalKinds: Object.freeze([...WIDE_DISMISSAL_KINDS]),
   bowlerCreditedKinds: Object.freeze([...BOWLER_CREDITED_KINDS]),
   variableOutKinds: Object.freeze([...VARIABLE_OUT_KINDS]),
   boundaryValues: Object.freeze(CricketBall.shape.boundary.unwrap().options.map((literal) => literal.value)),

@@ -1251,12 +1251,12 @@ export const BOWLER_CREDITED_KINDS: ReadonlySet<WicketKind> = new Set<WicketKind
 /** W2e T8b (CK-NB-1, D8) — the modes of dismissal that stand off a no ball. ICC Men's T20 World Cup 2026 Playing
  *  Conditions 21.18 (MCC Law 21.18 alike): "When No ball has been called, neither batter shall be out under any of the
  *  Playing Conditions except clause 34 (Hit the ball twice), clause 37 (Obstructing the field) or clause 38 (Run out)." */
-const NO_BALL_DISMISSAL_KINDS: ReadonlySet<WicketKind> = new Set<WicketKind>(["hitballtwice", "obstructed", "runout"]);
+export const NO_BALL_DISMISSAL_KINDS: ReadonlySet<WicketKind> = new Set<WicketKind>(["hitballtwice", "obstructed", "runout"]);
 
 /** W2e T8b (CK-WD-1, D8) — the modes of dismissal that stand off a wide. ICC Men's T20 World Cup 2026 Playing Conditions
  *  22.9: "When Wide ball has been called, neither batter shall be out under any of the Playing Conditions except clause 35
  *  (Hit wicket), clause 37 (Obstructing the field), clause 38 (Run out) or clause 39 (Stumped)." */
-const WIDE_DISMISSAL_KINDS: ReadonlySet<WicketKind> = new Set<WicketKind>(["hitwicket", "obstructed", "runout", "stumped"]);
+export const WIDE_DISMISSAL_KINDS: ReadonlySet<WicketKind> = new Set<WicketKind>(["hitwicket", "obstructed", "runout", "stumped"]);
 
 /** The free hit's (spec §2.2, CK-FH-1). ICC 21.19.2 gives it the no ball's three ("only under the circumstances that apply
  *  for a No ball"); the engine leaves hit the ball twice out, CK-FH-1's recorded deviation (W2e ruling I-2). */
@@ -2754,7 +2754,7 @@ function positionsFor(cfg: CricketCfg): PositionCatalog {
  * having never reached the wire before S12 — produces a byte-identical order
  * and no golden corpus moves.
  */
-function orderFromLineup(lineup: LineupPair["home"]): string[] {
+export function orderFromLineup(lineup: LineupPair["home"]): string[] {
   return lineup.slots
     .filter((slot) => slot.slot === "starting" && (slot.role ?? "player") === "player")
     .sort((a, b) => a.orderNo - b.orderNo)
