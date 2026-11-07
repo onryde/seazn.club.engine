@@ -15,12 +15,17 @@ export {
   CricketNewBall,
   CricketPowerplay,
   CricketReview,
+  // S2-4 (CK-BC-1, ruling 278): the mid-over bowler change (MCC Law 17.8).
+  CricketBowlerChange,
   // R2b-next — apps/web's next-innings targeting fix (a public mirror of the
   // private battingSideAt/maxInningsCount innings-sequencing rule).
   nextBattingSide,
   // R2c — two rules the v3 pad must mirror rather than fork, so it can refuse
   // an illegal pick BEFORE the tap instead of surfacing a generic 422 after it.
   eligibleBowlers,
+  // S2-4 (CK-BC-1, CK-BO-3, ruling 278): who may complete an over after a mid-over change, and a bowler's overs used.
+  eligibleChangeBowlers,
+  oversUsed,
   eligibleIncomingBatters,
   suggestedIncomingBatter,
   reviewsRemaining,
@@ -49,6 +54,7 @@ export {
   type CricketMargin,
   type ActiveInnings,
   type OverBowlerFacts,
+  type OverSpell,
   type CricketBallEv,
   type CricketState,
   type InningsState,

@@ -526,6 +526,8 @@ describe("CK-SO-3 CK-DV-2 cricketPadRules.superOverEventTypes against a real sup
       "cricket.powerplay": { kind: "batting", phase: "start" },
       "cricket.review": { by: lineups.away.entrantId, kind: "player", outcome: "upheld" },
       "cricket.retire": { person: "A-p1", reason: "hurt" },
+      // S2-4 (CK-BC-1, ruling 278): a mid-over change is refused in a super over with the rest (CK-SO-3).
+      "cricket.bowler.change": { bowler: "H-p9", reason: "incapacitated" },
       // H-p1 faced all six of the first innings' balls: a line the innings totals agree with, so the fold takes it.
       "cricket.player.line": { innings: 1, person: "H-p1", batting: { runs: 0, balls: 6 } },
     };
@@ -548,7 +550,7 @@ describe("CK-SO-3 CK-DV-2 cricketPadRules.superOverEventTypes against a real sup
     expect(refusalOf(() => fold(SO_CFG, [...TIED, ["cricket.superover.ball", ball]]))).toBeNull();
     // eslint-disable-next-line no-console -- TEST-STRATEGY anti-vacuity: the sweep reports what it checked
     console.info(`[pad/cricket] super over: ${types.length} types folded, ${accepted} accepted, ${refused} refused`);
-    expect(accepted + refused).toBe(15);
+    expect(accepted + refused).toBe(16);
     expect(accepted).toBe(2);
   });
 });

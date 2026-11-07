@@ -306,6 +306,15 @@ export const CricketRetire = z.strictObject({
 // number of overs; the scorer marks the point at which it was taken.
 export const CricketNewBall = z.strictObject({});
 
+// CK-BC-1 (ruling 278, 2026-11-07; S2-4 phone design ruling 75) — MCC Law 17.8: a bowler who is incapacitated or
+// suspended during an over is replaced, and another bowler completes the over from the same end. The change is its own
+// event, never inferred from a ball naming another bowler (that would re-credit every stored ledger whose replay credits a
+// mid-over ball to the over's bowler). `bowler` is who comes on; `reason` is the Law's two causes, or another.
+export const CricketBowlerChange = z.strictObject({
+  bowler: PersonId,
+  reason: z.enum(["incapacitated", "suspended", "other"]).optional(),
+});
+
 // Limited-overs fielding-restriction blocks. `kind` is deliberately disjoint
 // from CricketInterruption's so the structural union never confuses the two.
 export const CricketPowerplay = z.strictObject({
@@ -410,6 +419,8 @@ export const CricketEv = z.union([
   CricketNewBall,
   CricketPowerplay,
   CricketReview,
+  // S2-4 (ruling 278): appended last, for the same reason.
+  CricketBowlerChange,
 ]);
 export type CricketEv = z.infer<typeof CricketEv>;
 
@@ -442,6 +453,7 @@ export const CRICKET_EVENT_SCHEMAS: Readonly<Record<string, z.ZodTypeAny>> = {
   "cricket.newball": CricketNewBall,
   "cricket.powerplay": CricketPowerplay,
   "cricket.review": CricketReview,
+  "cricket.bowler.change": CricketBowlerChange,
 };
 
 // ---------------------------------------------------------------------------
@@ -498,6 +510,32 @@ export interface FineInnings {
    *  the same window as `currentBowler === null` for a new over. Surviving
    *  partners who have 0 balls are NOT this; only the replacement. */
   unfacedIncoming?: string | undefined;
+  // S2-4 (CK-BC-1, ruling 278; MCC Law 17.8). Same rule as the W4 fields: undefined until a mid-over change happens, so
+  // an innings with none serialises exactly as before.
+  /** The bowlers who left the over in progress, in order, each with the legal balls they bowled in it. Cleared when
+   *  the over ends. `currentBowler` is the one completing it. */
+  overSpells?: OverSpell[] | undefined;
+  /** Every bowler of the previous over when a change split it (Law 17.7, 17.8: none of them bowls this one).
+   *  `prevOverBowler` still names the last of them. Undefined when the previous over had one bowler. */
+  prevOverBowlers?: string[] | undefined;
+  /** CK-BO-3: the part overs each bowler has bowled, each counted as a whole over toward `maxOversPerBowler`. */
+  partOvers?: Record<string, number> | undefined;
+  /** The legal balls in those part overs (in `bowlerBalls` too), so the whole overs are `(balls - these) / bpo`. */
+  partOverBalls?: Record<string, number> | undefined;
+}
+
+/** One bowler's share of an over a change split (CK-BC-1). */
+export interface OverSpell {
+  bowler: string;
+  legalBalls: number;
+}
+
+/** CK-BO-1 and CK-BO-3: the overs a bowler has used of `maxOversPerBowler`. Whole overs are the legal balls outside part
+ *  overs, divided by the over length; each part over (a change split it, Law 17.8) counts as one more. With no change in
+ *  the innings this is `floor(bowlerBalls / ballsPerOver)`, as it always was. */
+export function oversUsed(fine: OverBowlerFacts | null | undefined, bowler: string, ballsPerOver: number): number {
+  const balls = (fine?.bowlerBalls?.[bowler] ?? 0) - (fine?.partOverBalls?.[bowler] ?? 0);
+  return Math.floor(balls / ballsPerOver) + (fine?.partOvers?.[bowler] ?? 0);
 }
 
 export interface InningsState {
@@ -1499,11 +1537,16 @@ function applyDelivery(
     if (ctx.strictFold && payload.bowler === fine.prevOverBowler) {
       invalid(`bowler "${payload.bowler}" cannot bowl consecutive overs`);
     }
+    // CK-BC-1 (Law 17.8): every bowler of a previous over that a change split is barred from this one, not only the last.
+    if (ctx.strictFold && fine.prevOverBowlers?.includes(payload.bowler) === true) {
+      invalid(`bowler "${payload.bowler}" bowled part of the previous over and cannot bowl this one (Law 17.8)`);
+    }
     if (!ctx.bowlingOrder.includes(payload.bowler)) {
       invalid(`bowler "${payload.bowler}" is not in the fielding lineup`);
     }
     if (ctx.strictFold && ctx.maxOversPerBowler !== undefined) {
-      const bowled = Math.floor((fine.bowlerBalls[payload.bowler] ?? 0) / bpo);
+      // CK-BO-3: a part over counts as a whole one (`oversUsed`); with no change in the innings this is floor(balls / bpo).
+      const bowled = oversUsed(fine, payload.bowler, bpo);
       if (bowled >= ctx.maxOversPerBowler) {
         invalid(`bowler "${payload.bowler}" has exhausted the ${ctx.maxOversPerBowler}-over quota`);
       }
@@ -1753,6 +1796,9 @@ function finishDelivery(
       prevOverBowler: next.currentBowler,
       currentBowler: null,
     };
+    // CK-BC-1 / CK-BO-3: an over a change split closes its spells. Untouched (no key written) when neither this over nor
+    // the previous one had a change, so every innings without one folds byte for byte as before.
+    if (next.overSpells !== undefined || next.prevOverBowlers !== undefined) next = closeSplitOver(next, info.bpo);
   }
   return {
     ...innings,
@@ -1762,6 +1808,23 @@ function finishDelivery(
     boundaries: innings.boundaries + (payload.boundary !== undefined ? 1 : 0),
     fine: next,
   };
+}
+
+/** The over just ended (`prevOverBowler` names who completed it). If a change split it, every bowler of it becomes a
+ *  previous-over bowler (none may bowl the next, Law 17.8) and each is charged one part over toward the quota, with the
+ *  legal balls they bowled in it (CK-BO-3). If not, the previous over's split is forgotten. */
+function closeSplitOver(fine: FineInnings, bpo: number): FineInnings {
+  const spells = fine.overSpells;
+  if (spells === undefined) return { ...fine, prevOverBowlers: undefined };
+  const last = fine.prevOverBowler as string;
+  const all: OverSpell[] = [...spells, { bowler: last, legalBalls: bpo - spells.reduce((sum, spell) => sum + spell.legalBalls, 0) }];
+  const partOvers = { ...fine.partOvers };
+  const partOverBalls = { ...fine.partOverBalls };
+  for (const spell of all) {
+    partOvers[spell.bowler] = (partOvers[spell.bowler] ?? 0) + 1;
+    partOverBalls[spell.bowler] = (partOverBalls[spell.bowler] ?? 0) + spell.legalBalls;
+  }
+  return { ...fine, overSpells: undefined, prevOverBowlers: all.map((spell) => spell.bowler), partOvers, partOverBalls };
 }
 
 // ---------------------------------------------------------------------------
@@ -2251,6 +2314,52 @@ function applyNewBall(state: CricketState): CricketState {
   return replaceInnings(state, index, { ...innings, newBallAt: [...taken, innings.legalBalls] });
 }
 
+/**
+ * CK-BC-1 (ruling 278, 2026-11-07; S2-4 phone design ruling 75): MCC Law 17.8. The bowler of the over in progress is
+ * replaced and `payload.bowler` completes the over from the same end: every later ball of it names them and is credited
+ * to them, so each bowler's figures get the balls they bowled. Law 17.8 bars the incoming bowler from having bowled the
+ * previous over, and Law 17.7 with 17.8 bars every bowler of this over from the next (`closeSplitOver`). Neither is
+ * credited a maiden for it (scorecard.ts), and each is charged a whole over toward `maxOversPerBowler` (CK-BO-3).
+ *
+ * Refused in a super over (`requireOpenInnings`: WRONG_PHASE), with CK-SO-3's other events. A bowler who has already
+ * bowled part of this over may not come back to it. The quota and the previous-over bar are cfg-derived (where an over
+ * ends is `cfg.ballsPerOver`), so they are STRICT ONLY like the ball's own (§3.3 seam); on replay a change that no longer
+ * lands inside an over, or names the bowler already on, is a no-op instead of a throw.
+ */
+function applyBowlerChange(state: CricketState, payload: z.infer<typeof CricketBowlerChange>, strict: boolean): CricketState {
+  const { innings, index } = requireOpenInnings(state, "bowler change");
+  const fine = innings.fine;
+  if (fine === null) invalid("this innings is recorded at summary fidelity — a bowler change is not allowed");
+  const incoming = payload.bowler;
+  if (!state.orders[opponent(innings.battingSide)].includes(incoming)) {
+    invalid(`bowler "${incoming}" is not in the fielding lineup`);
+  }
+  const outgoing = fine.currentBowler;
+  const spells = fine.overSpells ?? [];
+  const bowledThisOver = incoming === outgoing || spells.some((spell) => spell.bowler === incoming);
+  if (!strict && (outgoing === null || bowledThisOver)) return state;
+  if (outgoing === null) invalid("no over is in progress: the next over's bowler is named on its first ball");
+  if (bowledThisOver) invalid(`bowler "${incoming}" has already bowled in this over`);
+  const bpo = state.cfg.ballsPerOver;
+  if (strict) {
+    if (incoming === fine.prevOverBowler || fine.prevOverBowlers?.includes(incoming) === true) {
+      invalid(`bowler "${incoming}" bowled the previous over and cannot complete this one (Law 17.8)`);
+    }
+    const max = state.cfg.maxOversPerBowler;
+    if (max !== undefined && oversUsed(fine, incoming, bpo) >= max) {
+      invalid(`bowler "${incoming}" has exhausted the ${max}-over quota`);
+    }
+  }
+  // The legal balls of this over so far, less the earlier spells', are the outgoing bowler's. An over holding only
+  // wides and no balls so far has none (`legalBalls % bpo` is 0 while `currentBowler` is set).
+  const ballsSoFar = innings.legalBalls % bpo - spells.reduce((sum, spell) => sum + spell.legalBalls, 0);
+  const updated: InningsState = {
+    ...innings,
+    fine: { ...fine, currentBowler: incoming, overSpells: [...spells, { bowler: outgoing, legalBalls: ballsSoFar }] },
+  };
+  return replaceInnings(state, index, updated);
+}
+
 function applyPowerplay(
   state: CricketState,
   payload: z.infer<typeof CricketPowerplay>,
@@ -2320,6 +2429,11 @@ function applyReview(state: CricketState, payload: z.infer<typeof CricketReview>
 export type OverBowlerFacts = {
   readonly prevOverBowler?: string | null;
   readonly bowlerBalls?: Readonly<Record<string, number>> | undefined;
+  /** CK-BC-1: every bowler of a previous over a change split (all barred from the next). */
+  readonly prevOverBowlers?: readonly string[] | undefined;
+  /** CK-BO-3: part overs, each a whole over toward the quota, and their legal balls. */
+  readonly partOvers?: Readonly<Record<string, number>> | undefined;
+  readonly partOverBalls?: Readonly<Record<string, number>> | undefined;
 };
 
 /**
@@ -2393,8 +2507,31 @@ export function eligibleBowlers(
 ): string[] {
   return order.filter((person) => {
     if (person === (fine?.prevOverBowler ?? null)) return false;
+    if (fine?.prevOverBowlers?.includes(person) === true) return false;
     if (maxOversPerBowler === undefined) return true;
-    return Math.floor((fine?.bowlerBalls?.[person] ?? 0) / ballsPerOver) < maxOversPerBowler;
+    return oversUsed(fine, person, ballsPerOver) < maxOversPerBowler;
+  });
+}
+
+/**
+ * Who may complete the over in progress after a mid-over change (CK-BC-1, Law 17.8): anyone in `order` who has not
+ * bowled in this over, did not bowl the previous over, and has quota left (a part over counting whole, CK-BO-3). Empty
+ * when no over is in progress (`currentBowler` null): the next over's bowler is `eligibleBowlers`'. EXPORTED for the pad,
+ * same posture as `eligibleBowlers`: the pad mirrors the fold's rule instead of forking it.
+ */
+export function eligibleChangeBowlers(
+  order: readonly string[],
+  fine: (OverBowlerFacts & { readonly currentBowler?: string | null; readonly overSpells?: readonly OverSpell[] | undefined }) | null | undefined,
+  maxOversPerBowler: number | undefined,
+  ballsPerOver: number,
+): string[] {
+  const current = fine?.currentBowler ?? null;
+  if (current === null) return [];
+  const thisOver = new Set([current, ...(fine?.overSpells ?? []).map((spell) => spell.bowler)]);
+  return order.filter((person) => {
+    if (thisOver.has(person)) return false;
+    if (person === (fine?.prevOverBowler ?? null) || fine?.prevOverBowlers?.includes(person) === true) return false;
+    return maxOversPerBowler === undefined || oversUsed(fine, person, ballsPerOver) < maxOversPerBowler;
   });
 }
 
@@ -3186,6 +3323,8 @@ export const CRICKET_FIDELITY: Readonly<Record<string, FidelityBand>> = Object.f
   "cricket.ball": 3,
   "cricket.superover.ball": 3,
   "cricket.retire": 3,
+  // S2-4 (CK-BC-1, ruling 278): a change inside an over is ball-by-ball detail, with the ball.
+  "cricket.bowler.change": 3,
 });
 
 export function padSpec(cfg: CricketCfg): PadSpec {
@@ -3316,6 +3455,14 @@ export function padSpec(cfg: CricketCfg): PadSpec {
       { kind: "number", path: "oversLostEstimate", min: 0, max: oversBound(cfg) + 1 },
     ],
     attribution: [],
+  };
+
+  // S2-4 (CK-BC-1, ruling 278; Law 17.8): the over in progress is completed by another bowler.
+  const bowlerChangeAction: PadAction = {
+    type: "cricket.bowler.change",
+    labelKey: { key: "pad.cricket.action.bowlerChange", label: "Change bowler" },
+    fields: [{ kind: "enum", path: "reason", values: ["incapacitated", "suspended", "other"], optional: true }],
+    attribution: [{ kind: "person", path: "bowler" }],
   };
 
   const retireAction: PadAction = {
@@ -3581,6 +3728,7 @@ export function padSpec(cfg: CricketCfg): PadSpec {
     powerplayAction,
     interruptionAction,
     retireAction,
+    bowlerChangeAction,
     ...(twoInnings ? [declareAction] : []),
     ...(followOnEnabled ? [followOnAction] : []),
     ...(twoInnings ? [matchCloseAction] : []),
@@ -3992,6 +4140,8 @@ export const cricket: SportModule<CricketCfg, CricketEv, CricketState> = {
         return applyPowerplay(state, parsePayload(CricketPowerplay, ev.payload, ev.type));
       case "cricket.review":
         return applyReview(state, parsePayload(CricketReview, ev.payload, ev.type));
+      case "cricket.bowler.change":
+        return applyBowlerChange(state, parsePayload(CricketBowlerChange, ev.payload, ev.type), strict);
       case "cricket.match.close": {
         if (state.phase !== "live") wrongPhase(`match close in phase "${state.phase}"`);
         parsePayload(CricketMatchClose, ev.payload, ev.type);
@@ -4670,6 +4820,7 @@ export const cricket: SportModule<CricketCfg, CricketEv, CricketState> = {
         case "cricket.newball":
         case "cricket.powerplay":
         case "cricket.review":
+        case "cricket.bowler.change": // S2-4: who bowls is ball-by-ball detail; a summary innings has no bowler
           break; // W4 innings context — no effect on totals, dropped like a
         // player line; Tier 0 is the totals and nothing else.
         case "cricket.player.line":

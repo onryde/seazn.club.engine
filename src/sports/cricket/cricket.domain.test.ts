@@ -810,6 +810,7 @@ describe("cricket W4: the extensions are additive", () => {
       "cricket.newball",
       "cricket.powerplay",
       "cricket.review",
+      "cricket.bowler.change", // S2-4 (CK-BC-1, ruling 278)
     ]) {
       expect(declared.has(type), `${type} must appear at a fidelity band`).toBe(true);
     }

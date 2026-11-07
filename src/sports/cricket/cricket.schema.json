@@ -670,6 +670,27 @@
           "outcome"
         ],
         "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bowler": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "incapacitated",
+              "other",
+              "suspended"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "bowler"
+        ],
+        "type": "object"
       }
     ]
   },

@@ -1,7 +1,8 @@
-// S2-4 (2026-11-07) — the hand strike swap (CK-SS-1, ruling 277; S2-4 phone design ruling 76), read through the real fold,
+// S2-4 (2026-11-07) — the hand strike swap (CK-SS-1, ruling 277; S2-4 phone design ruling 76) and the mid-over bowler
+// change (CK-BC-1 and CK-BO-3, ruling 278; S2-4 phone design ruling 75; MCC Law 17.7 and 17.8), read through the real fold,
 // the scorecard, the player stats and DLS.
 //
-// single-sport: every fact here is a cricket Law (who is on strike); no other sport has them.
+// single-sport: every fact here is a cricket Law (who is on strike, who bowls an over); no other sport has them.
 import { describe, expect, it } from "vitest";
 import { EngineError } from "../../core/errors.ts";
 import { foldMatch, type EventEnvelope } from "../../core/events.ts";
@@ -10,6 +11,9 @@ import { aggregatePlayerStats } from "../../stats/stats.ts";
 import { makeEnvelope } from "../../testkit/index.ts";
 import {
   cricket,
+  eligibleBowlers,
+  eligibleChangeBowlers,
+  oversUsed,
   type CricketBallEv,
   type CricketCfg,
   type CricketState,
@@ -77,6 +81,10 @@ class Ledger {
   /** `n` dot balls by `bowler` to an unchanged pair. */
   dots(n: number, striker: string, nonStriker: string, bowler: string): this {
     for (let i = 0; i < n; i++) this.ball({ striker, nonStriker, bowler });
+    return this;
+  }
+  change(bowler: string, reason?: "incapacitated" | "suspended" | "other"): this {
+    this.specs.push(["cricket.bowler.change", { bowler, ...(reason === undefined ? {} : { reason }) }]);
     return this;
   }
   ev(type: string, payload: unknown = {}): this {
@@ -215,5 +223,225 @@ describe("CK-SS-1 a hand strike swap is the pair reversed on the next ball", () 
     // the player stats read the ledger's own striker, which the swap named
     const stats = statsOf(events);
     expect([stats["A-1"]?.runs, stats["A-1"]?.balls_faced, stats["A-2"]?.runs, stats["A-2"]?.balls_faced]).toEqual([3, 6, 1, 1]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// CK-BC-1 — the mid-over bowler change (Law 17.8)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** Over 1: A-11 bowls two balls (a single, then a dot), is replaced by A-10, who completes it with four. */
+const splitFirstOver = () =>
+  new Ledger()
+    .ball({ striker: "H-1", nonStriker: "H-2", bowler: "A-11", bat: 1 })
+    .ball({ striker: "H-2", nonStriker: "H-1", bowler: "A-11" })
+    .change("A-10", "incapacitated")
+    .ball({ striker: "H-2", nonStriker: "H-1", bowler: "A-10", bat: 4 })
+    .dots(3, "H-2", "H-1", "A-10");
+
+describe("CK-BC-1 another bowler completes the over in progress (MCC Law 17.8)", () => {
+  it("CK-BC-1 hands the over to the incoming bowler: later balls name and credit them, and each bowler's figures get the balls they bowled", () => {
+    const fine = fineOf(strict(TEN, splitFirstOver().build()));
+    expect(fine.bowlerBalls).toEqual({ "A-11": 2, "A-10": 4 });
+    expect(fine.bowlerRuns).toEqual({ "A-11": 1, "A-10": 4 });
+    expect(fine.currentBowler, "the over is over").toBeNull();
+    expect(fine.prevOverBowler).toBe("A-10");
+    expect(fine.prevOverBowlers).toEqual(["A-11", "A-10"]);
+    expect(fine.overSpells, "cleared at the over's end").toBeUndefined();
+    // mid-over, the fold names the spell that left
+    const mid = fineOf(strict(TEN, new Ledger().dots(2, "H-1", "H-2", "A-11").change("A-10").build()));
+    expect([mid.currentBowler, mid.overSpells]).toEqual(["A-10", [{ bowler: "A-11", legalBalls: 2 }]]);
+  });
+
+  it("CK-BC-1 refuses a ball that names the outgoing bowler after the change", () => {
+    const events = new Ledger().dots(2, "H-1", "H-2", "A-11").change("A-10").ball({ striker: "H-1", nonStriker: "H-2", bowler: "A-11" }).build();
+    expect(refusalOf(() => strict(TEN, events))).toBe('INVALID_EVENT: over in progress belongs to "A-10"');
+  });
+
+  it("CK-BC-1 bars both bowlers of the split over from the next one (Law 17.7), and frees both for the one after", () => {
+    const next = (bowler: string) => splitFirstOver().ball({ striker: "H-1", nonStriker: "H-2", bowler }).build();
+    expect(refusalOf(() => strict(TEN, next("A-11")))).toBe(
+      'INVALID_EVENT: bowler "A-11" bowled part of the previous over and cannot bowl this one (Law 17.8)',
+    );
+    expect(refusalOf(() => strict(TEN, next("A-10")))).toBe('INVALID_EVENT: bowler "A-10" cannot bowl consecutive overs');
+    expect(refusalOf(() => strict(TEN, next("A-9")))).toBeNull();
+    // the over after: both may bowl again (each has one of two overs used)
+    const third = (bowler: string) => splitFirstOver().dots(6, "H-1", "H-2", "A-9").ball({ striker: "H-2", nonStriker: "H-1", bowler }).build();
+    expect(refusalOf(() => strict(TEN, third("A-11")))).toBeNull();
+    expect(refusalOf(() => strict(TEN, third("A-10")))).toBeNull();
+    expect(fineOf(strict(TEN, third("A-11"))).prevOverBowlers, "an unsplit over forgets the split before it").toBeUndefined();
+  });
+
+  it("CK-BC-1 refuses an incoming bowler who bowled the previous over, the bowler already on, and one who left this over", () => {
+    const previous = new Ledger().dots(6, "H-1", "H-2", "A-9").dots(2, "H-2", "H-1", "A-11").change("A-9").build();
+    expect(refusalOf(() => strict(TEN, previous))).toBe('INVALID_EVENT: bowler "A-9" bowled the previous over and cannot complete this one (Law 17.8)');
+    const same = new Ledger().dots(2, "H-1", "H-2", "A-11").change("A-11").build();
+    expect(refusalOf(() => strict(TEN, same))).toBe('INVALID_EVENT: bowler "A-11" has already bowled in this over');
+    const back = new Ledger().dots(2, "H-1", "H-2", "A-11").change("A-10").dots(1, "H-1", "H-2", "A-10").change("A-11").build();
+    expect(refusalOf(() => strict(TEN, back))).toBe('INVALID_EVENT: bowler "A-11" has already bowled in this over');
+    // a second change in the same over, to someone new, is a change like the first
+    const twice = new Ledger().dots(2, "H-1", "H-2", "A-11").change("A-10").dots(1, "H-1", "H-2", "A-10").change("A-8").dots(3, "H-1", "H-2", "A-8").build();
+    const fine = fineOf(strict(TEN, twice));
+    expect(fine.prevOverBowlers).toEqual(["A-11", "A-10", "A-8"]);
+    expect(fine.partOverBalls).toEqual({ "A-11": 2, "A-10": 1, "A-8": 3 });
+  });
+
+  it("CK-BC-1 refuses a change with no over in progress, from outside the fielding side, at summary fidelity, and before the start", () => {
+    expect(refusalOf(() => strict(TEN, new Ledger().change("A-10").build()))).toBe(
+      "INVALID_EVENT: bowler change needs an innings in progress",
+    );
+    expect(refusalOf(() => strict(TEN, new Ledger().dots(6, "H-1", "H-2", "A-11").change("A-10").build()))).toBe(
+      "INVALID_EVENT: no over is in progress: the next over's bowler is named on its first ball",
+    );
+    expect(refusalOf(() => strict(TEN, new Ledger().dots(2, "H-1", "H-2", "A-11").change("H-5").build()))).toBe(
+      'INVALID_EVENT: bowler "H-5" is not in the fielding lineup',
+    );
+    const coarse = new Ledger().ev("cricket.innings.summary", { runs: 10, wickets: 0, legalBalls: 12, partial: true }).change("A-10").build();
+    expect(refusalOf(() => strict(TEN, coarse))).toBe("INVALID_EVENT: this innings is recorded at summary fidelity — a bowler change is not allowed");
+    const pre = [makeEnvelope(0, { type: "cricket.bowler.change", payload: { bowler: "A-10" } })];
+    expect(refusalOf(() => strict(TEN, pre))).toMatch(/^WRONG_PHASE: bowler change in phase "pre"/);
+  });
+
+  it("CK-BC-1 a change in an over of only wides so far charges the outgoing bowler a part over of no legal balls", () => {
+    const events = new Ledger()
+      .ball({ striker: "H-1", nonStriker: "H-2", bowler: "A-11", extras: { kind: "wide", runs: 1 } })
+      .change("A-10")
+      .dots(6, "H-1", "H-2", "A-10")
+      .build();
+    const fine = fineOf(strict(TEN, events));
+    expect(fine.bowlerBalls).toEqual({ "A-10": 6 });
+    expect(fine.bowlerRuns).toEqual({ "A-11": 1, "A-10": 0 });
+    expect(fine.partOvers).toEqual({ "A-11": 1, "A-10": 1 });
+    expect(fine.partOverBalls).toEqual({ "A-11": 0, "A-10": 6 });
+  });
+
+  it("CK-BC-1 on the read path a change that no longer lands inside an over, or names the bowler on, is a no-op, not a throw", () => {
+    const outside = new Ledger().dots(6, "H-1", "H-2", "A-11").change("A-10").ball({ striker: "H-2", nonStriker: "H-1", bowler: "A-9" }).build();
+    const without = new Ledger().dots(6, "H-1", "H-2", "A-11").ball({ striker: "H-2", nonStriker: "H-1", bowler: "A-9" }).build();
+    expect(JSON.stringify(fineOf(replay(TEN, outside)))).toBe(JSON.stringify(fineOf(replay(TEN, without))));
+    const same = new Ledger().dots(2, "H-1", "H-2", "A-11").change("A-11").build();
+    expect(fineOf(replay(TEN, same)).overSpells).toBeUndefined();
+    // and the lineup is still checked: it is recorded with the stream, not read from the division config
+    const stranger = new Ledger().dots(2, "H-1", "H-2", "A-11").change("H-5").build();
+    expect(refusalOf(() => replay(TEN, stranger))).toBe('INVALID_EVENT: bowler "H-5" is not in the fielding lineup');
+  });
+
+  it("CK-BC-1 is keyed on the event, never on the ball: a stored mid-over ball naming another bowler, with no change, is still credited to the over's bowler on replay", () => {
+    const stored = new Ledger().dots(2, "H-1", "H-2", "A-11").dots(4, "H-1", "H-2", "A-10").build();
+    // the write path refuses it, as before
+    expect(refusalOf(() => strict(TEN, stored))).toBe('INVALID_EVENT: over in progress belongs to "A-11"');
+    // the read path folds it as it always did: the whole over is A-11's, and the card's over has one bowler
+    const fine = fineOf(replay(TEN, stored));
+    expect(fine.bowlerBalls).toEqual({ "A-11": 6 });
+    expect([fine.prevOverBowler, fine.prevOverBowlers, fine.partOvers]).toEqual(["A-11", undefined, undefined]);
+    const card = deriveCricketScorecard({ events: stored, cfg: TEN, lineups }).innings[0]!;
+    expect(card.overs[0]).toMatchObject({ bowler: "A-11" });
+    expect(card.overs[0]).not.toHaveProperty("bowlers");
+    expect(card.bowling.map((line) => [line.person, line.legalBalls, line.maidens])).toEqual([["A-11", 6, 1]]);
+  });
+
+  it("CK-BC-1 is dropped by coarsen: the coarse ledger folds to the same totals and result", () => {
+    const events = splitFirstOver().dots(6, "H-1", "H-2", "A-9").ev("cricket.innings.close", { reason: "other" }).build();
+    const coarse = cricket.coarsen!(events as never).map((event, i) => makeEnvelope(i, event));
+    expect(coarse.map((e) => e.type)).not.toContain("cricket.bowler.change");
+    const fine = strict(TEN, events);
+    const folded = strict(TEN, coarse);
+    expect(folded.innings[0]).toMatchObject({ runs: fine.innings[0]!.runs, wickets: fine.innings[0]!.wickets, legalBalls: 12 });
+    expect(cricket.summary(folded)).toEqual(cricket.summary(fine));
+  });
+
+  it("CK-BC-1 eligibleChangeBowlers and eligibleBowlers name exactly who the fold accepts, mid-over and at the next over", () => {
+    const order = lineups.away.slots.map((slot) => slot.personId);
+    // mid-over: A-9 bowled the previous over, A-11 left this one, A-10 is on
+    const mid = fineOf(strict(TEN, new Ledger().dots(6, "H-1", "H-2", "A-9").dots(2, "H-2", "H-1", "A-11").change("A-10").build()));
+    const changeable = eligibleChangeBowlers(order, mid, TEN.maxOversPerBowler, TEN.ballsPerOver);
+    expect(changeable).toEqual(order.filter((p) => !["A-9", "A-10", "A-11"].includes(p)));
+    // each answer is the fold's: every bowler is tried as the next change
+    for (const person of order) {
+      const events = new Ledger().dots(6, "H-1", "H-2", "A-9").dots(2, "H-2", "H-1", "A-11").change("A-10").change(person).build();
+      expect(refusalOf(() => strict(TEN, events)) === null, person).toBe(changeable.includes(person));
+    }
+    // with no over in progress nobody is a change
+    expect(eligibleChangeBowlers(order, fineOf(strict(TEN, splitFirstOver().build())), TEN.maxOversPerBowler, TEN.ballsPerOver)).toEqual([]);
+    // at the next over: both bowlers of the split over are out
+    const next = eligibleBowlers(order, fineOf(strict(TEN, splitFirstOver().build())), TEN.maxOversPerBowler, TEN.ballsPerOver);
+    expect(next).toEqual(order.filter((p) => p !== "A-10" && p !== "A-11"));
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// CK-BO-3 — the part over counts whole toward the quota, and is nobody's maiden
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe("CK-BO-3 a part over counts as a whole over toward maxOversPerBowler, and neither bowler is credited a maiden for it", () => {
+  /** A-11 bowls over 1 whole, A-10 over 2, A-11 two balls of over 3 before A-9 completes it, then A-10 over 4. */
+  const quotaLedger = () =>
+    new Ledger()
+      .dots(6, "H-1", "H-2", "A-11")
+      .dots(6, "H-2", "H-1", "A-10")
+      .dots(2, "H-1", "H-2", "A-11")
+      .change("A-9", "suspended")
+      .dots(4, "H-1", "H-2", "A-9")
+      .dots(6, "H-2", "H-1", "A-10");
+
+  it("CK-BO-3 charges each bowler of a split over one whole over: A-11 has used both of two after one and a third", () => {
+    const fine = fineOf(strict(TEN, quotaLedger().build()));
+    expect(fine.bowlerBalls).toEqual({ "A-11": 8, "A-10": 12, "A-9": 4 });
+    expect(oversUsed(fine, "A-11", 6), "1 whole + 1 part").toBe(2);
+    expect(oversUsed(fine, "A-9", 6), "1 part").toBe(1);
+    expect(oversUsed(fine, "A-10", 6), "2 whole").toBe(2);
+    // over 5: A-11 is out of quota (floor(8 / 6) would have said 1); A-9, with one part over, may bowl
+    const fifth = (bowler: string) => quotaLedger().ball({ striker: "H-1", nonStriker: "H-2", bowler }).build();
+    expect(refusalOf(() => strict(TEN, fifth("A-11")))).toBe('INVALID_EVENT: bowler "A-11" has exhausted the 2-over quota');
+    expect(refusalOf(() => strict(TEN, fifth("A-9")))).toBeNull();
+    // the quota binds the change too: A-11, out of quota, may not come on to complete an over
+    const late = quotaLedger().dots(2, "H-1", "H-2", "A-8").change("A-11").build();
+    expect(refusalOf(() => strict(TEN, late))).toBe('INVALID_EVENT: bowler "A-11" has exhausted the 2-over quota');
+    // with no change in the innings the count is floor(balls / bpo), as before
+    const plain = fineOf(strict(TEN, new Ledger().dots(6, "H-1", "H-2", "A-11").dots(6, "H-2", "H-1", "A-10").dots(2, "H-1", "H-2", "A-11").build()));
+    expect([plain.partOvers, oversUsed(plain, "A-11", 6)]).toEqual([undefined, 1]);
+  });
+
+  it("CK-BO-3 a split over that concedes nothing is nobody's maiden; an unsplit one is its bowler's", () => {
+    // over 1 split A-11 / A-10, no runs; over 2 A-9, no runs
+    const events = new Ledger().dots(2, "H-1", "H-2", "A-11").change("A-10").dots(4, "H-1", "H-2", "A-10").dots(6, "H-2", "H-1", "A-9").build();
+    const card = deriveCricketScorecard({ events, cfg: TEN, lineups }).innings[0]!;
+    const bowling = Object.fromEntries(card.bowling.map((line) => [line.person, line]));
+    expect(bowling["A-11"]).toMatchObject({ legalBalls: 2, overs: "0.2", maidens: 0, runs: 0 });
+    expect(bowling["A-10"]).toMatchObject({ legalBalls: 4, overs: "0.4", maidens: 0, runs: 0 });
+    expect(bowling["A-9"], "control: the unsplit dot over is a maiden").toMatchObject({ legalBalls: 6, overs: "1.0", maidens: 1 });
+    expect(card.overs[0]).toMatchObject({ number: 1, bowler: "A-11", bowlers: ["A-11", "A-10"], runs: 0 });
+    expect(card.overs[1]).toMatchObject({ number: 2, bowler: "A-9" });
+    expect(card.overs[1]).not.toHaveProperty("bowlers");
+    // the player stats credit each bowler the balls they bowled
+    const stats = statsOf(events);
+    expect([stats["A-11"]?.balls_bowled, stats["A-10"]?.balls_bowled, stats["A-9"]?.balls_bowled]).toEqual([2, 4, 6]);
+  });
+
+  it("CK-BO-3 DLS reads the same chase whoever bowled it: a split over and its one-bowler twin decide alike", () => {
+    const first = firstInnings;
+    const split = first(new Ledger())
+      .ball({ striker: "A-1", nonStriker: "A-2", bowler: "H-11", bat: 2 })
+      .ball({ striker: "A-1", nonStriker: "A-2", bowler: "H-11", wicket: { kind: "bowled", out: "A-1", bowlerCredited: true } })
+      .change("H-10", "incapacitated")
+      .dots(4, "A-3", "A-2", "H-10")
+      .ball({ striker: "A-2", nonStriker: "A-3", bowler: "H-9", bat: 1 })
+      .ev("core.abandon", { reason: "rain" })
+      .build();
+    const twin = first(new Ledger())
+      .ball({ striker: "A-1", nonStriker: "A-2", bowler: "H-11", bat: 2 })
+      .ball({ striker: "A-1", nonStriker: "A-2", bowler: "H-11", wicket: { kind: "bowled", out: "A-1", bowlerCredited: true } })
+      .dots(4, "A-3", "A-2", "H-11")
+      .ball({ striker: "A-2", nonStriker: "A-3", bowler: "H-10", bat: 1 })
+      .ev("core.abandon", { reason: "rain" })
+      .build();
+    const state = strict(DLS, split);
+    const twinState = strict(DLS, twin);
+    expect(state.outcome, "premise: the abandon is decided by DLS").toMatchObject({ method: "dls" });
+    expect(state.outcome).toEqual(twinState.outcome);
+    expect(state.margin).toEqual(twinState.margin);
+    expect([state.r1, state.r2, state.revisedTarget]).toEqual([twinState.r1, twinState.r2, twinState.revisedTarget]);
+    // and the wicket is H-11's, who bowled it, not H-10's
+    expect(fineOf(state, 1).bowlerWickets).toEqual({ "H-11": 1 });
   });
 });

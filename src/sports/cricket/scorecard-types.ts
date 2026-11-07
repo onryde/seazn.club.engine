@@ -47,6 +47,9 @@ export type BallGlyph =
 export interface OverLog {
   number: number;                // 1-based
   bowler: PersonId | null;
+  /** CK-BC-1 (Law 17.8): every bowler of an over a mid-over change split, in the order they bowled; `bowler` is the
+   *  first. Absent when the over had one bowler. */
+  bowlers?: PersonId[];
   balls: BallGlyph[];
   runs: number;                  // conceded in the over (all runs incl. extras)
   wickets: number;

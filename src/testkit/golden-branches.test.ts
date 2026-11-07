@@ -69,7 +69,7 @@ const storyById = (id: string): BranchStory => {
 const byId = (id: string): Case => caseOf(storyById(id));
 
 describe("the branch table", () => {
-  it("names exactly the four opt-in branches W2c raised a major for by hand, then the six arms 16c recorded beside them (the award abandon's expunge and level arms, and the shoot-out's sudden death), then W2e's tennis set tie-break margin (summarised, then played) and the final-set tie-break's, once each, in this order", () => {
+  it("names exactly the four opt-in branches W2c raised a major for by hand, then the six arms 16c recorded beside them (the award abandon's expunge and level arms, and the shoot-out's sudden death), then W2e's tennis set tie-break margin (summarised, then played) and the final-set tie-break's, the football and cricket epoch witnesses, once each, in this order", () => {
     expect(BRANCH_STORIES.map((s) => s.id)).toEqual([
       "football.shootoutAttempts",
       "hockey.q4_stands",
@@ -86,6 +86,7 @@ describe("the branch table", () => {
       "tennis.final_set_tiebreak_match_margin",
       "tennis.fast4_deciding_point_played",
       "football.pitch_retirement",
+      "cricket.mid_over_bowler_change",
     ]);
   });
 
@@ -103,7 +104,7 @@ describe("the branch table", () => {
       sports.add(story.sport);
     }
     expect(seen.size).toBe(BRANCH_STORIES.length);
-    expect(sports.size, "the five sports W2c raised, and tennis (W2e)").toBe(6);
+    expect(sports.size, "the five sports W2c raised, tennis (W2e) and cricket (S2-4, ruling 278)").toBe(7);
     // BRANCH_SEED_BASE sits above every seed a generator walk can take (the coverage scan stops at 3000) - read from the corpora.
     let walks = 0;
     forEachSport(({ key }) => {
@@ -568,6 +569,26 @@ describe("an abandon after a match decided by play is refused by the engine, and
   });
 });
 
+describe("CK-BC-1 the cricket epoch-3 witness (ruling 278)", () => {
+  it("CK-BC-1 cricket.mid_over_bowler_change: the over split by the change charges both bowlers a part over and bars both from the next; cricket's fold epoch 2 (no such event) refuses the ledger", () => {
+    const c = byId("cricket.mid_over_bowler_change");
+    const events = c.stream.events;
+    expect(events.map((e) => e.type)).toEqual(["core.start", ...Array<string>(8).fill("cricket.ball"), "cricket.bowler.change", ...Array<string>(4).fill("cricket.ball")]);
+    const bowlerOf = (i: number) => (events[i]!.payload as { bowler: string }).bowler;
+    const [opener, outgoing, incoming] = [bowlerOf(1), bowlerOf(7), bowlerOf(9)];
+    expect(new Set([opener, outgoing, incoming]).size, "three different bowlers").toBe(3);
+    expect(events[9]!.payload).toEqual({ bowler: incoming, reason: "incapacitated" });
+    const fine = ((fold(c.module, c.raw, events).state.innings as unknown[])[0] as { fine: Record<string, unknown> }).fine;
+    // MCC Law 17.8 and ruling 278: each bowler's figures get the balls they bowled; both are out of the next over; each part is a whole over
+    expect(fine.bowlerBalls).toEqual({ [opener]: 6, [outgoing]: 2, [incoming]: 4 });
+    expect(fine.prevOverBowlers).toEqual([outgoing, incoming]);
+    expect(fine.partOvers).toEqual({ [outgoing]: 1, [incoming]: 1 });
+    expect(fine.partOverBalls).toEqual({ [outgoing]: 2, [incoming]: 4 });
+    // the type the epoch-2 fold did not have: the apply switch's own fallthrough is what an older engine answers
+    expect(() => fold(c.module, c.raw, [...events.slice(0, 9), { type: "cricket.bowler.swap", payload: { bowler: incoming } }])).toThrow(/unknown event type "cricket\.bowler\.swap"/);
+  });
+});
+
 describe("each verdict has teeth: the stream passes, its counterfactuals do not", () => {
   // Each counterfactual names the GUARD that must reject it, by the reason it gives. Rejection alone is not enough: two
   // guards that cover for each other are each untested (delete one and the other still rejects), so a counterfactual is only
@@ -590,6 +611,7 @@ describe("each verdict has teeth: the stream passes, its counterfactuals do not"
     "tennis.final_set_tiebreak_match_margin": /plays no final-set tie-break/,
     "tennis.fast4_deciding_point_played": /does not open its tie-break at three games all/,
     "football.pitch_retirement": /caps no substitutions/,
+    "cricket.mid_over_bowler_change": /caps no bowler's overs/,
   };
   const DECIDER_GONE: Record<string, RegExp> = {
     "football.shootoutAttempts": /does not end in a shoot-out win/,
@@ -607,6 +629,7 @@ describe("each verdict has teeth: the stream passes, its counterfactuals do not"
     "tennis.final_set_tiebreak_match_margin": /no final-set tie-break closes past/,
     "tennis.fast4_deciding_point_played": /no set closes on its tie-break's deciding point/,
     "football.pitch_retirement": /does not end on a goal/,
+    "cricket.mid_over_bowler_change": /no over split by a cricket\.bowler\.change has ended/,
   };
   /** Counterfactuals every story has: the key gone, and the deciding event (the last one in every story) dropped. */
   const common = (c: Case): Counterfactual[] => [
@@ -747,6 +770,25 @@ describe("each verdict has teeth: the stream passes, its counterfactuals do not"
           ["the retirement of the starter he replaced", { ...c.recorded, events: [start, sub, retiring(replacedId), goal] }, nobodyBroughtOn],
           // the engine's own refusal reaches the verdict: the retired substitute is off the pitch, so he cannot score
           ["a goal scored by the retired substitute", { ...c.recorded, events: [start, sub, retire, { ...goal, payload: { ...(goal.payload as object), scorer: retiredId } }] }, /is not on the pitch/],
+        ];
+      }
+      case "cricket.mid_over_bowler_change": {
+        const at = events.findIndex((e) => e.type === "cricket.bowler.change");
+        const change = events[at]!;
+        const incoming = (change.payload as { bowler: string }).bowler;
+        const outgoing = (events[at - 1]!.payload as { bowler: string }).bowler;
+        const opener = (events[1]!.payload as { bowler: string }).bowler;
+        /** The change to `bowler`, every later ball renamed to match, so the change itself is what the fold judges. */
+        const changeTo = (bowler: string): GoldenEvent[] =>
+          events.map((e, i) => (i >= at ? { ...e, payload: { ...(e.payload as object), bowler } } : e));
+        return [
+          // with no change event the incoming bowler's balls are a second bowler in an over in progress: refused, not re-credited
+          ["the change dropped", { ...c.recorded, events: events.filter((e) => e.type !== "cricket.bowler.change") }, new RegExp(`over in progress belongs to "${outgoing}"`)],
+          // Law 17.8: the incoming bowler may not have bowled the previous over
+          ["the change to the previous over's bowler", { ...c.recorded, events: changeTo(opener) }, /bowled the previous over and cannot complete this one/],
+          ["the change to the bowler already on", { ...c.recorded, events: changeTo(outgoing) }, /has already bowled in this over/],
+          // a change with no over in progress (before the over's first ball) is refused
+          ["the change before the over begins", { ...c.recorded, events: [...events.slice(0, 7), change, ...events.slice(7).filter((e) => e !== change).map((e) => (e.type === "cricket.ball" && (e.payload as { over: number }).over === 1 ? { ...e, payload: { ...(e.payload as object), bowler: incoming } } : e))] }, /no over is in progress/],
         ];
       }
       default:
