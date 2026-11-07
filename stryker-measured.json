@@ -48,14 +48,14 @@
       }
     },
     "competition-5": {
-      "mutants": 493,
-      "wallSeconds": 2225,
-      "dryRunSeconds": 100,
-      "phaseSeconds": 2102,
+      "mutants": 1125,
+      "wallSeconds": 2824,
+      "dryRunSeconds": 99,
+      "phaseSeconds": 2705,
       "run": {
-        "id": 40613440212,
-        "job": 122570354963,
-        "sha": "651d2a735"
+        "id": 42418404402,
+        "job": 128542063258,
+        "sha": "19c003b6e"
       }
     },
     "competition-6": {
