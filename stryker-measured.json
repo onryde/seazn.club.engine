@@ -20,14 +20,14 @@
       }
     },
     "competition-2": {
-      "mutants": 1172,
-      "wallSeconds": 2858,
-      "dryRunSeconds": 234,
-      "phaseSeconds": 2595,
+      "mutants": 1425,
+      "wallSeconds": 2789,
+      "dryRunSeconds": 245,
+      "phaseSeconds": 2523,
       "run": {
-        "id": 40613426893,
-        "job": 122570305891,
-        "sha": "651d2a735"
+        "id": 42425114002,
+        "job": 128562092191,
+        "sha": "5fdc93a71"
       }
     },
     "competition-3": {
@@ -37,14 +37,14 @@
       "phaseSeconds": 70
     },
     "competition-4": {
-      "mutants": 467,
-      "wallSeconds": 321,
-      "dryRunSeconds": 98,
-      "phaseSeconds": 195,
+      "mutants": 605,
+      "wallSeconds": 250,
+      "dryRunSeconds": 90,
+      "phaseSeconds": 141,
       "run": {
-        "id": 40613433464,
-        "job": 122570329238,
-        "sha": "651d2a735"
+        "id": 42425116817,
+        "job": 128562161377,
+        "sha": "5fdc93a71"
       }
     },
     "competition-5": {
@@ -70,10 +70,15 @@
       }
     },
     "competition-7": {
-      "mutants": 350,
-      "wallSeconds": 2371,
-      "dryRunSeconds": 148,
-      "phaseSeconds": 2189
+      "mutants": 493,
+      "wallSeconds": 1943,
+      "dryRunSeconds": 124,
+      "phaseSeconds": 1799,
+      "run": {
+        "id": 42425119045,
+        "job": 128562195179,
+        "sha": "5fdc93a71"
+      }
     },
     "core-1": {
       "mutants": 491,
@@ -189,14 +194,14 @@
       "phaseSeconds": 675
     },
     "draws-4": {
-      "mutants": 407,
-      "wallSeconds": 9467,
-      "dryRunSeconds": 168,
-      "phaseSeconds": 9273,
+      "mutants": 989,
+      "wallSeconds": 6932,
+      "dryRunSeconds": 135,
+      "phaseSeconds": 6772,
       "run": {
-        "id": 41382686419,
-        "job": 125076735711,
-        "sha": "372911098"
+        "id": 42425122380,
+        "job": 128562210703,
+        "sha": "5fdc93a71"
       }
     },
     "sports-cricket-1": {
