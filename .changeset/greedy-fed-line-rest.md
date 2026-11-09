@@ -2,4 +2,9 @@
 "@onryde/seazn-engine": patch
 ---
 
-Greedy placer honours rest before a fed bracket line. When the placement service refuses a bracket and `buildSchedule` falls back to greedy, `slotFixtures` now starts a line fed by another line no earlier than the feeder's end plus `effectiveRestMinutes(config, line)`, the same rest `validateAssignments` requires (`order_inside_feeder_rest`). Before, greedy placed the fed line at its feeder's final whistle, its own verifier flagged it, and the seed dropped it, so at any rest above 0 a bracket kept only its first round (a 4-entrant knockout placed 2 of 3 lines). Every fed shape gets the same floor: knockout rounds, third place, double-elimination loser feeds, page playoff and stepladder rungs. At rest 0 placement is unchanged.
+Greedy placer honours rest before a fed bracket line, and pinned or already-placed feeders. When the placement service refuses a bracket and `buildSchedule` falls back to greedy, `slotFixtures` now starts a line fed by another line no earlier than the feeder's end plus `effectiveRestMinutes(config, line)`, the same rule `validateAssignments` enforces (`order_before_feeder`, `order_inside_feeder_rest`). Greedy's own verifier flagged every line that broke it, and the seed dropped them; two cases did:
+
+- At any rest above 0, greedy started a fed line at its feeder's final whistle, so a bracket kept only its first round (a 4-entrant knockout placed 2 of 3 lines).
+- A feeder that was pinned (`locked`) or already on the board (`existing`) set no floor at all, at rest 0 included. With both semis pinned, Auto put the final before them.
+
+One floor now covers every fed shape (knockout rounds, third place, double-elimination loser feeds, page playoff and stepladder rungs), wherever the feeder sits: placed in this pass, pinned, or in `existing`. Boards with no feed into a movable line, and fed lines at rest 0 whose feeders are both movable, place exactly as before.
