@@ -99,8 +99,12 @@ function feedGaps(board: readonly Assignment[], dependencies: readonly OrderDepe
   return { checked, short };
 }
 
-const build = (fixtures: SchedulableFixture[], config: Cfg, dependencies: OrderDependency[]) =>
-  buildSchedule({ fixtures, config, dependencies, solve: unavailableSolver, log: silentLogger });
+const build = (
+  fixtures: SchedulableFixture[],
+  config: Cfg,
+  dependencies: OrderDependency[],
+  existing: Assignment[] = [],
+) => buildSchedule({ fixtures, config, dependencies, existing, solve: unavailableSolver, log: silentLogger });
 
 describe("greedy fallback: a fed bracket line starts after its feeders' rest", () => {
   const four = schedulable(generateSingleElim({ entrants: entrants(4) }));
@@ -231,5 +235,106 @@ describe("every fed shape the generators make, under every rest source", () => {
   it("anti-vacuity: the sweep above checked fed edges in every case", () => {
     // Runs after the sweep (file order, isolate:false does not reorder a file).
     expect(totalChecked).toBeGreaterThan(shapes.length * sources.length);
+  });
+});
+
+// The same floor when the feeder is not this pass's to place. A PINNED feeder
+// (`locked`, the organiser's own slot) and a feeder already on the board
+// (`existing`, another pass's or another division's row) both bind the
+// verifier's feed check, which reads the whole board. The placer used to read
+// only feeds between two MOVABLE lines, so with the semis pinned at 11:00 Auto
+// put the final at 09:00, the verifier reported `order_before_feeder`, and
+// the seed dropped the final: at rest 0 as much as at rest 30.
+describe("a fed line whose feeders are pinned or already on the board", () => {
+  const four = schedulable(generateSingleElim({ entrants: entrants(4) }));
+  const semis = [...new Set(four.dependencies.map((d) => d.dependsOn))];
+  const finalId = four.dependencies[0]!.fixtureId;
+  /** Two hours after the build may start: well clear of where greedy would put
+   *  an unbounded final, so "placed before its feeders" cannot pass by luck. */
+  const PIN = T0 + 120 * MIN;
+  const pinnedEnd = PIN + MATCH * MIN;
+  const checked = { pinned: 0, existing: 0 };
+
+  /** The edges whose feeder is a row this pass did not place. */
+  const feedsFrom = (rows: readonly Assignment[]) => {
+    const fixed = new Set(rows.filter((a) => a.movable === false).map((a) => a.fixtureId));
+    return four.dependencies.filter((d) => fixed.has(d.dependsOn));
+  };
+
+  for (const REST of [0, 30]) {
+    it(`both semis pinned, rest ${REST}: the final starts exactly at the pinned semis' end + ${REST} min`, async () => {
+      expect(semis).toHaveLength(2);
+      const fixtures = four.fixtures.map((f) => {
+        const i = semis.indexOf(f.id);
+        return i === -1 ? f : { ...f, locked: { court: `c${i + 1}`, startAt: PIN } };
+      });
+
+      const built = await build(fixtures, cfg({ perEntrantMinRest: REST }), four.dependencies);
+
+      expect(built.engine).toBe("greedy");
+      expect(built.metrics.placed).toBe(3);
+      const pinnedFeeds = feedsFrom(built.assignments);
+      expect(pinnedFeeds).toHaveLength(2);
+      const by = new Map(built.assignments.map((a) => [a.fixtureId, a] as const));
+      expect(by.get(finalId)!.startAt).toBe(pinnedEnd + REST * MIN);
+      expect(feedGaps(built.assignments, four.dependencies, REST).short).toEqual([]);
+      expect(built.conflicts.filter((c) => c.reason === "order")).toEqual([]);
+      checked.pinned += pinnedFeeds.length;
+    });
+  }
+
+  it("one semi pinned late, one movable: the later of the two ends decides, plus rest", async () => {
+    const REST = 30;
+    const fixtures = four.fixtures.map((f) => (f.id === semis[0] ? { ...f, locked: { court: "c1", startAt: PIN } } : f));
+
+    const built = await build(fixtures, cfg({ perEntrantMinRest: REST }), four.dependencies);
+
+    expect(built.metrics.placed).toBe(3);
+    const pinnedFeeds = feedsFrom(built.assignments);
+    expect(pinnedFeeds).toHaveLength(1);
+    const by = new Map(built.assignments.map((a) => [a.fixtureId, a] as const));
+    // The movable semi takes the morning; the pinned one ends later and binds.
+    expect(by.get(semis[1]!)!.endAt).toBeLessThan(pinnedEnd);
+    expect(by.get(finalId)!.startAt).toBe(pinnedEnd + REST * MIN);
+    expect(feedGaps(built.assignments, four.dependencies, REST).short).toEqual([]);
+    checked.pinned += pinnedFeeds.length;
+  });
+
+  for (const REST of [0, 30]) {
+    it(`both semis already on the board (existing), rest ${REST}: the final starts at their end + ${REST} min`, async () => {
+      const existing: Assignment[] = semis.map((id, i) => {
+        const line = four.fixtures.find((f) => f.id === id)!;
+        return {
+          fixtureId: id,
+          court: `c${i + 1}`,
+          startAt: PIN,
+          endAt: pinnedEnd,
+          entrants: [line.home!, line.away!],
+          people: [],
+          divisionId: "d1",
+          movable: false,
+        };
+      });
+      const fixtures = four.fixtures.filter((f) => f.id === finalId);
+
+      const built = await build(fixtures, cfg({ perEntrantMinRest: REST }), four.dependencies, existing);
+
+      expect(built.metrics.placed).toBe(1);
+      const existingFeeds = feedsFrom(existing);
+      expect(existingFeeds).toHaveLength(2);
+      const board = [...existing, ...built.assignments];
+      const by = new Map(board.map((a) => [a.fixtureId, a] as const));
+      expect(by.get(finalId)!.startAt).toBe(pinnedEnd + REST * MIN);
+      const gaps = feedGaps(board, four.dependencies, REST);
+      expect(gaps.checked).toBe(2);
+      expect(gaps.short).toEqual([]);
+      expect(built.conflicts.filter((c) => c.reason === "order")).toEqual([]);
+      checked.existing += existingFeeds.length;
+    });
+  }
+
+  it("anti-vacuity: the cases above checked feeds from pinned and from existing rows", () => {
+    // 2 rests x 2 pinned semis + the mixed case's 1; 2 rests x 2 existing semis.
+    expect(checked).toEqual({ pinned: 5, existing: 4 });
   });
 });
