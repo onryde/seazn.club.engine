@@ -495,6 +495,14 @@ class InningsAccumulator {
       over = { number: overIndex + 1, bowler: payload.bowler, balls: [], runs: 0, wickets: 0, scoreAfter };
       overs[overIndex] = over;
     }
+    // CK-BC-1 (Law 17.8): a mid-over change puts a second bowler on this over; the log names every one, in order. Read
+    // off the bowler the STATE credited (finding P4), which moves inside an over only on a `cricket.bowler.change`: a
+    // stored ledger whose replay credits a mid-over ball to the over's own bowler keeps one (the log over and the fold's
+    // over both start at the same multiple of `ballsPerOver`, so the first ball's bowler is the credited one). Absent (no
+    // key) for an over with one bowler, so every card without a change is unchanged.
+    if (credited !== null && credited !== over.bowler && !(over.bowlers ?? []).includes(credited)) {
+      over.bowlers = [...(over.bowlers ?? (over.bowler === null ? [] : [over.bowler])), credited];
+    }
     over.balls.push(glyphOf(payload));
     over.runs += innings.runs - prevRuns;
     over.wickets += innings.wickets - prevWickets;
@@ -561,7 +569,10 @@ class InningsAccumulator {
     const legalBallsNow = innings.legalBalls;
     if (legalBallsNow !== prevLegalBalls && legalBallsNow % bpo === 0) {
       const overBowler = innings.fine?.prevOverBowler ?? null;
-      if (overBowler !== null && this.overRunsByIndex[index] === 0) {
+      // CK-BO-3 (ruling 278): an over a change split is nobody's maiden. `prevOverBowlers` is set by the same boundary
+      // exactly when the over that just closed had more than one bowler.
+      const splitOver = innings.fine?.prevOverBowlers !== undefined;
+      if (overBowler !== null && !splitOver && this.overRunsByIndex[index] === 0) {
         const maidens = this.maidensByIndex[index] ?? (this.maidensByIndex[index] = {});
         maidens[overBowler] = (maidens[overBowler] ?? 0) + 1;
       }

@@ -65,6 +65,10 @@ export interface CricketPadRules extends PadRulesBase {
   /** Keys of FIELDER_CREDIT_COLUMN. */
   readonly fielderCreditedKinds: readonly string[];
   readonly freeHitDismissalKinds: readonly string[];
+  /** The modes of dismissal that stand off a no ball (CK-NB-1; ICC 21.18). Phone ruling 71. */
+  readonly noBallDismissalKinds: readonly string[];
+  /** The modes of dismissal that stand off a wide (CK-WD-1; ICC 22.9). Phone ruling 71. */
+  readonly wideDismissalKinds: readonly string[];
   readonly bowlerCreditedKinds: readonly string[];
   /** Members of fielderCreditedKinds whose fielder is optional (ruling 242: obstructed). */
   readonly fielderOptionalKinds: readonly string[];

@@ -212,9 +212,12 @@ describe("cricket golden: ball-by-ball mini match (fine fidelity)", () => {
     expect(() => bad({ ballInOver: 2 })).toThrowError(
       expect.objectContaining({ code: "INVALID_EVENT" }),
     );
-    // Mid-over striker swap (after the innings has opened with H-1/H-2) is
-    // still refused. Naming H-3 on ball 1 is now a legal opening pair
-    // (Law 25.1), so the mismatch check lives on the SECOND delivery.
+    // A third batter at one end mid-over (after the innings has opened with
+    // H-1/H-2, H-1 having faced) is still refused. Naming H-3 on ball 1 is a
+    // legal opening pair (Law 25.1), so the mismatch check lives on the SECOND
+    // delivery. The pair reversed (H-2/H-1) is a hand strike swap and is
+    // accepted since CK-SS-1 (ruling 277; S2-4 phone ruling 76): see the
+    // CK-SS-1 tests in cricket.domain.test.ts.
     expect(() =>
       fold(mini, [
         ...start,

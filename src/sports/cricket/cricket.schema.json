@@ -670,6 +670,27 @@
           "outcome"
         ],
         "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "bowler": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "incapacitated",
+              "other",
+              "suspended"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "bowler"
+        ],
+        "type": "object"
       }
     ]
   },
@@ -786,8 +807,38 @@
       "innings[].fine.nonStriker": [
         "string"
       ],
+      "innings[].fine.overSpells": [
+        "array"
+      ],
+      "innings[].fine.overSpells[]": [
+        "object"
+      ],
+      "innings[].fine.overSpells[].bowler": [
+        "string"
+      ],
+      "innings[].fine.overSpells[].legalBalls": [
+        "number"
+      ],
+      "innings[].fine.partOverBalls": [
+        "object"
+      ],
+      "innings[].fine.partOverBalls[]": [
+        "number"
+      ],
+      "innings[].fine.partOvers": [
+        "object"
+      ],
+      "innings[].fine.partOvers[]": [
+        "number"
+      ],
       "innings[].fine.prevOverBowler": [
         "null",
+        "string"
+      ],
+      "innings[].fine.prevOverBowlers": [
+        "array"
+      ],
+      "innings[].fine.prevOverBowlers[]": [
         "string"
       ],
       "innings[].fine.retiredNotOut": [

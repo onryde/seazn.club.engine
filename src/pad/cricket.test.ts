@@ -20,16 +20,19 @@ import {
   FIELDER_OPTIONAL_KINDS,
   FREE_HIT_DISMISSAL_KINDS,
   NO_BALL_DEFAULT_RUNS,
+  NO_BALL_DISMISSAL_KINDS,
   PENALTY_RUNS,
   SUPER_OVER_EVENT_TYPES,
   VARIABLE_OUT_KINDS,
   WicketKind,
   WIDE_DEFAULT_RUNS,
+  WIDE_DISMISSAL_KINDS,
   cricket,
   padSpec,
   type CricketCfg,
   type CricketState,
 } from "../sports/cricket/cricket.ts";
+import { orderFromLineup } from "../sports/cricket/index.ts";
 import { aggregatePlayerStats } from "../stats/stats.ts";
 import { declaredCfgs } from "../testkit/declared-cfgs.ts";
 import { defaultLineupPair, makeEnvelope } from "../testkit/helpers.ts";
@@ -196,6 +199,12 @@ const LAWS_NO_FIELDER_NAMED: readonly Mode[] = ["obstructed"];
 /** DOMAIN.md, "Free hit armed and consumed": "only run-out/obstruction may dismiss on it" - CK-FH-1 as the engine holds it (ICC
  *  21.19.2 adds hit the ball twice; leaving it out is the row's recorded deviation, W2e ruling I-2). */
 const RULEBOOK_FREE_HIT: readonly Mode[] = ["runout", "obstructed"];
+/** ICC Men's T20 World Cup 2026 Playing Conditions 21.18: off a no ball "neither batter shall be out ... except clause 34 (Hit the
+ *  ball twice), clause 37 (Obstructing the field) or clause 38 (Run out)" (CK-NB-1). */
+const RULEBOOK_NO_BALL: readonly Mode[] = ["hitballtwice", "obstructed", "runout"];
+/** ICC Men's T20 World Cup 2026 Playing Conditions 22.9: off a wide "neither batter shall be out ... except clause 35 (Hit wicket),
+ *  clause 37 (Obstructing the field), clause 38 (Run out) or clause 39 (Stumped)" (CK-WD-1). */
+const RULEBOOK_WIDE: readonly Mode[] = ["hitwicket", "obstructed", "runout", "stumped"];
 /** MCC Law 41.2.1: "the award of 5 Penalty runs to the opposing team" - one award is five. */
 const LAW_41_ONE_AWARD = 5;
 /** MCC Law 22.6: "A penalty of one run shall be awarded instantly on the call of Wide ball" - a bare wide records it and nothing
@@ -240,6 +249,8 @@ describe("cricketPadRules: the static sets are the fold's own declarations", () 
   it("the copied sets are the fold's sets, member for member", () => {
     expect(sorted(cricketPadRules.fielderCreditedKinds)).toEqual(sorted(Object.keys(FIELDER_CREDIT_COLUMN)));
     expect(sorted(cricketPadRules.freeHitDismissalKinds)).toEqual(sorted([...FREE_HIT_DISMISSAL_KINDS]));
+    expect(sorted(cricketPadRules.noBallDismissalKinds)).toEqual(sorted([...NO_BALL_DISMISSAL_KINDS]));
+    expect(sorted(cricketPadRules.wideDismissalKinds)).toEqual(sorted([...WIDE_DISMISSAL_KINDS]));
     expect(sorted(cricketPadRules.bowlerCreditedKinds)).toEqual(sorted([...BOWLER_CREDITED_KINDS]));
     expect(sorted(cricketPadRules.variableOutKinds)).toEqual(sorted([...VARIABLE_OUT_KINDS]));
     expect(sorted(cricketPadRules.fielderOptionalKinds)).toEqual(sorted([...FIELDER_OPTIONAL_KINDS]));
@@ -262,6 +273,32 @@ describe("cricketPadRules: the static sets are the fold's own declarations", () 
     // eslint-disable-next-line no-console -- TEST-STRATEGY anti-vacuity: the sweep reports what it checked
     console.info(`[pad/cricket] eventBands compared over ${cfgs.length} declared cfgs`);
     expect(cfgs.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("orderFromLineup (phone ruling 71, engine ruling 276): the public order is the fold's own", () => {
+  it("orders a team sheet exactly as the fold's state.orders does: starting players by orderNo, no bench, no coach or staff", () => {
+    const base = lineupsFor(T20);
+    const shuffled: LineupPair = {
+      ...base,
+      home: {
+        ...base.home,
+        slots: [
+          { personId: "H-coach", slot: "starting" as const, orderNo: 0, role: "coach" as const },
+          { personId: "H-staff", slot: "starting" as const, orderNo: 1, role: "staff" as const },
+          { personId: "H-bench", slot: "bench" as const, orderNo: 2 },
+          ...[...base.home.slots].reverse(),
+        ],
+      },
+    };
+    const state = foldMatch(cricket, T20, shuffled, ledger([["core.start"]]), STRICT_ALL);
+    expect(orderFromLineup(shuffled.home)).toEqual(state.orders.home);
+    expect(orderFromLineup(shuffled.away)).toEqual(state.orders.away);
+    // Not vacuous: the order is the starting XI by orderNo, and the three intruders are out of it.
+    const xi = base.home.slots.filter((slot) => slot.slot === "starting").sort((a, b) => a.orderNo - b.orderNo).map((slot) => slot.personId);
+    expect(xi.length).toBeGreaterThan(2);
+    expect(orderFromLineup(shuffled.home)).toEqual(xi);
+    for (const intruder of ["H-coach", "H-staff", "H-bench"]) expect(orderFromLineup(shuffled.home)).not.toContain(intruder);
   });
 });
 
@@ -307,6 +344,38 @@ describe("cricketPadRules against the real fold (T20)", () => {
     expect(accepted + refused).toBe(10);
     expect(accepted).toBeGreaterThan(0);
     expect(refused).toBeGreaterThan(0);
+  });
+
+  // Phone ruling 71 (engine ruling 276): the wide and no-ball sets are exported so a pad offers exactly the fold's kinds.
+  // Two literal titles (the rules checker reads the id from the source), one sweep.
+  function sweepOff(field: "noBallDismissalKinds" | "wideDismissalKinds", extras: { kind: string; runs: number }, word: string, rulebook: readonly Mode[]) {
+    expect(sorted(cricketPadRules[field])).toEqual(sorted(rulebook));
+    expect(Object.isFrozen(cricketPadRules[field])).toBe(true);
+    let accepted = 0;
+    let refused = 0;
+    for (const kind of MODES) {
+      const refusal = refusalOf(() => fold(T20, [["core.start"], delivery({ extras, wicket: wicketOf(kind, STRIKER) })]));
+      if (cricketPadRules[field].includes(kind)) {
+        expect(refusal, `${kind} off a ${word}`).toBeNull();
+        accepted++;
+      } else {
+        expect(refusal, `${kind} off a ${word}`).toBe(`INVALID_EVENT: "${kind}" cannot dismiss on a ${word}`);
+        refused++;
+      }
+    }
+    // eslint-disable-next-line no-console -- TEST-STRATEGY anti-vacuity: the sweep reports what it checked
+    console.info(`[pad/cricket] ${word}: ${MODES.length} modes folded, ${accepted} accepted, ${refused} refused`);
+    expect(accepted + refused).toBe(10);
+    expect(accepted).toBe(rulebook.length);
+    expect(refused).toBeGreaterThan(0);
+  }
+
+  it("CK-NB-1 noBallDismissalKinds: off a no ball the fold accepts exactly these modes and refuses the rest", () => {
+    sweepOff("noBallDismissalKinds", { kind: "noball", runs: 1 }, "no ball", RULEBOOK_NO_BALL);
+  });
+
+  it("CK-WD-1 wideDismissalKinds: off a wide the fold accepts exactly these modes and refuses the rest", () => {
+    sweepOff("wideDismissalKinds", { kind: "wide", runs: 1 }, "wide", RULEBOOK_WIDE);
   });
 
   it("CK-WK-1 bowlerCreditedKinds: the fold requires bowlerCredited exactly for these modes, and they are the Laws' five", () => {
@@ -457,6 +526,8 @@ describe("CK-SO-3 CK-DV-2 cricketPadRules.superOverEventTypes against a real sup
       "cricket.powerplay": { kind: "batting", phase: "start" },
       "cricket.review": { by: lineups.away.entrantId, kind: "player", outcome: "upheld" },
       "cricket.retire": { person: "A-p1", reason: "hurt" },
+      // S2-4 (CK-BC-1, ruling 278): a mid-over change is refused in a super over with the rest (CK-SO-3).
+      "cricket.bowler.change": { bowler: "H-p9", reason: "incapacitated" },
       // H-p1 faced all six of the first innings' balls: a line the innings totals agree with, so the fold takes it.
       "cricket.player.line": { innings: 1, person: "H-p1", batting: { runs: 0, balls: 6 } },
     };
@@ -479,7 +550,7 @@ describe("CK-SO-3 CK-DV-2 cricketPadRules.superOverEventTypes against a real sup
     expect(refusalOf(() => fold(SO_CFG, [...TIED, ["cricket.superover.ball", ball]]))).toBeNull();
     // eslint-disable-next-line no-console -- TEST-STRATEGY anti-vacuity: the sweep reports what it checked
     console.info(`[pad/cricket] super over: ${types.length} types folded, ${accepted} accepted, ${refused} refused`);
-    expect(accepted + refused).toBe(15);
+    expect(accepted + refused).toBe(16);
     expect(accepted).toBe(2);
   });
 });

@@ -31,6 +31,7 @@ import { mulberry32, type Rng } from "../core/rng.ts";
 import type { LineupPair } from "../core/types.ts";
 import { resolvePositions } from "../sport/catalog.ts";
 import type { AnySportModule } from "../sport/module.ts";
+import { orderFromLineup } from "../sports/cricket/cricket.ts";
 import { SHOOTOUT_ATTEMPTS_DEFAULT } from "../sports/football/football.ts";
 import { periodLabels } from "../sports/period/kernel.ts";
 import { benchedLineups, corpusFormat, recomputeStream, slimStream, type GoldenCorpus, type GoldenEvent, type GoldenStream } from "./golden.ts";
@@ -225,6 +226,24 @@ function reachesPitchRetirement(r: Recorded): string | null {
   if (!retired) return "no core.lineup.retirement names a person a football.sub brought on";
   const played = replay(r, r.raw);
   if (typeof played === "string") return played;
+  return null;
+}
+
+/** cricket `maxOversPerBowler` with a mid-over bowler change (CK-BC-1, CK-BO-3; ruling 278, Law 17.8): an over split
+ *  between two bowlers by a `cricket.bowler.change` has ENDED, so the fold bars both from the next over and charges each a
+ *  whole over toward the cap. Cricket's fold epoch 2 refuses the ledger outright (it has no such event), which is what makes
+ *  the stream the epoch-3 witness; the verdict reads the epoch-3 fold's own facts (`prevOverBowlers`, `partOvers`). */
+function reachesMidOverBowlerChange(r: Recorded): string | null {
+  if (typeof obj(r.raw).maxOversPerBowler !== "number") return "its config caps no bowler's overs (maxOversPerBowler), so a part over counts toward nothing";
+  const played = replay(r, r.raw);
+  if (typeof played === "string") return played;
+  const innings = Array.isArray(played.state.innings) ? (played.state.innings as unknown[]) : [];
+  const split = innings.map((i) => obj(obj(i).fine)).find((fine) => Array.isArray(fine.prevOverBowlers));
+  if (split === undefined) return "no over split by a cricket.bowler.change has ended, so no bowler of one is barred from the next";
+  const parts = obj(split.partOvers);
+  if ((split.prevOverBowlers as unknown[]).some((bowler) => parts[String(bowler)] !== 1)) {
+    return "the fold does not charge each bowler of the split over one part over";
+  }
   return null;
 }
 
@@ -636,6 +655,35 @@ export const BRANCH_STORIES: readonly BranchStory[] = [
         ev("football.goal", { by: side.entrantId, scorer: scorer.personId }),
       ];
       return reachesPitchRetirement(c.recorded(events)) === null ? events : null;
+    },
+  },
+  {
+    // S2-4 (ruling 278): the cricket epoch bump to 3 is for the mid-over bowler change, which no generator walk writes (a
+    // change of the generator's walks would move every floor stream). This stream is its witness. Hand-built from the
+    // lineups like the pitch retirement: a whole over, then an over whose bowler is replaced after two balls and completed by
+    // another (Law 17.8), ending on the ball that completes it.
+    id: "cricket.mid_over_bowler_change",
+    sport: "cricket",
+    key: "maxOversPerBowler",
+    seed: BRANCH_SEED_BASE + 16,
+    config: { name: "t20", raw: { ballsPerInnings: 120, maxOversPerBowler: 4 } },
+    what: "a bowler replaced two balls into the second over and the over completed by another (Law 17.8), each charged a part over toward maxOversPerBowler (CK-BC-1, CK-BO-3)",
+    reached: reachesMidOverBowlerChange,
+    build: (c) => {
+      const [first, second] = orderFromLineup(c.lineups.home);
+      const bowlers = orderFromLineup(c.lineups.away).slice(-3);
+      const [incoming, outgoing, opener] = bowlers;
+      if (first === undefined || second === undefined || incoming === undefined || outgoing === undefined || opener === undefined) return null;
+      const dots = (over: number, from: number, n: number, striker: string, nonStriker: string, bowler: string): GoldenEvent[] =>
+        Array.from({ length: n }, (_, i) => ev("cricket.ball", { over, ballInOver: from + i, striker, nonStriker, bowler, runs: { bat: 0 } }));
+      const events = [
+        ev("core.start"),
+        ...dots(0, 1, 6, first, second, opener),
+        ...dots(1, 1, 2, second, first, outgoing),
+        ev("cricket.bowler.change", { bowler: incoming, reason: "incapacitated" }),
+        ...dots(1, 3, 4, second, first, incoming),
+      ];
+      return reachesMidOverBowlerChange(c.recorded(events)) === null ? events : null;
     },
   },
 ];
