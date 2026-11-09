@@ -151,6 +151,27 @@ describe("greedy fallback: a fed bracket line starts after its feeders' rest", (
     expect(gaps.short).toEqual([]);
   });
 
+  it("rest 45, first session closing at 10:15: the final moves to the next session's start, all placed, no conflicts", async () => {
+    const REST = 45;
+    const DAY = 24 * 60 * MIN;
+    const morning = { from: T0, to: T0 + 75 * MIN }; // 09:00-10:15
+    const nextMorning = { from: T0 + DAY, to: T0 + DAY + 180 * MIN }; // 09:00-12:00 the next day
+    const config = cfg({ perEntrantMinRest: REST, sessionWindows: [morning, nextMorning] });
+
+    const built = await build(four.fixtures, config, four.dependencies);
+
+    expect(built.engine).toBe("greedy");
+    expect(built.metrics.placed).toBe(3);
+    expect(built.conflicts).toEqual([]);
+    const by = new Map(built.assignments.map((a) => [a.fixtureId, a] as const));
+    const laterSemiEnd = Math.max(...semis.map((id) => by.get(id)!.endAt));
+    // The premise, guarded: the semis fit the morning, and a final at their
+    // end + rest would overrun its close, so the session is what moves it.
+    expect(laterSemiEnd).toBeLessThanOrEqual(morning.to);
+    expect(laterSemiEnd + REST * MIN + MATCH * MIN).toBeGreaterThan(morning.to);
+    expect(by.get(finalId)!.startAt).toBe(nextMorning.from);
+  });
+
   it("slotFixtures' own board passes its own verifier on the feed-order family (dependencies passed as dependencies)", () => {
     const REST = 30;
     const config = cfg({ perEntrantMinRest: REST });
@@ -173,7 +194,10 @@ describe("every fed shape the generators make, under every rest source", () => {
       make: () => schedulable(generateSingleElim({ entrants: entrants(4), thirdPlace: true })),
     },
     {
-      name: "third place in a second stage (cross-stage loser feed)",
+      // Not a separate path: it changes only `stageId`, which the feeder floor
+      // never reads. Kept as the witness that a cross-stage loser edge takes
+      // the same floor as any other edge.
+      name: "third place in a second stage (same floor path; only stageId differs)",
       make: () =>
         schedulable(generateSingleElim({ entrants: entrants(4), thirdPlace: true }), (id) =>
           id.endsWith("-3p") ? "s2" : "s1",
