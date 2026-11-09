@@ -1194,6 +1194,97 @@ describe("cricket golden (d): tied T20 super over policies", () => {
 });
 
 // ---------------------------------------------------------------------------
+// CK-SO-4 — the headline's super-over suffix is ONE super over: the last one
+// played or being played. Under `repeat` a tied super over is played again,
+// and only the last decides (ICC Appendix F), so a sum across them is a score
+// nobody made. The owner's staging Final (2026-11-09) read "SO 45–81" there.
+// ---------------------------------------------------------------------------
+
+describe("CK-SO-4 the summary's super over is the last one, never a sum across repeats", () => {
+  // 3-over innings, so the main lines read "12/0 (3)" as on the owner's Final.
+  const cfg = cricket.configSchema.parse({ superOver: true, ballsPerInnings: 18, minOversForResult: 2 });
+  const tiedMain = stream(
+    ["core.start"],
+    ["cricket.innings.summary", { runs: 12, wickets: 0, legalBalls: 18 }],
+    ["cricket.innings.summary", { runs: 12, wickets: 0, legalBalls: 18 }],
+  );
+  const MAIN = "12/0 (3) — 12/0 (3)";
+
+  // One super-over innings off `runs`, ball by ball: an odd score swaps the strike.
+  const soInnings = (pair: [string, string], bowler: string, runs: number[]) => {
+    let [striker, nonStriker] = pair;
+    return balls(
+      "cricket.superover.ball",
+      runs.map((bat) => {
+        const spec: BallSpec = { striker, nonStriker, bowler, bat, ...(bat === 4 || bat === 6 ? { boundary: bat } : {}) };
+        if (bat % 2 === 1) [striker, nonStriker] = [nonStriker, striker];
+        return spec;
+      }),
+    );
+  };
+  // Home batted first in the match, so away bats first in super over 1 and the order flips each pair (ICC).
+  const so1Away9 = soInnings(["A-1", "A-2"], "H-11", [4, 4, 1, 0, 0, 0]);
+  const so1Home9 = soInnings(["H-1", "H-2"], "A-11", [4, 4, 1, 0, 0, 0]); // 9 = target - 1: tied
+  const so2Home36 = soInnings(["H-3", "H-4"], "A-10", [6, 6, 6, 6, 6, 6]);
+  const so2Away36 = soInnings(["A-3", "A-4"], "H-10", [6, 6, 6, 6, 6, 6]); // tied again
+  const so3Away36 = soInnings(["A-5", "A-6"], "H-9", [6, 6, 6, 6, 6, 6]);
+  const so3Home32 = soInnings(["H-5", "H-6"], "A-9", [6, 6, 6, 6, 6, 2]); // 32 of 37: away wins
+  const play = (...overs: Array<Array<[string, CricketBallEv]>>) =>
+    fold(cfg, [...tiedMain, ...streamFrom(tiedMain.length, overs.flat())]);
+  const soDetail = (state: CricketState) => (cricket.summary(state).detail as { superOver?: unknown }).superOver;
+
+  it("CK-SO-4 one super over keeps the plain suffix, home first: 'SO 9–8'", () => {
+    const awayEight = soInnings(["A-1", "A-2"], "H-11", [4, 4, 0, 0, 0, 0]);
+    const homeNine = soInnings(["H-1", "H-2"], "A-11", [4, 4, 1]); // passes 8 on the third ball, which closes the reply
+    const state = play(awayEight, homeNine);
+    expect(state.outcome).toMatchObject({ kind: "win", winner: "H", method: "super_over" });
+    expect(cricket.summary(state).headline).toBe("12/0 (3) — 12/0 (3) · SO 9–8");
+    expect(soDetail(state)).toEqual({ home: 9, away: 8 });
+  });
+
+  it("CK-SO-4 the owner's Final: tied 9–9, tied 36–36, the third decides and reads 'SO3 32–36'", () => {
+    const state = play(so1Away9, so1Home9, so2Home36, so2Away36, so3Away36, so3Home32);
+    expect(state.outcome).toMatchObject({ kind: "win", winner: "A", method: "super_over" });
+    expect(state.superOver!.innings).toHaveLength(6);
+    expect(cricket.summary(state).headline).toBe("12/0 (3) — 12/0 (3) · SO3 32–36"); // the sum read "SO 77–81"
+    expect(soDetail(state)).toEqual({ home: 32, away: 36 });
+  });
+
+  it("CK-SO-4 a super over in progress is that super over only, a side yet to bat in it at 0", () => {
+    // The moment the staging headline read "SO 45–81": away's 36 in, home's reply not started.
+    const midThird = play(so1Away9, so1Home9, so2Home36, so2Away36, so3Away36);
+    expect(midThird.outcome).toBeNull();
+    expect(cricket.summary(midThird).headline).toBe(`${MAIN} · SO3 0–36`);
+    // The second super over's first ball: home 6, away not yet in.
+    const firstBallOfSecond = play(so1Away9, so1Home9, so2Home36.slice(0, 1));
+    expect(cricket.summary(firstBallOfSecond).headline).toBe(`${MAIN} · SO2 6–0`);
+    expect(soDetail(firstBallOfSecond)).toEqual({ home: 6, away: 0 });
+    // Between pairs nothing new has started: the tied super over just played is the last one.
+    expect(cricket.summary(play(so1Away9, so1Home9)).headline).toBe(`${MAIN} · SO 9–9`);
+    expect(cricket.summary(play(so1Away9, so1Home9, so2Home36, so2Away36)).headline).toBe(`${MAIN} · SO2 36–36`);
+    // The tie itself, before a super-over ball: super over 1, unplayed.
+    const atTie = fold(cfg, tiedMain);
+    expect(atTie.phase).toBe("super_over");
+    expect(cricket.summary(atTie).headline).toBe(`${MAIN} · SO 0–0`);
+    expect(soDetail(atTie)).toEqual({ home: 0, away: 0 });
+  });
+
+  it("CK-SO-4 no super over, no suffix and no detail", () => {
+    const tie = fold(cricket.configSchema.parse({ ballsPerInnings: 18, minOversForResult: 2 }), tiedMain); // superOver off: the tie stands
+    expect(tie.outcome).toEqual({ kind: "tie" });
+    expect(cricket.summary(tie).headline).toBe(MAIN);
+    expect(soDetail(tie)).toBeUndefined();
+    const won = fold(cfg, stream(
+      ["core.start"],
+      ["cricket.innings.summary", { runs: 12, wickets: 0, legalBalls: 18 }],
+      ["cricket.innings.summary", { runs: 10, wickets: 2, legalBalls: 18 }],
+    ));
+    expect(cricket.summary(won).headline).toBe("12/0 (3) — 10/2 (3)");
+    expect(soDetail(won)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // PROMPT-05 §8 (e) — two-innings (test) rules: draw, innings victory,
 // follow-on enforcement, 4th-innings chase.
 // ---------------------------------------------------------------------------

@@ -1963,6 +1963,24 @@ export function soBattingSideAt(state: SuperOverAlternationCfg, index: number): 
 }
 
 /**
+ * The super over the summary reports (CK-SO-4): the LAST one played or being played, numbered from 1, with each side's
+ * runs in it. Never a sum across super overs: under `repeat` a tied super over is played again and only the last one
+ * decides (ICC Appendix F), so a sum is a score nobody made. The owner's staging Final read "SO 45–81" mid-way through
+ * its third super over, where this reads "SO3 0–36", and "SO 77–81" at the end, where this reads "SO3 32–36".
+ *
+ * A super over is a PAIR of innings, indexed as `soBattingSideAt` indexes them (0/1 the first, 2/3 the second), so an
+ * odd count is a pair in progress whose second side has not batted yet: that side reads 0. Between pairs (a tied pair
+ * closed, the next not started) the last one is the tied pair just played. An empty list (the tie, before the first
+ * super-over ball, as `decideTie` leaves it) is super over 1, unplayed: 0–0.
+ */
+function lastSuperOver(innings: readonly InningsState[]): { number: number; home: number; away: number } {
+  const number = Math.max(1, Math.ceil(innings.length / 2));
+  const score = { number, home: 0, away: 0 };
+  for (const played of innings.slice((number - 1) * 2)) score[played.battingSide] = played.runs;
+  return score;
+}
+
+/**
  * Batting-order candidates still eligible to come to the crease in a super
  * over, in lineup order — exported (R3.5 F1, review finding, BLOCKER) for
  * the v3 pad's own default-picker (`resolvePeople`, apps/web `skins/
@@ -4222,18 +4240,10 @@ export const cricket: SportModule<CricketCfg, CricketEv, CricketState> = {
   summary(state): ScoreSummary {
     const home = sideLine(state, "home");
     const away = sideLine(state, "away");
-    const so = state.superOver;
-    const soTally =
-      so === null
-        ? null
-        : so.innings.reduce(
-            (tally, innings) => {
-              tally[innings.battingSide] += innings.runs;
-              return tally;
-            },
-            { home: 0, away: 0 },
-          );
-    const headline = `${home} — ${away}${soTally ? ` · SO ${soTally.home}–${soTally.away}` : ""}`;
+    const so = state.superOver === null ? null : lastSuperOver(state.superOver.innings);
+    // " · SO 9–8" for the first super over, " · SO3 32–36" from the second on (CK-SO-4).
+    const soSuffix = so === null ? "" : ` · ${so.number === 1 ? "SO" : `SO${so.number}`} ${so.home}–${so.away}`;
+    const headline = `${home} — ${away}${soSuffix}`;
     return {
       headline,
       perSide: [
@@ -4256,7 +4266,7 @@ export const cricket: SportModule<CricketCfg, CricketEv, CricketState> = {
           ? {}
           : { target: state.revisedTarget, targetSource: state.targetSource }),
         ...(state.margin === null ? {} : { margin: state.margin }),
-        ...(soTally === null ? {} : { superOver: soTally }),
+        ...(so === null ? {} : { superOver: { home: so.home, away: so.away } }),
       },
     };
   },
