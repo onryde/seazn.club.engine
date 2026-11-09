@@ -54,7 +54,7 @@ nothing. GitHub Actions may not open pull requests in this organisation, so a pe
 
 A check that is red on `main` for a reason already owned elsewhere. A release or merge may pass over ONLY these, each matched by test name in the job log; anything else red stops the merge. Delete the line in the PR that fixes it.
 
-None currently.
+- **Downstream** (onryde/seazn.club@main on this PR's snapshot): `pnpm run typecheck` in apps/web exits 1 with exactly 17 tsc errors (seazn.club W4 carry note C24): TS2345/TS2367/TS2352/TS2322 on `FinalPlace` finalRanks (w2b-repro.probe.test.ts:291, double-walkover-seating.test.ts:137/138/182/231, dead-feeder-cascade.test.ts:1497, withdrawal-w2b.test.ts:1489/1490, withdrawn-winner-walkover.test.ts:429/431×2, engine-db/competition.ts:980); TS2741 `BracketStage.entrants` (engine-db/competition.ts:990, usecases/stages.ts:1361, usecases/withdrawal.ts:392); TS2344 api-v1/schemas.ts:1110/1113 (TakeRule's `firstLosses`). Reason: seazn.club main pins `^4.0.0`, and W4 app PR B moves it to `^6.0.x`. Delete when seazn.club takes ^6.
 
 ## Porting a branch that was in flight at the cutover (D37)
 
