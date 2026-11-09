@@ -4241,8 +4241,9 @@ export const cricket: SportModule<CricketCfg, CricketEv, CricketState> = {
     const home = sideLine(state, "home");
     const away = sideLine(state, "away");
     const so = state.superOver === null ? null : lastSuperOver(state.superOver.innings);
-    const soLabel = so === null ? "" : so.number === 1 ? "SO" : `SO${so.number}`;
-    const headline = `${home} — ${away}${so === null ? "" : ` · ${soLabel} ${so.home}–${so.away}`}`;
+    // " · SO 9–8" for the first super over, " · SO3 32–36" from the second on (CK-SO-4).
+    const soSuffix = so === null ? "" : ` · ${so.number === 1 ? "SO" : `SO${so.number}`} ${so.home}–${so.away}`;
+    const headline = `${home} — ${away}${soSuffix}`;
     return {
       headline,
       perSide: [
