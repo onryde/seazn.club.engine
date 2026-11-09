@@ -1127,13 +1127,20 @@ export function slotFixtures(input: SlotInput): SlotResult {
     const restF = Math.max(restMs, restForMs(f));
     const window = windowFor(f);
     let ready = Math.max(config.startAt, window.notBefore);
-    // A dependent may not START before its feeders have FINISHED — the same
-    // rule `validateAssignments` enforces as `order_before_feeder`. Only
-    // already-placed feeders bound it, which is why the topological order
-    // above matters: it guarantees they have been.
+    // A dependent may not START before its feeders have FINISHED, plus the
+    // rest the advancing participant is owed — the rule `validateAssignments`
+    // enforces as `order_before_feeder` / `order_inside_feeder_rest`, through
+    // the SAME resolver (`effectiveRestMinutes(config, target)`). Without the
+    // rest term greedy put a fed line at its feeder's final whistle, its own
+    // verifier flagged it, and `greedySeed` dropped it: at any rest above 0 a
+    // bracket kept only its first round. `restKeysOf` cannot cover this — a
+    // fed seat is empty until its feeder is decided. Only already-placed
+    // feeders bound it, which is why the topological order above matters: it
+    // guarantees they have been.
+    const feederRestMs = effectiveRestMinutes(config, f) * MS_PER_MIN;
     for (const b of feederEndBlockers.get(f.id) ?? []) {
       const end = placedEndById.get(b);
-      if (end !== undefined) ready = Math.max(ready, end);
+      if (end !== undefined) ready = Math.max(ready, end + feederRestMs);
     }
     for (const k of restKeysOf(f)) ready = Math.max(ready, (lastEnd.get(k) ?? -Infinity) + restF);
     // X-SW-31: the end barrier's two bounds (`roundSequenceOf` above). A tie is
