@@ -1,5 +1,26 @@
 # @onryde/seazn-engine
 
+## 4.0.0
+
+### Major Changes
+
+- f94a767: Cricket, for the S2-4 phone design (onryde/seazn.club.capture `docs/specs/2026-11-07-s2-4-cricket-design.md` §7.3, its rulings 71, 75 and 76). Cricket's fold epoch rises to 3 (FOLD_MINOR back to 0), so the server's 426 gate refuses cricket scoring writes from an epoch-2 client until it updates.
+  
+  - **Exports (ruling 276; phone ruling 71).** `cricketPadRules` gains `noBallDismissalKinds` and `wideDismissalKinds`, frozen copies of the fold's own sets (CK-NB-1, CK-WD-1), and `@onryde/seazn-engine/sports/cricket` exports `orderFromLineup`, the batting and bowling order the fold builds from a team sheet. Additive.
+  - **Hand strike swap (CK-SS-1, ruling 277; phone ruling 76).** On the write path a ball that names exactly the fold's pair reversed (the same two batters, ends swapped) is accepted, with no event of its own. A third batter, or a one-end change outside the unfaced-incoming rule, is still refused. No fold moves: replay already adopted the ledger's pair.
+  - **Mid-over bowler change (CK-BC-1, CK-BO-3, ruling 278; phone ruling 75; MCC Law 17.8).** A new event, `cricket.bowler.change` `{ bowler, reason?: "incapacitated" | "suspended" | "other" }`, hands the over in progress to another bowler, who completes it from the same end: later balls of the over name and are credited to them, so each bowler's figures get the balls they bowled. The incoming bowler may not have bowled the previous over or any part of this one; no bowler of a split over may bowl the next (Law 17.7). Each is charged a whole over toward `maxOversPerBowler` for the part, and neither is credited a maiden for it (the scorecard's `OverLog` gains an optional `bowlers` list for a split over). The change is refused with no over in progress, at summary fidelity and in a super over (CK-SO-3), sits at fidelity band 3, is offered by `padSpec` in the Innings drawer (`pad.cricket.action.bowlerChange`) and is dropped by `coarsen`. `FineInnings` gains four optional fields (`overSpells`, `prevOverBowlers`, `partOvers`, `partOverBalls`), absent until a change happens. New exports: `CricketBowlerChange`, `eligibleChangeBowlers`, `oversUsed` and the `OverSpell` type; `eligibleBowlers` now honours a split previous over and part overs. A ball that names another bowler mid-over with no change event is still refused on write and credited to the over's bowler on replay, so no stored ledger is re-credited.
+  - Golden: one appended branch stream, cricket `t20#90016` (`cricket.mid_over_bowler_change`), is the epoch-3 witness; no recorded stream moved. `cricket.schema.json` gains the event.
+
+### Patch Changes
+
+- c42a4b7: Rules: the W4 knockout family's signed rules (owner rulings 263–274, 2026-11-04), recorded ahead of the code on the owner's "approve and record all rules in engine" (ruling 274). The design of record is onryde/seazn.club `docs/superpowers/specs/2026-11-04-format-matrix-w4-knockout-design.md`, and the rulebook is `rulebook-W4-knockout.md` beside it.
+  
+  - 70 new rows in `rules/cross-sport.md`, in nine new areas: X-SD (draw and bracket generation), X-LE (late entry after Start), X-LL (vacated seat and lucky loser), X-PL (plate), X-QM (qualifying → main), X-TP (third place), X-CH (champion, joint winners, vacant title), X-FR (final ranks and history) and X-SP (stepladder and page playoff). Each row cites its W4 rulebook id (RB4-…). X-SD-4 is a recorded deviation (ruling 268: seeds stay on the fold, where BWF and ITF place seed bands by lot).
+  - No row claims proof yet. Each new row has `proved by` `—` and an `AWAITING_PROOF` entry naming the W4 PR whose test proves it: 14 the W4 engine PR, 39 W4 app PR A, 17 W4 app PR B. Its citation says the same ("not yet implemented", or "proof owed" where an existing path already enforces it).
+  - Two existing rows are amended in text and citation only, and keep their ids and statuses. In X-DW-3 and CK-KO-1, the hand-off "is W4" now points at the rows ruling 267 made (X-CH-3, X-CH-4, X-CH-6, X-TP-7).
+  - Club separation (RB4-D7, RB4-D8, RB4-E8) is deferred by ruling 272 and has no row.
+  - Text and checker data only: no code, export or fold table moves.
+
 ## 3.0.2
 
 ### Patch Changes
