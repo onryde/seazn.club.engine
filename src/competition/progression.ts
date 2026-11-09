@@ -7,8 +7,11 @@
 // one resolver. Pure — no DB, no tenant, idempotent.
 import { EngineError } from "../core/errors.ts";
 import type { EntrantId } from "../core/types.ts";
+import type { BracketSlotRef } from "../scheduling/bracket.ts";
 import type { TiebreakerKey } from "../sport/module.ts";
 import { isHeadToHeadKey } from "./cascade-rules.ts";
+import { firstLossField, type FirstLossField } from "./first-loss.ts";
+import type { FinalPlace, FixtureStatus } from "./stage.ts";
 import {
   foldResults,
   resultsAmong,
@@ -39,12 +42,17 @@ export interface PoolRankPick {
 // real per-pool match ledger). picks/roundLosers are qualification's
 // TakePicks/RoundLosers, unchanged in meaning, given the kind-tagged shape
 // the rest of this union already uses.
+// W4 (Task 10; RB4-P1, P4; X-PL-3; owner ruling 265): `firstLosses` is the plate's take — every eligible first loss of a
+// single-elimination source (`firstLossField`, first-loss.ts), with no count: the field decides how many (RB4-P4), and it
+// is known only after round 2 (RB4-P3). `roundLosers` stays as it is: stored progressions still name it (app PR B
+// migrates them).
 export type TakeRule =
   | { kind: "rankRange"; from: number; to: number }
   | { kind: "topNPerGroup"; n: number }
   | { kind: "bestNth"; nth: number; count: number; normaliseUnequalPools?: boolean }
   | { kind: "picks"; picks: readonly PoolRankPick[] }
-  | { kind: "roundLosers"; round: number; count: number };
+  | { kind: "roundLosers"; round: number; count: number }
+  | { kind: "firstLosses" };
 
 export interface ProgressionSource {
   stage: "previous" | { stageId: string };
@@ -75,7 +83,14 @@ export type SlotDescriptor =
   | { kind: "group_rank"; pool: string; rank: number }
   | { kind: "rank_range"; rank: number }
   | { kind: "best_nth"; nth: number; position: number; normaliseUnequalPools?: boolean }
-  | { kind: "round_loser"; round: number; position: number };
+  | { kind: "round_loser"; round: number; position: number }
+  | {
+      kind: "first_loss";
+      /** The slot's place in the first-loss field: the ORDER OF FIRST LOSS (by round, then bracket position), NOT the
+       *  plate seed. The app re-seeds the plate by main-draw seed on the fold (RB4-D10, X-SD-11), so the resolved
+       *  `seed` of a first_loss qualifier is this order, never a seeding. */
+      position: number;
+    };
 
 export interface SlotLabel {
   key: string;
@@ -84,6 +99,9 @@ export interface SlotLabel {
 
 export interface SourceShape {
   poolKeys: string[];
+  /** W4 (Task 10): how many eligible first losses the source's field holds (`firstLossField(...).losers.length`), once
+   *  the caller knows it. Absent — at save time, before round 2 — a `firstLosses` take expands to no slot. */
+  firstLossCount?: number;
 }
 
 /** A descriptor tagged with which `ProgressionSpec.sources[]` entry produced
@@ -105,6 +123,8 @@ export function descriptorKey(d: SlotDescriptor): string {
       return `best:${d.position}`;
     case "round_loser":
       return `loser:${d.round}:${d.position}`;
+    case "first_loss":
+      return `first:${d.position}`;
   }
 }
 
@@ -120,6 +140,8 @@ export function descriptorLabel(d: SlotDescriptor): SlotLabel {
       return { key: "slot.best_nth", params: { rank: d.position, nth: d.nth } };
     case "round_loser":
       return { key: "slot.round_loser", params: { round: d.round, n: d.position } };
+    case "first_loss":
+      return { key: "slot.first_loss", params: { n: d.position } };
   }
 }
 
@@ -164,6 +186,12 @@ function expandOne(rule: TakeRule, shape: SourceShape): SlotDescriptor[][] {
       for (let i = 1; i <= rule.count; i++) pot.push({ kind: "round_loser", round: rule.round, position: i });
       return [pot];
     }
+    case "firstLosses": {
+      // One pot of the field's size, in the field's order; no count yet, no slot (RB4-P3: known after round 2).
+      const pot: SlotDescriptor[] = [];
+      for (let i = 1; i <= (shape.firstLossCount ?? 0); i++) pot.push({ kind: "first_loss", position: i });
+      return [pot];
+    }
   }
 }
 
@@ -179,6 +207,7 @@ export function progressionSize(take: readonly TakeRule[]): number {
     if (rule.kind === "topNPerGroup") return n; // group-count-dependent; callers with a real shape use expandTake instead
     if (rule.kind === "bestNth") return n + rule.count;
     if (rule.kind === "picks") return n + rule.picks.length;
+    if (rule.kind === "firstLosses") return n; // field-dependent: callers size it from firstLossField (B4-7: load-bearing)
     return n + rule.count; // roundLosers
   }, 0);
 }
@@ -419,7 +448,9 @@ export function placeDescriptors(
  *  snake-into-a-bracket-target combo, then require at least 2 qualifiers
  *  total. `targetKind` is this progression's OWN stage's raw `kind` —
  *  optional, forwarded verbatim to placeDescriptors (see its doc comment for
- *  the "unknown => don't refuse" default). */
+ *  the "unknown => don't refuse" default).
+ *  W4 (Task 10): a source that takes `firstLosses` while its shape has no count yet is not counted here — its field is
+ *  known only after round 2 (RB4-P3), and a field under 2 is the app's named outcome (X-PL-2), never a save refusal. */
 export function validateProgressionAgainstShapes(
   shapes: readonly SourceShape[],
   progression: Pick<ProgressionSpec, "sources" | "placement" | "map">,
@@ -428,7 +459,10 @@ export function validateProgressionAgainstShapes(
   const pots = expandSources(progression.sources, (i) => shapes[i]!);
   placeDescriptors(pots, progression.placement, progression.map, targetKind); // throws on a bad seeded_map or an illegal snake/bracket-target combo
   const total = pots.reduce((n, p) => n + p.length, 0);
-  if (total < 2) {
+  const uncounted = progression.sources.some(
+    (source, i) => source.take.some((rule) => rule.kind === "firstLosses") && shapes[i]?.firstLossCount === undefined,
+  );
+  if (total < 2 && !uncounted) {
     throw new EngineError("SEEDING_RULES_MISSING", "this stage's progression rules produce fewer than 2 qualifiers");
   }
 }
@@ -446,9 +480,25 @@ export interface PoolTable {
   // this codebase today, matching production behaviour before this session.
   results?: readonly FixtureResult[];
 }
+/** A bracket source's fixture as progression reads it. `roundLosers` reads `round` and `loser` alone. W4 (Task 9) widens
+ *  it with what `firstLossField` (first-loss.ts) reads — every new field optional, so a caller of `roundLosers` types as
+ *  before. The app builds it from the row `toBracketFixture` already makes (apps/web/src/server/engine-db/competition.ts);
+ *  `walkedOver` is `BracketFixture.walkedOver`, the one marker of a forfeit loser (X-PL-4). */
 export interface BracketFixtureRow {
   round: number;
   loser?: EntrantId;
+  id?: string;
+  status?: FixtureStatus;
+  home?: EntrantId;
+  away?: EntrantId;
+  winner?: EntrantId;
+  walkedOver?: "loser" | "both";
+  bracket?: "WB" | "LB" | "GF";
+  thirdPlace?: boolean;
+  /** `BracketFixture.homeFrom` / `awayFrom`: the feed of each seat. The app must pass it on dead-seat rows (final review
+   *  I2): `firstLossField` reads a withdrawn entrant's empty seat through it (`resolveDeadSeats`, stage.ts). */
+  homeFrom?: BracketSlotRef;
+  awayFrom?: BracketSlotRef;
 }
 export interface SourceTables {
   pools: readonly PoolTable[];
@@ -463,7 +513,7 @@ export interface SourceTables {
   // and its existing test are unaffected by this module superseding
   // qualification.ts.
   overall?: readonly StandingsRow[];
-  bracket?: readonly BracketFixtureRow[]; // only present for a bracket-kind source; only roundLosers reads it
+  bracket?: readonly BracketFixtureRow[]; // only present for a bracket-kind source; roundLosers and firstLosses read it
   /** W2d (spec §5.9, ST-G4, X-TB-7): how the source stage compares entrants from different groups (best-Nth) —
    *  `crossGroupRulesOf(stage)` (stage.ts). Absent = the pre-W2d order, `PRE_W2D_CROSS_GROUP`, with no seeds or draws:
    *  the order every B1-migrated pin records, so a caller not yet handing the stage's own rules moves no seat. */
@@ -545,13 +595,13 @@ function rankRangeSource(pools: readonly PoolTable[]): PoolTable {
 // F2 Task 6 review (defect 4): `rankRange` replaced `topN`, whose old
 // message told an organiser what to DO ("takes the top N, only M
 // available — lower the qualifier count or add entrants" —
-// qualification.ts's isTopN branch, pre-F2). This function is the ONLY
-// place a shortfall like that can be discovered now (both `group_rank` via
-// findPool+rowAtRank and `rank_range` via rankRangeSource+rowAtRank funnel
-// through it), and a generic "no entrant ranked N yet" regressed that —
-// restored here, generalised to name the pool when there is one (the
-// group_rank case) the way topN's flat single-table message never needed
-// to. Still STAGE_NOT_READY (same code topN always used — this message was
+// qualification.ts's isTopN branch, pre-F2). A shortfall like that is
+// discovered here for `group_rank` (findPool+rowAtRank) and `best_nth`, and
+// — since W4 — for `rank_range` in `rowAtPosition` below, which takes by
+// position and repeats this exact message. A generic "no entrant ranked N
+// yet" regressed that — restored here, generalised to name the pool when
+// there is one (the group_rank case) the way topN's flat single-table
+// message never needed to. Still STAGE_NOT_READY (same code topN always used — this message was
 // never in seeding-error.ts's 13-code allowlist either, before or after
 // F2, so it has always reached the organiser via the raw-message fallback,
 // not a wired locale key; wiring one is a separate, scoped effort per
@@ -569,6 +619,30 @@ function rowAtRank(table: PoolTable, rank: number): StandingsRow {
     );
   }
   return row;
+}
+
+/** W4 (RB4-Q2; controller ruling B3-8): `rank_range` takes by POSITION — the table's rows in rank order (a stable sort,
+ *  so a stored snapshot listed in any order reads as before), position `rank` of them. A bracket source's places can
+ *  share a rank (X-FR-1: two semi-final losers both 3rd), so a take never needs a rank nobody holds (1..4 over 1, 2, 3, 3
+ *  takes four). A row whose rank another row shares is returned as a clone flagged `tieUnbroken` with `tieBreak.key:
+ *  "shared_place"`, naming the others: who goes first, or through, is the organiser's call. A strict table (every rank
+ *  once) resolves exactly the rows `rowAtRank` did. A shortfall reads as `rowAtRank`'s, unchanged. `group_rank` and
+ *  `best_nth` keep finding by rank (`rowAtRank`). */
+function rowAtPosition(table: PoolTable, rank: number): StandingsRow {
+  const ordered = [...table.rows].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+  const row = ordered[rank - 1];
+  if (row === undefined) {
+    const available = table.rows.length;
+    const label = table.pool ? `pool "${table.pool}"` : "the previous stage";
+    throw new EngineError(
+      "STAGE_NOT_READY",
+      `${label} takes rank ${rank}, but only ${available} entrant${available === 1 ? "" : "s"} ${available === 1 ? "is" : "are"} available — lower the qualifier count or add entrants`,
+      { pool: table.pool, rank, available },
+    );
+  }
+  const sharing = ordered.filter((other) => other !== row && other.rank === row.rank).map((other) => other.entrantId);
+  if (sharing.length === 0) return row;
+  return { ...row, tieUnbroken: true, tieBreak: { key: "shared_place", with: sharing } };
 }
 
 // UEFA "drop the lowest-ranked pool member's results" normalisation
@@ -651,6 +725,30 @@ function loserAt(bracket: readonly BracketFixtureRow[] | undefined, round: numbe
   return { entrantId: row.loser, rank: position } as StandingsRow;
 }
 
+/** W4 (Task 10; RB4-P1, P4): a `first_loss` slot's entrant — position p of the source's first-loss field, in the field's
+ *  order. Refused, STAGE_NOT_READY, while the field is still open (`first_loss_field_incomplete`: a first match not yet
+ *  played, or no main draw at all, controller ruling B4-2), and when the shape's count is not the field's
+ *  (`first_loss_field_changed`: the slots were sized from an earlier field — a corrected result since — so seating them
+ *  would drop or invent a plate entrant). */
+function firstLossAt(field: FirstLossField, expected: number | undefined, sourceIndex: number, position: number): StandingsRow {
+  if (!field.complete) {
+    throw new EngineError("STAGE_NOT_READY", `progression source ${sourceIndex}'s first-loss field is not final yet`, {
+      reason: "first_loss_field_incomplete",
+      sourceIndex,
+      pending: [...field.pending],
+    });
+  }
+  if (expected !== field.losers.length) {
+    throw new EngineError(
+      "STAGE_NOT_READY",
+      `progression source ${sourceIndex} was sized for ${expected ?? 0} first losses, but its field now holds ${field.losers.length}`,
+      { reason: "first_loss_field_changed", sourceIndex, expected, found: field.losers.length },
+    );
+  }
+  const loss = field.losers[position - 1]!; // position ≤ expected = the field's size, checked just above
+  return { entrantId: loss.entrantId, rank: position } as StandingsRow;
+}
+
 export function resolveProgression(
   spec: ProgressionSpec,
   shapes: readonly SourceShape[],
@@ -677,6 +775,7 @@ export function resolveProgression(
   const tieGroups = new Map<string, ProgressionTieFlag>();
   const seen = new Set<EntrantId>();
   const bestNthCache = new Map<string, StandingsRow[]>();
+  const firstLossCache = new Map<number, FirstLossField>();
   const newLotsDraws: (NewLotsDraw & { readonly sourceIndex: number })[] = [];
 
   placed.forEach((slot, i) => {
@@ -692,9 +791,17 @@ export function resolveProgression(
     if (d.kind === "group_rank") {
       row = rowAtRank(findPool(src.pools, d.pool), d.rank);
     } else if (d.kind === "rank_range") {
-      row = rowAtRank(rankRangeSource(src.pools), d.rank);
+      row = rowAtPosition(rankRangeSource(src.pools), d.rank);
     } else if (d.kind === "round_loser") {
       row = loserAt(src.bracket, d.round, d.position);
+    } else if (d.kind === "first_loss") {
+      // Position is the order of first loss, not the plate seed (see SlotDescriptor first_loss; RB4-D10, X-SD-11).
+      let field = firstLossCache.get(slot.sourceIndex);
+      if (field === undefined) {
+        field = firstLossField(src.bracket ?? []);
+        firstLossCache.set(slot.sourceIndex, field);
+      }
+      row = firstLossAt(field, shapes[slot.sourceIndex]?.firstLossCount, slot.sourceIndex, d.position);
     } else {
       // best_nth — every pool's nth-place row, compared together (once per
       // distinct nth), exactly like resolveQualification.bestOfRank used to
@@ -780,12 +887,34 @@ export function resolveProgression(
   return { qualifiers, ties: [...tieGroups.values()], newLotsDraws };
 }
 
-// L3/#414 — wraps any finish order as a single-pool PoolTable, unchanged
-// from qualification.ts.
-export function placementTable(finalRanks: readonly EntrantId[]): PoolTable {
+// W4 (X-FR-1): a finish order as places. An EntrantId list (a table stage's order, a pre-W4 caller) ranks by position,
+// i + 1; a FinalPlace list keeps its ranks, a shared place included. Assumptions are guards: a list mixing the two forms,
+// or places out of rank order, is a wiring bug (CONFIG_INVALID).
+function placesOf(finalRanks: readonly EntrantId[] | readonly FinalPlace[]): FinalPlace[] {
+  const items: readonly (EntrantId | FinalPlace)[] = finalRanks;
+  const ids = items.filter((item): item is EntrantId => typeof item === "string");
+  if (ids.length === items.length) return ids.map((entrantId, i) => ({ entrantId, rank: i + 1 }));
+  if (ids.length > 0) {
+    throw new EngineError("CONFIG_INVALID", "placementTable: a finish order mixes entrant ids and places", { reason: "mixed_places" });
+  }
+  const places = items.filter((item): item is FinalPlace => typeof item !== "string");
+  places.forEach((place, i) => {
+    const previous = places[i - 1];
+    if (previous !== undefined && place.rank < previous.rank) {
+      throw new EngineError("CONFIG_INVALID", `placementTable: "${place.entrantId}" (rank ${place.rank}) follows rank ${previous.rank}`, {
+        reason: "places_out_of_order",
+        entrantId: place.entrantId,
+      });
+    }
+  });
+  return places.map(({ entrantId, rank }) => ({ entrantId, rank }));
+}
+
+// L3/#414 — wraps any finish order as a single-pool PoolTable (from qualification.ts); W4: by place, ties kept.
+export function placementTable(finalRanks: readonly EntrantId[] | readonly FinalPlace[]): PoolTable {
   return {
     pool: "",
-    rows: finalRanks.map((entrantId, i) => ({
+    rows: placesOf(finalRanks).map(({ entrantId, rank }) => ({
       entrantId,
       played: 0,
       won: 0,
@@ -793,7 +922,7 @@ export function placementTable(finalRanks: readonly EntrantId[]): PoolTable {
       lost: 0,
       points: 0,
       metrics: {},
-      rank: i + 1,
+      rank,
     })),
   };
 }

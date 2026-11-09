@@ -15,3 +15,5 @@ export * from "./decided-in.ts";
 export * from "./cascade-rules.ts";
 // W2d (spec §5.4, §5.9) — the one resolver of a stage's table rules (`resolveTableRules`, `defaultCrossGroup`).
 export * from "./table-rules.ts";
+// W4 (RB4-P1, P2; X-PL-3, X-PL-4) — the plate's field: everyone's first loss, forfeits excluded (`firstLossField`).
+export * from "./first-loss.ts";

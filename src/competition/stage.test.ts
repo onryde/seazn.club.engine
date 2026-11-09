@@ -15,9 +15,13 @@ import {
   withdrawTableEntrant,
   type BracketFixture,
   type BracketStage,
+  type FinalPlace,
   type TableFixture,
   type TableStage,
 } from "./stage.ts";
+
+/** W4 (X-FR-1): a strict order as places — the i-th id ranks i + 1. */
+const places = (...ids: string[]): FinalPlace[] => ids.map((entrantId, i) => ({ entrantId, rank: i + 1 }));
 
 function fb(home: string, away: string, hg: number, ag: number): FixtureResult {
   const draw = hg === ag;
@@ -113,8 +117,8 @@ describe("completion predicates (spec 05 §1)", () => {
     expect(byId.get("A")).toMatchObject({ played: 1, won: 1, points: 3 });
   });
 
-  it("a bracket completes when its final is decided", () => {
-    const stage: BracketStage = { id: "ko", kind: "knockout" };
+  it("a bracket completes when its final is decided, and not while another fixture is still owed", () => {
+    const stage: BracketStage = { id: "ko", kind: "knockout", entrants: ["A", "B", "C", "D"] };
     const semis: BracketFixture[] = [
       { id: "sf1", round: 0, status: "decided", home: "A", away: "B", winner: "A", loser: "B" },
       { id: "fin", round: 1, isFinal: true, status: "scheduled", home: "A", away: "C" },
@@ -122,6 +126,12 @@ describe("completion predicates (spec 05 §1)", () => {
     expect(isBracketStageComplete(stage, semis)).toBe(false);
     semis[1] = { ...(semis[1] as BracketFixture), status: "decided", winner: "A", loser: "C" };
     expect(isBracketStageComplete(stage, semis)).toBe(true);
+    // CH-1 (RB4-C7, every fixture settled): the same decided final beside a semi-final still scheduled is not complete,
+    // and becomes complete once that semi is decided. Before W4 the final alone decided it (true here).
+    const openSemi: BracketFixture[] = [...semis, { id: "sf2", round: 0, status: "scheduled", home: "C", away: "D" }];
+    expect(isBracketStageComplete(stage, openSemi)).toBe(false);
+    openSemi[2] = { ...(openSemi[2] as BracketFixture), status: "decided", winner: "C", loser: "D" };
+    expect(isBracketStageComplete(stage, openSemi)).toBe(true);
   });
 });
 
@@ -141,7 +151,7 @@ describe("completeTableStage — division events (spec 05 §3/§5)", () => {
     expect(tables.pools.map((p) => p.pool)).toEqual(["A", "B"]);
     // rank-1s first (A1, B1), then rank-2s (A2, B2).
     const completed = events.find((e) => e.type === "stage_completed");
-    expect(completed).toEqual({ type: "stage_completed", stageId: "grp", finalRanks: ["A1", "B1", "A2", "B2"] });
+    expect(completed).toEqual({ type: "stage_completed", stageId: "grp", finalRanks: places("A1", "B1", "A2", "B2") });
   });
 
   it("emits rank_lock_required + rank_lock when the cascade exhausts to lots", () => {
@@ -167,15 +177,21 @@ describe("completeTableStage — division events (spec 05 §3/§5)", () => {
 });
 
 describe("bracketRanks (spec 05 §1)", () => {
-  const stage: BracketStage = { id: "ko", kind: "knockout", seeds: new Map([["S1", 1], ["S2", 2], ["S3", 3], ["S4", 4]]) };
+  const stage: BracketStage = { id: "ko", kind: "knockout", entrants: ["S1", "S2", "S3", "S4"], seeds: new Map([["S1", 1], ["S2", 2], ["S3", 3], ["S4", 4]]) };
   const bracket: BracketFixture[] = [
     { id: "sf1", round: 0, status: "decided", home: "S1", away: "S4", winner: "S1", loser: "S4" },
     { id: "sf2", round: 0, status: "decided", home: "S2", away: "S3", winner: "S2", loser: "S3" },
     { id: "fin", round: 1, isFinal: true, status: "decided", home: "S1", away: "S2", winner: "S1", loser: "S2" },
   ];
 
-  it("ranks champion, runner-up, then losers by elimination round & seed", () => {
-    expect(bracketRanks(stage, bracket)).toEqual(["S1", "S2", "S3", "S4"]);
+  it("ranks champion, runner-up, then both semi-final losers level 3rd: no play-off, nobody 4th (SH-3)", () => {
+    // ruling 270: was 3/4 by seed
+    expect(bracketRanks(stage, bracket)).toEqual([
+      { entrantId: "S1", rank: 1 },
+      { entrantId: "S2", rank: 2 },
+      { entrantId: "S3", rank: 3 },
+      { entrantId: "S4", rank: 3 },
+    ]);
   });
 
   it("a 3rd-place playoff fixes ranks 3 and 4 from its result", () => {
@@ -183,28 +199,35 @@ describe("bracketRanks (spec 05 §1)", () => {
       ...bracket,
       { id: "3p", round: 1, thirdPlace: true, status: "decided", home: "S3", away: "S4", winner: "S4", loser: "S3" },
     ];
-    expect(bracketRanks(stage, withThird)).toEqual(["S1", "S2", "S4", "S3"]);
+    expect(bracketRanks(stage, withThird)).toEqual(places("S1", "S2", "S4", "S3"));
   });
 
   it("completeBracketStage emits stage_completed with those ranks", () => {
     const { events, finalRanks } = completeBracketStage(stage, bracket);
-    expect(finalRanks).toEqual(["S1", "S2", "S3", "S4"]);
+    // ruling 270: was 3/4 by seed
+    expect(finalRanks).toEqual([
+      { entrantId: "S1", rank: 1 },
+      { entrantId: "S2", rank: 2 },
+      { entrantId: "S3", rank: 3 },
+      { entrantId: "S4", rank: 3 },
+    ]);
     expect(events).toEqual([{ type: "stage_completed", stageId: "ko", finalRanks }]);
   });
 });
 
-// L3/#414 — page_playoff is a NEW BracketStage.kind, but bracketRanks reads
-// only round/isFinal/loser (never stage.kind — grep confirms no branch on it
-// anywhere in this file), so the fixed 4-team IPL-style page playoff
-// (scheduling/generatePagePlayoff: pp-q1 + pp-elim at round 0, pp-q2 feeding
-// from both at round 1, pp-final isFinal at round 2 — no thirdPlace fixture)
-// needs zero changes to bracketRanks itself, only the type widen below. This
-// is the regression proving that: without `"page_playoff"` in BracketStage's
-// kind union this file fails to typecheck (TS2322).
+// L3/#414 — page_playoff is a NEW BracketStage.kind. bracketRanks branches on
+// stage.kind in one place only since W4 (SH-3, ruling 270): a "knockout"'s
+// semi-final losers share 3rd. Every other kind — this fixed 4-team IPL-style
+// page playoff among them (scheduling/generatePagePlayoff: pp-q1 + pp-elim at
+// round 0, pp-q2 feeding from both at round 1, pp-final isFinal at round 2 —
+// no thirdPlace fixture) — ranks strictly by round/isFinal/loser. Without
+// `"page_playoff"` in BracketStage's kind union this file fails to typecheck
+// (TS2322).
 describe("bracketRanks — page_playoff (L3/#414, spec 2026-07-19)", () => {
   const stage: BracketStage = {
     id: "pp",
     kind: "page_playoff",
+    entrants: ["S1", "S2", "S3", "S4"],
     seeds: new Map([["S1", 1], ["S2", 2], ["S3", 3], ["S4", 4]]),
   };
   // Q1 (major semi) S1 beats S2; Eliminator (minor semi) S3 beats S4; Q2
@@ -231,18 +254,27 @@ describe("bracketRanks — page_playoff (L3/#414, spec 2026-07-19)", () => {
     // lost Q2 (round 1) — later elimination ⇒ ranked above S4, who never got
     // a 2nd life and is out after round 0. No thirdPlace fixture is involved:
     // this is the lastLossRound fallback alone.
-    expect(bracketRanks(stage, bracket)).toEqual(["S1", "S2", "S3", "S4"]);
+    expect(bracketRanks(stage, bracket)).toEqual(places("S1", "S2", "S3", "S4"));
   });
 
-  it("completes once the Final alone is decided, regardless of the other three", () => {
-    const beforeFinal = bracket.map((f) => (f.id === "pp-final" ? { ...f, status: "scheduled" as const, winner: undefined, loser: undefined } : f));
-    expect(isBracketStageComplete(stage, beforeFinal)).toBe(false);
+  it("page playoff completes when all four fixtures are settled", () => {
+    const open = (id: string): BracketFixture[] =>
+      bracket.map((f) => (f.id === id ? { ...f, status: "scheduled" as const, winner: undefined, loser: undefined } : f));
+    expect(isBracketStageComplete(stage, open("pp-final"))).toBe(false);
+    // RB4-C7 (every fixture settled): the Final decided while any other fixture is still scheduled leaves the stage open.
+    // Before W4 the Final alone decided it (true for each of these).
+    let opened = 0;
+    for (const id of ["pp-q1", "pp-elim", "pp-q2"]) {
+      expect(isBracketStageComplete(stage, open(id)), id).toBe(false);
+      opened++;
+    }
+    expect(opened, "non-final fixtures opened").toBe(3);
     expect(isBracketStageComplete(stage, bracket)).toBe(true);
   });
 
   it("completeBracketStage emits stage_completed with the page_playoff ranks", () => {
     const { events, finalRanks } = completeBracketStage(stage, bracket);
-    expect(finalRanks).toEqual(["S1", "S2", "S3", "S4"]);
+    expect(finalRanks).toEqual(places("S1", "S2", "S3", "S4"));
     expect(events).toEqual([{ type: "stage_completed", stageId: "pp", finalRanks }]);
   });
 });
@@ -319,7 +351,7 @@ describe("withdrawal policies (spec 05 §5)", () => {
   });
 
   it("bracket_walkover advances the opponent in each pending fixture", () => {
-    const koStage: BracketStage = { id: "ko", kind: "knockout" };
+    const koStage: BracketStage = { id: "ko", kind: "knockout", entrants: ["W", "P", "Q"] };
     const fixtures: BracketFixture[] = [
       { id: "qf", round: 0, status: "decided", home: "W", away: "P", winner: "W", loser: "P" },
       { id: "sf", round: 1, status: "scheduled", home: "W", away: "Q" },

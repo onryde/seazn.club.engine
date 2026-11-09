@@ -19,6 +19,7 @@ import {
   type BracketFixture,
   type BracketStage,
   type DivisionEvent,
+  type FinalPlace,
   type TableFixture,
   type TableStage,
 } from "./stage.ts";
@@ -106,7 +107,7 @@ function bracket(seedList: string[]): BracketFixture[] {
 }
 
 // Walk a whole division and return the champion + the division-event ledger.
-function runDivision(): { champion: string; events: DivisionEvent[]; finalRanks: string[] } {
+function runDivision(): { champion: string | undefined; events: DivisionEvent[]; finalRanks: FinalPlace[] } {
   const events: DivisionEvent[] = [];
 
   // --- Group stage: two pools of three, top two of each advance. ---
@@ -144,7 +145,7 @@ function runDivision(): { champion: string; events: DivisionEvent[]; finalRanks:
   );
 
   // --- Knockout stage: seeded SE bracket to the final. ---
-  const koStage: BracketStage = { id: "ko", kind: "knockout", seeds: new Map(seeds.map((id, i) => [id, i + 1])) };
+  const koStage: BracketStage = { id: "ko", kind: "knockout", entrants: seeds, seeds: new Map(seeds.map((id, i) => [id, i + 1])) };
   events.push(...openStage(koStage.id));
   const koFixtures = bracket(seeds);
   expect(isBracketStageComplete(koStage, koFixtures)).toBe(true);
@@ -152,15 +153,18 @@ function runDivision(): { champion: string; events: DivisionEvent[]; finalRanks:
   const completedKo = completeBracketStage(koStage, koFixtures);
   events.push(...completedKo.events);
 
-  return { champion: completedKo.finalRanks[0] as string, events, finalRanks: completedKo.finalRanks };
+  const champion = completedKo.finalRanks.find((place) => place.rank === 1)?.entrantId;
+  return { champion, events, finalRanks: completedKo.finalRanks };
 }
 
 describe("full division: group → knockout, generic sport (spec 05 acceptance)", () => {
   it("crowns the top seed and produces a complete final ranking", () => {
     const { champion, finalRanks } = runDivision();
-    // a1 tops pool A, b1 tops pool B; seeds a1,b1,a2,b2 → a1 wins the bracket.
+    // a1 tops pool A, b1 tops pool B; seeds a1,b1,a2,b2 → a1 wins the bracket. No play-off, so the two semi-final
+    // losers share 3rd (SH-3; C4: standard competition ranking).
     expect(champion).toBe("a1");
-    expect(finalRanks).toEqual(["a1", "b1", "a2", "b2"]);
+    // ruling 270: was 3/4 by seed
+    expect(finalRanks).toEqual([{ entrantId: "a1", rank: 1 }, { entrantId: "b1", rank: 2 }, { entrantId: "a2", rank: 3 }, { entrantId: "b2", rank: 3 }]);
   });
 
   it("logs the structural division events for both stages (spec 05 §5)", () => {
@@ -168,7 +172,8 @@ describe("full division: group → knockout, generic sport (spec 05 acceptance)"
     expect(events.filter((e) => e.type === "stage_opened").map((e) => e.stageId)).toEqual(["groups", "ko"]);
     const completed = events.filter((e) => e.type === "stage_completed");
     expect(completed).toHaveLength(2);
-    expect(completed[1]).toMatchObject({ stageId: "ko", finalRanks: ["a1", "b1", "a2", "b2"] });
+    // ruling 270: was 3/4 by seed
+    expect(completed[1]).toMatchObject({ stageId: "ko", finalRanks: [{ entrantId: "a1", rank: 1 }, { entrantId: "b1", rank: 2 }, { entrantId: "a2", rank: 3 }, { entrantId: "b2", rank: 3 }] });
   });
 
   it("is idempotent — re-running the division reproduces it exactly (spec 05 §3)", () => {

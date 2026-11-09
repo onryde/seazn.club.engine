@@ -759,14 +759,20 @@ describe("resolveProgression", () => {
       placement: "rank_order",
     };
     const { ties } = resolveProgression(spec, [{ poolKeys: [] }], [{ pools: [{ pool: "", rows: tied }] }]);
-    expect(ties).toHaveLength(0); // the resolver never even reaches b/c: rank 1's row (a) already answers rankRange{1,1}
+    // W4 FINDING (Task 8, controller ruling B3-8; reported, owed controller confirmation): was `toHaveLength(0)` — the
+    // resolver found rank 1's row (a) and never reached b/c. rankRange now takes by POSITION, and a, b and c all hold
+    // rank 1, so a's place is shared with b and c: flagged shared_place, never silently ordered (this title's own claim).
+    expect(ties).toEqual([
+      { descriptors: [{ sourceIndex: 0, descriptor: { kind: "rank_range", rank: 1 } }], entrantIds: ["a", "b", "c"], reason: "shared_place" },
+    ]);
   });
 
-  // F2 Task 6 review (defect 2): the test above proves only that `ties`
-  // stays EMPTY — the tied rows are never actually reached, so it cannot
-  // tell a working tie-flag branch from a broken one. This test takes
-  // rankRange{1,2} so the resolver visits BOTH rank 1 (untied) and rank 2
-  // (a real, populated tie), and asserts the actual flagged shape.
+  // F2 Task 6 review (defect 2): the test above was written to prove only
+  // that `ties` stayed EMPTY — its tied rows b and c are never taken, so it
+  // could not tell a working tie-flag branch from a broken one (since W4 it
+  // asserts the shared_place tie its three rank-1 rows make instead). This
+  // test takes rankRange{1,2} so the resolver visits BOTH rank 1 (untied)
+  // and rank 2 (a real, populated tie), and asserts the actual flagged shape.
   it("flags a tie for real when the resolver actually reaches a tied row — not just proves ties stays empty", () => {
     const tied = [
       { entrantId: "a", rank: 1 },

@@ -14,7 +14,7 @@ import { builtinModules } from "../sports/index.ts";
 import { derivedMetricText, RATIO_LEDGERS } from "./display.ts";
 import { decidedInFor } from "./decided-in.ts";
 import { legacyPointsRule, payout } from "./points.ts";
-import { bracketRanks, type BracketFixture, type BracketStage } from "./stage.ts";
+import { bracketRanks, type BracketFixture, type BracketStage, type FinalPlace } from "./stage.ts";
 import { foldResults, resultsAmong, type FixtureResult, type StandingsRow } from "./standings.ts";
 import { ledgerOf, rankStandings } from "./tiebreakers.ts";
 
@@ -258,6 +258,8 @@ describe("X-DW-4 / TN-WO-1 / CK-WO-1: excluded keys move no ratio (spec §5.3: t
 // rounds follow the generator's own numbering (scheduling/bracket.ts): an 8-field double elimination has WB rounds
 // 0-2, LB rounds 3-6 and the grand final at 7.
 const seeds = (n: number) => new Map(Array.from({ length: n }, (_, i) => [`E${i + 1}`, i + 1] as const));
+/** W4 (X-FR-1): a strict order as places — the i-th id ranks i + 1. */
+const places = (...ids: string[]): FinalPlace[] => ids.map((entrantId, i) => ({ entrantId, rank: i + 1 }));
 const fx = (id: string, round: number, home: string | undefined, away: string | undefined, winner: string | undefined, extra: Partial<BracketFixture> = {}): BracketFixture => {
   const loser = winner === undefined ? undefined : winner === home ? away : home;
   return {
@@ -269,7 +271,7 @@ const fx = (id: string, round: number, home: string | undefined, away: string | 
 };
 
 describe("X-DE-1: in double elimination a forfeit loser is out, never drops (spec §5.3, W2b-R11)", () => {
-  const stage: BracketStage = { id: "de", kind: "double_elim", seeds: seeds(8) };
+  const stage: BracketStage = { id: "de", kind: "double_elim", entrants: [...seeds(8).keys()], seeds: seeds(8) };
   // E3 meets E2 in WB round 1. Everything else is the same in every variant.
   const around = (wbR1g1: BracketFixture, lbR1g1: BracketFixture): BracketFixture[] => [
     fx("wb-r0-0", 0, "E1", "E8", "E1", { bracket: "WB" }),
@@ -293,7 +295,7 @@ describe("X-DE-1: in double elimination a forfeit loser is out, never drops (spe
 
   it("X-DE-1: E3 walked over in WB round 1 is ranked out in that round — with its LB seat dead, as seating leaves it", () => {
     const deadSeat = fx("lb-r1-1", 4, "E6", undefined, "E6", { bracket: "LB", status: "walkover" });
-    expect(bracketRanks(stage, around(forfeit, deadSeat))).toEqual(OUT_IN_WB_R1);
+    expect(bracketRanks(stage, around(forfeit, deadSeat))).toEqual(places(...OUT_IN_WB_R1));
   });
 
   it("X-DE-1: and still in WB round 1 when a losers'-bracket row names it as a loser — ranks never read a drop", () => {
@@ -306,7 +308,7 @@ describe("X-DE-1: in double elimination a forfeit loser is out, never drops (spe
     for (const row of stale) {
       // Either order of the rows: the elimination round is the EARLIEST walkover, not the first one listed.
       for (const fixtures of [around(forfeit, row), around(forfeit, row).reverse()]) {
-        expect(bracketRanks(stage, fixtures), JSON.stringify(row)).toEqual(OUT_IN_WB_R1);
+        expect(bracketRanks(stage, fixtures), JSON.stringify(row)).toEqual(places(...OUT_IN_WB_R1));
         checked++;
       }
     }
@@ -317,13 +319,13 @@ describe("X-DE-1: in double elimination a forfeit loser is out, never drops (spe
     const win = fx("wb-r1-1", 1, "E2", "E3", "E2", { bracket: "WB" });
     const lbLoss = fx("lb-r1-1", 4, "E6", "E3", "E6", { bracket: "LB" });
     // E3 and E5 both out in round 4: seed order.
-    expect(bracketRanks(stage, around(win, lbLoss))).toEqual(["E1", "E2", "E4", "E6", "E3", "E5", "E7", "E8"]);
+    expect(bracketRanks(stage, around(win, lbLoss))).toEqual(places("E1", "E2", "E4", "E6", "E3", "E5", "E7", "E8"));
   });
 });
 
 describe("X-DW-2: a double walkover in a bracket puts both sides out in its round (spec §5.3)", () => {
   // 8-field knockout, seeded upset in the quarter-final so the rulebook order is not the seed order.
-  const stage: BracketStage = { id: "ko", kind: "knockout", seeds: seeds(8) };
+  const stage: BracketStage = { id: "ko", kind: "knockout", entrants: [...seeds(8).keys()], seeds: seeds(8) };
   const field = (semi: BracketFixture): BracketFixture[] => [
     fx("qf-0", 0, "E1", "E8", "E8"),
     fx("qf-1", 0, "E4", "E5", "E4"),
@@ -335,16 +337,39 @@ describe("X-DW-2: a double walkover in a bracket puts both sides out in its roun
     fx("f", 2, "E8", undefined, "E8", { isFinal: true, status: "walkover" }),
   ];
 
-  it("X-DW-2: E2 and E3 double-walk-over in the semi-final and both go out in round 1, level with E4", () => {
+  it("X-DW-2: E2 and E3 double-walk-over in the semi-final and both go out in round 1, ranked below E4, the semi-final's one loser", () => {
     const dw = fx("sf-1", 1, "E2", "E3", undefined, { status: "walkover", walkedOver: "both" });
-    // Champion E8; round 1: E2, E3, E4 (seed order); round 0: E1, E5, E6, E7.
-    expect(bracketRanks(stage, field(dw))).toEqual(["E8", "E2", "E3", "E4", "E1", "E5", "E6", "E7"]);
+    // Champion E8 by walkover over the dead seat, so nobody is 2nd (B3-6, controller call). E4, the one semi-final loser,
+    // ranks 3rd (SH-3: a knockout with no play-off); E2 and E3, out in round 1 with no loser's place, then E1, E5, E6,
+    // E7 (round 0, seed order), each max(previous rank + 1, placed + 1) (C4: standard competition ranking).
+    // ruling 270: was 3/4 by seed (E2 2, E3 3, E4 4: round 1 by seed, then round 0)
+    expect(bracketRanks(stage, field(dw))).toEqual([
+      { entrantId: "E8", rank: 1 },
+      { entrantId: "E4", rank: 3 },
+      { entrantId: "E2", rank: 4 },
+      { entrantId: "E3", rank: 5 },
+      { entrantId: "E1", rank: 6 },
+      { entrantId: "E5", rank: 7 },
+      { entrantId: "E6", rank: 8 },
+      { entrantId: "E7", rank: 9 },
+    ]);
   });
 
   it("empty case: an entrant neither beaten nor walked over (its line voided) ranks last, below every elimination round", () => {
     const voided = fx("sf-1", 1, "E2", "E3", undefined, { status: "void" });
-    // E2 and E3 lost nothing settled: below round-0 losers E1, E5, E6, E7; seed order between them.
-    expect(bracketRanks(stage, field(voided))).toEqual(["E8", "E4", "E1", "E5", "E6", "E7", "E2", "E3"]);
+    // E2 and E3 lost nothing settled: below round-0 losers E1, E5, E6, E7; seed order between them. Nobody is 2nd (the
+    // final's other seat is dead, B3-6) and E4 is the semi-final's one loser, 3rd (SH-3); C4: standard competition ranking.
+    // ruling 270: was 3/4 by seed (E4 2, E1 3 … E3 8)
+    expect(bracketRanks(stage, field(voided))).toEqual([
+      { entrantId: "E8", rank: 1 },
+      { entrantId: "E4", rank: 3 },
+      { entrantId: "E1", rank: 4 },
+      { entrantId: "E5", rank: 5 },
+      { entrantId: "E6", rank: 6 },
+      { entrantId: "E7", rank: 7 },
+      { entrantId: "E2", rank: 8 },
+      { entrantId: "E3", rank: 9 },
+    ]);
   });
 
   it("X-DW-2: a double walkover row that names a winner or a loser, or a forfeit row that names no loser, is refused", () => {
