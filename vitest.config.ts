@@ -45,6 +45,39 @@ const maxWorkers = Math.max(
   Math.min(availableParallelism() - 1, Math.floor(totalmem() / (3 * GB))),
 );
 
+/**
+ * PROMPT-14 §4 gate: ≥90% lines across the engine; the fold kernel and the
+ * tiebreaker cascade must be fully covered — the ranker and, since W2d Task 6,
+ * the write-side check of an order (cascade-rules.ts).
+ */
+export const COVERAGE_THRESHOLDS = {
+  lines: 90,
+  "src/core/**/*.ts": { lines: 100 },
+  "src/competition/tiebreakers.ts": { lines: 100 },
+  "src/competition/cascade-rules.ts": { lines: 100 },
+};
+
+/**
+ * Is this command line ONE SLICE of a suite split in more than one (`--shard=i/N`, N > 1)?
+ *
+ * CI splits the coverage run over several jobs (ci.yml, the `engine-shard` jobs), each writing a blob report, and the `engine`
+ * job merges them (`vitest run --merge-reports --coverage`). A slice sees only the code its own files run, so it cannot judge a
+ * threshold: the 100% of src/core would fail every shard that does not happen to hold all of core's tests. The thresholds gate
+ * the MERGED coverage, which carries no `--shard`. Both vitest spellings count (`--shard=1/3`, `--shard 1/3`); `--shard=1/1` is
+ * the whole suite, so it keeps its gate. test/coverage-shard.test.ts holds the table.
+ */
+export function isCoverageShard(argv: readonly string[]): boolean {
+  for (const [i, arg] of argv.entries()) {
+    const value = arg.startsWith("--shard=") ? arg.slice("--shard=".length) : arg === "--shard" ? argv[i + 1] : undefined;
+    const m = value === undefined ? null : /^(\d+)\/(\d+)$/.exec(value);
+    if (m !== null) return Number(m[2]) > 1;
+  }
+  return false;
+}
+
+/** The thresholds a run enforces: the gate, except on a slice (see isCoverageShard), which has none to judge. */
+export const coverageThresholds = (argv: readonly string[]): typeof COVERAGE_THRESHOLDS | undefined => (isCoverageShard(argv) ? undefined : COVERAGE_THRESHOLDS);
+
 export default defineConfig({
   test: {
     environment: "node",
@@ -56,15 +89,7 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts"],
       exclude: ["src/**/*.test.ts", "src/**/index.ts"],
-      // PROMPT-14 §4 gate: ≥90% lines across the engine; the fold kernel and
-      // the tiebreaker cascade must be fully covered — the ranker and, since
-      // W2d Task 6, the write-side check of an order (cascade-rules.ts).
-      thresholds: {
-        lines: 90,
-        "src/core/**/*.ts": { lines: 100 },
-        "src/competition/tiebreakers.ts": { lines: 100 },
-        "src/competition/cascade-rules.ts": { lines: 100 },
-      },
+      thresholds: coverageThresholds(process.argv),
     },
   },
 });

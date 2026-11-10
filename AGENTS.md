@@ -83,5 +83,11 @@ Then open the engine PR and the paired app PR (step 2 above).
   ordinal anchor) in the 01:00–06:00 window and record them in `stryker-measured.json`.
 - The weekly and `group=all` mutation runs are COLD: they never restore an incremental file, so a survived static mutant is
   re-run against today's tests (they still save one for later single-leg dispatches). Owner ruling 2026-10-31.
+- CI runs the engine suite in shards (ci.yml: the `engine-shard` jobs, then the required `engine` job that merges their blob reports and
+  judges the coverage thresholds on the merged result). A slice cannot judge a threshold, so `vitest.config.ts` withholds them from a
+  `--shard=i/N` run (N > 1): `pnpm test:coverage --reporter=blob --shard=1/3` writes `.vitest-reports/blob-1-3.json` and exits 0 at any
+  coverage, and `pnpm exec vitest run --merge-reports --coverage` over all the blobs is the run that gates. One file,
+  `test/fold-epoch-guard-cli.test.ts`, is about a third of the suite's test time, so the slice holding it sets the job's wall clock whatever
+  the shard count is: more shards stop helping past 3 until that file is split.
 - Golden corpora (`*.golden.json`) and `FOLD_EPOCH` / `FOLD_MINOR` move only on purpose: a fold change that alters a
   recorded outcome bumps the epoch (`pnpm fold-epoch:check`), and the version follows it (§8).
