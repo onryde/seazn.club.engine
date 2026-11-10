@@ -2553,7 +2553,31 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
       : provedOurLadder
         ? !ladderTied
         : isStrictlyBetter(incumbentMetrics, seedMetrics);
-  if (!improved) {
+  // A PROVED TIE IS DECIDED BY THE ORGANISER'S BOARD (seazn.club smoke #401).
+  // The tie rule above keeps the seed because shipping an indistinguishable
+  // board is churn — but churn is measured against what the organiser HAS, and
+  // the seed ignores `current`: greedy orders sibling lines by fixture id. In a
+  // repair whose seed is legal (6.0.1 bounds a fed line by its existing feeders)
+  // that shipped a board moving both TBD siblings where the solver's tied board
+  // moved one. So on a proved tie the board that disturbs `current` LESS
+  // ships, compared lexicographically: fewer of the organiser's cards dropped
+  // (`lostFrom`) first — a board that drops a card never beats one that moves
+  // it — then fewer moved (`movedFrom`). Without `current` both counts are 0,
+  // and an equal pair keeps the seed — today's preference, untouched.
+  //
+  // `ladderTied` is load-bearing, not decoration: it carries the D6 placed
+  // floor into this arm. A board that places fewer has fewer rows to have
+  // moved, and would otherwise win here on that alone. `provedOurLadder`
+  // likewise: unproved, `isStrictlyBetter` is the only evidence D6 has.
+  const lostByCandidate = lostFrom(incumbent);
+  const lostBySeed = lostFrom(seed.assignments);
+  const tieDisturbsLess =
+    provedOurLadder &&
+    ladderTied &&
+    (lostByCandidate !== lostBySeed
+      ? lostByCandidate < lostBySeed
+      : movedFrom(incumbent) < movedFrom(seed.assignments));
+  if (!improved && !tieDisturbsLess) {
     // `already_optimal`/`infeasible` are ONLY reachable here — both describe a
     // run that ships the SEED, so neither can be said in the `improved` arm
     // below: a proved ladder that also beat the seed is `ok`, and calling it
@@ -2562,9 +2586,10 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
     // DERIVED FROM THE PROOF AND THE BOARDS, NOT FROM `!improved`. Those two
     // used to coincide and no longer do, which is why this is written out
     // rather than inherited. `already_optimal` means "a board nothing beat",
-    // and that is now exactly `provedOurLadder && ladderTied`: the service
-    // proved our ladder and could not separate its own answer from the board
-    // greedy already had.
+    // and that is now exactly `provedOurLadder && ladderTied && !tieDisturbsLess`:
+    // the service proved our ladder, could not separate its own answer from the
+    // board greedy already had, and its answer does not disturb `current` less
+    // (fewer lost, then fewer moved) than the seed does.
     // Keying it off `!improved` instead would also catch the D6 floor case — a
     // proved reply that placed FEWER than the seed — and call a board the seed
     // BEAT "already optimal", which is the opposite of what the word says.
@@ -2594,7 +2619,9 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
     conflicts,
     metrics: incumbentMetrics,
     engine: "optimized",
-    // Reachable only by having just beaten the seed — see the comment above.
+    // Reachable only by having just beaten the seed — on the ladder, or on a
+    // proved tie by disturbing `current` less (`tieDisturbsLess`). Not
+    // `already_optimal` in the latter: that word means the SEED shipped.
     status: "ok",
     tiersCompleted,
     budgetExpired,
