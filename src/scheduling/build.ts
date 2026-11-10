@@ -2553,7 +2553,18 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
       : provedOurLadder
         ? !ladderTied
         : isStrictlyBetter(incumbentMetrics, seedMetrics);
-  if (!improved) {
+  // A PROVED TIE IS DECIDED BY THE ORGANISER'S BOARD (seazn.club smoke #401).
+  // The tie rule above keeps the seed because shipping an indistinguishable
+  // board is churn — but churn is measured against what the organiser HAS, and
+  // the seed ignores `current`: greedy orders sibling lines by fixture id. In a
+  // repair whose seed is legal (6.0.1 bounds a fed line by its existing feeders)
+  // that shipped a board moving both TBD siblings where the solver's tied board
+  // moved one. So on a proved tie the board that moves FEWER cards from
+  // `current` ships. Without `current` both counts are 0 (`movedFrom`), and an
+  // equal count keeps the seed — today's preference, untouched.
+  const tieMovesFewer =
+    provedOurLadder && ladderTied && movedFrom(incumbent) < movedFrom(seed.assignments);
+  if (!improved && !tieMovesFewer) {
     // `already_optimal`/`infeasible` are ONLY reachable here — both describe a
     // run that ships the SEED, so neither can be said in the `improved` arm
     // below: a proved ladder that also beat the seed is `ok`, and calling it
@@ -2594,7 +2605,9 @@ async function solveBuild(input: BuildInput): Promise<BuildResult> {
     conflicts,
     metrics: incumbentMetrics,
     engine: "optimized",
-    // Reachable only by having just beaten the seed — see the comment above.
+    // Reachable only by having just beaten the seed — on the ladder, or on a
+    // proved tie by moving fewer cards from `current` (`tieMovesFewer`). Not
+    // `already_optimal` in the latter: that word means the SEED shipped.
     status: "ok",
     tiersCompleted,
     budgetExpired,

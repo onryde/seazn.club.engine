@@ -24,6 +24,7 @@
 // never a sport rule, so a sport sweep would run the same arithmetic N times.
 import { describe, expect, it } from "vitest";
 import { buildSchedule, TIER_COUNT, TIER_NAMES } from "./build.ts";
+import { boardMetrics } from "./build-objectives.ts";
 import { isBlockingConflict, type Assignment, type OrderDependency, type SchedulableFixture, type SlotConfig } from "./calendar.ts";
 import { repairDecomposedCpsat } from "./repair-decompose-cpsat.ts";
 import type { PlacementSolver, SolveBuildOutcome } from "./solver-port.ts";
@@ -187,10 +188,19 @@ describe("a repair whose proved board ties greedy ships the board that moves few
       expect(out.moved).toBe(1);
       expect(out.lost).toBe(0);
       expect(out.conflicts.filter(isBlockingConflict)).toEqual([]);
-      // D6: never worse than greedy on the ladder. A tie on every rung.
-      expect(out.metrics.placed).toBe(seed.metrics.placed);
+      // D6: never worse than greedy on the ladder — a tie on every rung, both
+      // boards measured with ONE instrument (same courts, same day view).
+      const day = { dayOf: () => 0, openOf: () => T(0, 0) };
+      expect(boardMetrics(out.assignments, config.courts, 2, day)).toEqual(
+        boardMetrics(seed.assignments, config.courts, 2, day),
+      );
       expect(out.metrics.placed).toBe(2);
       expect(out.tiersCompleted).toBe(TIER_COUNT);
+      // (a) ships the solver's board (the seed would move 2); in (b) the
+      // solver's board IS the seed, an equal count, so the seed ships as before.
+      expect(seed.moved).toBe(first === HI ? 2 : 1);
+      expect(out.engine).toBe(first === HI ? "optimized" : "greedy");
+      expect(out.status).toBe(first === HI ? "ok" : "already_optimal");
     });
   }
 });
