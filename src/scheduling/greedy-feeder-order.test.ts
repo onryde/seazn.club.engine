@@ -71,12 +71,15 @@ describe("slotFixtures places a dependent after its feeders", () => {
     // `slotFixtures` does not emit `order` conflicts itself, so asserting on
     // its own `conflicts` array passes whether or not the bug is present —
     // vacuous, which is exactly the failure this repo keeps paying for.
+    //
+    // The edges go in as the verifier's 4th argument. They used to be spread
+    // into the config object, which `validateAssignments` never reads, so the
+    // order family ran over zero edges and this passed whatever the board was.
+    expect(dependencies.length).toBeGreaterThan(0);
     const out = slotFixtures({ fixtures, config: cfg(), dependencies });
+    expect(out.assignments).toHaveLength(3);
 
-    const conflicts = validateAssignments(out.assignments, {
-      ...cfg(),
-      dependencies,
-    } as Parameters<typeof validateAssignments>[1]);
+    const conflicts = validateAssignments(out.assignments, cfg(), [], dependencies);
 
     expect(conflicts.filter((c) => c.reason === "order")).toEqual([]);
   });

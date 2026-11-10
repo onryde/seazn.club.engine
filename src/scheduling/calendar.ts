@@ -978,14 +978,24 @@ export function slotFixtures(input: SlotInput): SlotResult {
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
   const locked = ordered.filter((f) => f.locked !== undefined);
-  /** `fixtureId -> the movable fixtures it feeds from`, filled while the
-   *  topological order below is built and reused to bound `ready`: ordering
-   *  alone only guarantees the feeders are PLACED first, not that the
+  /** `fixtureId -> every fixture it feeds from`, for each MOVABLE line, filled
+   *  while the topological order below is built and read to bound `ready`:
+   *  ordering alone only guarantees the feeders are PLACED first, not that the
    *  dependent starts after they finish — greedy would otherwise drop it onto
-   *  the next free court at the very same instant. */
+   *  the next free court at the very same instant.
+   *
+   *  Wider than the order's own edges on purpose. A feeder that is pinned
+   *  (`locked`) or already on the board (`existing`) is not this pass's to
+   *  ORDER, but `validateAssignments` still checks the dependent against it
+   *  (its feed check resolves both ends over the whole board), so it still
+   *  BOUNDS where the dependent may start. Reading movable feeders only, Auto
+   *  put a final ahead of its pinned semis and the seed then dropped it. */
   const feederEndBlockers = new Map<string, string[]>();
-  /** Every placed fixture's end, by id — the other half of that bound. */
-  const placedEndById = new Map<string, number>();
+  /** Every feeder end that bound can read, by id: the `existing` rows from the
+   *  start, then each fixture this pass commits (pinned ones first, in step
+   *  1). The verifier's board is `existing` then `assignments`, so a committed
+   *  row overrides an `existing` one with the same id here as it does there. */
+  const placedEndById = new Map<string, number>((input.existing ?? []).map((a) => [a.fixtureId, a.endAt]));
   /**
    * `ordered` restricted to the movable fixtures, then re-ordered so nothing is
    * placed before something it depends on. Kahn's algorithm, seeded in
@@ -1006,16 +1016,21 @@ export function slotFixtures(input: SlotInput): SlotResult {
     const blockers = new Map<string, Set<string>>();
     const dependents = new Map<string, string[]>();
     for (const d of deps) {
-      // Only edges BETWEEN movable fixtures matter: a feed from a locked or
-      // absent fixture imposes no ordering on this pass, because that card's
-      // position is not this pass's to choose.
-      if (!ids.has(d.fixtureId) || !ids.has(d.dependsOn) || d.fixtureId === d.dependsOn) continue;
+      if (!ids.has(d.fixtureId) || d.fixtureId === d.dependsOn) continue;
+      // Every feeder BOUNDS a movable dependent, wherever the feeder sits
+      // (`feederEndBlockers` above). One the board does not hold has no end to
+      // read and bounds nothing, as the verifier skips it.
+      const floor = feederEndBlockers.get(d.fixtureId);
+      if (floor === undefined) feederEndBlockers.set(d.fixtureId, [d.dependsOn]);
+      else if (!floor.includes(d.dependsOn)) floor.push(d.dependsOn);
+      // Only edges BETWEEN movable fixtures ORDER this pass: a pinned or
+      // absent feeder's position is not this pass's to choose.
+      if (!ids.has(d.dependsOn)) continue;
       const b = blockers.get(d.fixtureId) ?? new Set<string>();
       b.add(d.dependsOn);
       blockers.set(d.fixtureId, b);
       dependents.set(d.dependsOn, [...(dependents.get(d.dependsOn) ?? []), d.fixtureId]);
     }
-    for (const [k, v] of blockers) feederEndBlockers.set(k, [...v]);
     if (blockers.size === 0) return movable;
     const out: SchedulableFixture[] = [];
     const emitted = new Set<string>();
@@ -1127,13 +1142,21 @@ export function slotFixtures(input: SlotInput): SlotResult {
     const restF = Math.max(restMs, restForMs(f));
     const window = windowFor(f);
     let ready = Math.max(config.startAt, window.notBefore);
-    // A dependent may not START before its feeders have FINISHED — the same
-    // rule `validateAssignments` enforces as `order_before_feeder`. Only
-    // already-placed feeders bound it, which is why the topological order
-    // above matters: it guarantees they have been.
+    // A dependent may not START before its feeders have FINISHED, plus the
+    // rest the advancing participant is owed — the rule `validateAssignments`
+    // enforces as `order_before_feeder` / `order_inside_feeder_rest`, through
+    // the SAME resolver (`effectiveRestMinutes(config, target)`). Without the
+    // rest term greedy put a fed line at its feeder's final whistle, its own
+    // verifier flagged it, and `greedySeed` dropped it: at any rest above 0 a
+    // bracket kept only its first round. `restKeysOf` cannot cover this — a
+    // fed seat is empty until its feeder is decided. Only feeders with an end
+    // on the board bound it: `existing` rows and pinned ones are there before
+    // the first movable line is placed, and the topological order above
+    // guarantees a movable feeder has been placed before its dependent.
+    const feederRestMs = effectiveRestMinutes(config, f) * MS_PER_MIN;
     for (const b of feederEndBlockers.get(f.id) ?? []) {
       const end = placedEndById.get(b);
-      if (end !== undefined) ready = Math.max(ready, end);
+      if (end !== undefined) ready = Math.max(ready, end + feederRestMs);
     }
     for (const k of restKeysOf(f)) ready = Math.max(ready, (lastEnd.get(k) ?? -Infinity) + restF);
     // X-SW-31: the end barrier's two bounds (`roundSequenceOf` above). A tie is
