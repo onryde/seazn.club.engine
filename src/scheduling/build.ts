@@ -543,7 +543,7 @@ export interface BuildInput {
   /**
    * Where the caller's MOVABLE cards sit right now, before this run.
    *
-   * Read for exactly two things, and it is NOT part of the immovable board —
+   * Read for exactly three things, and it is NOT part of the immovable board —
    * that is `existing`, and conflating the two would put the organiser's own
    * cards in their own way:
    *
@@ -552,7 +552,11 @@ export interface BuildInput {
    *     seed they never saw;
    *   * POLISH anchors a freeze to it (R20), so a frozen card without a
    *     `locked` slot is held where it was PUBLISHED instead of wherever greedy
-   *     happened to re-place it this run.
+   *     happened to re-place it this run;
+   *   * the greedy seed places lines of one `roundNo` in their order here
+   *     (start, then court order) before fixture id — `SlotInput.current` — so
+   *     the board shipped on every fallback keeps the organiser's order. Order
+   *     only, never a pin or a bound (seazn.club smoke #401).
    *
    * It still does not constrain the solve: an unfrozen card is free to move off
    * its `current` slot, which is the whole point of asking.
@@ -996,7 +1000,12 @@ function greedySeed(input: BuildInput): GreedySeed {
   // Without it a bracket stage had no ordering signal at all (apps/web stamps
   // `roundNo` only for round-robin), so the final could land before its semis
   // and be dropped — 2 of 3 placed, one run in three.
-  const rawSeed = slotFixtures({ fixtures, config, existing, dependencies });
+  //
+  // `current` forwarded so, in a repair, same-round lines are placed in the
+  // organiser's order rather than by uuid (smoke #401): the seed is what a
+  // repair ships when the solver's board is rejected, and an id-ordered seed
+  // moved both of two clashing lines in half of all draws.
+  const rawSeed = slotFixtures({ fixtures, config, existing, dependencies, current: input.current });
   const rawSeedConflicts = validateAssignments(
     rawSeed.assignments,
     verifyConfig,
