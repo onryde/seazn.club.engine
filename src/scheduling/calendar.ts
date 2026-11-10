@@ -486,6 +486,19 @@ export interface SlotInput {
    * behaviour for every caller that does not pass them.
    */
   dependencies?: readonly OrderDependency[];
+  /**
+   * The organiser's board, when this seed is a repair (seazn.club smoke #401).
+   * Lines of one `roundNo` are placed in their order HERE — start, then court
+   * order in `config.courts` — before falling back to fixture id; lines this
+   * board does not hold follow, by id. Without it the order among same-round
+   * lines was the id alone, a random uuid, so in half of all draws the seed put
+   * the line the organiser had on the second court onto the first and moved
+   * both lines where one move was enough.
+   *
+   * Absent or empty orders exactly as before (`buildSchedule` treats an empty
+   * `current` as "no board" too). Order only: never a pin, never a bound.
+   */
+  current?: readonly Assignment[];
 }
 
 export interface SlotResult {
@@ -971,10 +984,26 @@ export function slotFixtures(input: SlotInput): SlotResult {
   };
   const sequenceExisting = roundSequenceRows(rulesBySequence, input.existing ?? []);
 
+  /** `fixtureId -> its slot on the organiser's board` (start, court index), the
+   *  first row per id. A court outside `config.courts` ranks after every listed
+   *  one. Empty for no `current`, which leaves the comparator as it was. */
+  const currentSlot = new Map<string, readonly [number, number]>();
+  for (const a of input.current ?? []) {
+    if (currentSlot.has(a.fixtureId)) continue;
+    const court = input.config.courts.indexOf(a.court);
+    currentSlot.set(a.fixtureId, [a.startAt, court === -1 ? input.config.courts.length : court]);
+  }
   const ordered = [...input.fixtures].sort((a, b) => {
     const ra = a.roundNo ?? 0;
     const rb = b.roundNo ?? 0;
     if (ra !== rb) return ra - rb;
+    const ca = currentSlot.get(a.id);
+    const cb = currentSlot.get(b.id);
+    if (ca !== undefined && cb !== undefined) {
+      if (ca[0] !== cb[0]) return ca[0] - cb[0];
+      if (ca[1] !== cb[1]) return ca[1] - cb[1];
+    } else if (ca !== undefined) return -1;
+    else if (cb !== undefined) return 1;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
   const locked = ordered.filter((f) => f.locked !== undefined);

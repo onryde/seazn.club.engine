@@ -20,6 +20,13 @@
 // clears it. One collision, one move — that is the problem's own minimum, and
 // `disjointConflictBound` must agree (asserted below, not assumed).
 //
+// SINCE THE SEED HONOURS `current` (slotFixtures' `current`, the #401 fix), the
+// 09:30 clash no longer reaches the tie: the seed keeps the court-A line where
+// it was and IS the one-move board. The tie arm is still reachable whenever the
+// seed cannot keep current's slot — `lateClash` below, a clash at 10:00, which
+// the seed answers by moving BOTH lines up to 09:30/10:00 while the mirror keeps
+// one of them at 10:00.
+//
 // Single-sport on purpose: the gate reads only board geometry and the ladder,
 // never a sport rule, so a sport sweep would run the same arithmetic N times.
 import { describe, expect, it } from "vitest";
@@ -82,6 +89,14 @@ const clashing = (first: string, second: string): Assignment[] => [
   row(second, "B", T(9, 30), PEOPLE),
 ];
 
+/** The organiser's board clashing at 10:00: `first` on A, `second` on B. The
+ *  seed (current order: `first` first) puts `first` on A at 09:30 — the
+ *  earliest after the semis — and `second` on A at 10:00: both move. */
+const lateClash = (first: string, second: string): Assignment[] => [
+  row(first, "A", T(10, 0), PEOPLE),
+  row(second, "B", T(10, 0), PEOPLE),
+];
+
 /** A proved reply on OUR ladder. */
 const proved = (assignments: SolveBuildOutcome["assignments"]): SolveBuildOutcome => ({
   assignments,
@@ -114,7 +129,7 @@ const oneMoveReply = (stays: string, moves: string): PlacementSolver =>
 const noService: PlacementSolver = fakeSolver(() => Promise.reject(new Error("no service")));
 
 describe("the rig's premises, asserted", () => {
-  it("greedy's seed puts the LOWER id on court A at 09:30 whatever the organiser had", async () => {
+  it("greedy's seed keeps current's court-A line at 09:30 in either id order (the #401 fix)", async () => {
     let checked = 0;
     for (const [first, second] of [
       [HI, LO],
@@ -131,8 +146,33 @@ describe("the rig's premises, asserted", () => {
       });
       expect(seed.engine).toBe("greedy");
       const at = (id: string) => seed.assignments.find((a) => a.fixtureId === id);
-      expect(at(LO)).toMatchObject({ court: "A", startAt: T(9, 30) });
-      expect(at(HI)).toMatchObject({ court: "A", startAt: T(10, 0) });
+      expect(at(first)).toMatchObject({ court: "A", startAt: T(9, 30) });
+      expect(at(second)).toMatchObject({ court: "A", startAt: T(10, 0) });
+      expect(seed.moved).toBe(1);
+      checked++;
+    }
+    expect(checked).toBe(2);
+  });
+
+  it("on a 10:00 clash the seed moves BOTH lines in either id order — the tie arm's rig", async () => {
+    let checked = 0;
+    for (const [first, second] of [
+      [HI, LO],
+      [LO, HI],
+    ] as const) {
+      const seed = await buildSchedule({
+        fixtures: tbdFixtures,
+        config,
+        existing: semis,
+        dependencies,
+        current: lateClash(first, second),
+        solve: noService,
+        log: silentLogger,
+      });
+      const at = (id: string) => seed.assignments.find((a) => a.fixtureId === id);
+      expect(at(first)).toMatchObject({ court: "A", startAt: T(9, 30) });
+      expect(at(second)).toMatchObject({ court: "A", startAt: T(10, 0) });
+      expect(seed.moved).toBe(2);
       checked++;
     }
     expect(checked).toBe(2);
@@ -202,11 +242,42 @@ describe("a repair whose proved board ties greedy ships the board that moves few
       );
       expect(out.metrics.placed).toBe(2);
       expect(out.tiersCompleted).toBe(TIER_COUNT);
-      // (a) ships the solver's board (the seed would move 2); in (b) the
-      // solver's board IS the seed, an equal count, so the seed ships as before.
-      expect(seed.moved).toBe(first === HI ? 2 : 1);
-      expect(out.engine).toBe(first === HI ? "optimized" : "greedy");
-      expect(out.status).toBe(first === HI ? "ok" : "already_optimal");
+      // Since the seed honours `current`, the solver's board IS the seed in
+      // both orders: an equal count, so the seed ships, `already_optimal`.
+      expect(seed.moved).toBe(1);
+      expect(out.engine).toBe("greedy");
+      expect(out.status).toBe("already_optimal");
+    });
+  }
+});
+
+describe("the tie arm: a proved board that ties the seed and moves fewer ships (10:00 clash)", () => {
+  for (const [first, second] of [
+    [HI, LO],
+    [LO, HI],
+  ] as const) {
+    it(`${first} first on court A: the mirror keeps ${first} at 10:00 and ships, moved 1`, async () => {
+      const current = lateClash(first, second);
+      const seed = await buildSchedule({ fixtures: tbdFixtures, config, existing: semis, dependencies, current, solve: noService, log: silentLogger });
+      // The mirror of the seed: `second` up to 09:30, `first` stays at A 10:00.
+      const out = await buildSchedule({
+        fixtures: tbdFixtures,
+        config,
+        existing: semis,
+        dependencies,
+        current,
+        solve: oneMoveReply(second, first),
+        log: silentLogger,
+      });
+
+      expect(seed.moved).toBe(2);
+      const day = { dayOf: () => 0, openOf: () => T(0, 0) };
+      expect(boardMetrics(out.assignments, config.courts, 2, day)).toEqual(boardMetrics(seed.assignments, config.courts, 2, day));
+      expect(out.engine).toBe("optimized");
+      expect(out.status).toBe("ok");
+      expect(out.moved).toBe(1);
+      expect(out.lost).toBe(0);
+      expect(out.assignments.find((a) => a.fixtureId === first)).toMatchObject({ court: "A", startAt: T(10, 0) });
     });
   }
 });
@@ -251,12 +322,13 @@ describe("no current: the gate behaves exactly as before", () => {
 
 describe("the tie-break never outranks D6's own evidence", () => {
   it("a proved reply that places one FEWER does not win on fewer moves (ladderTied is the placed floor)", async () => {
-    // `current` holds HI only, so the seed (LO@A09:30, HI@A10:00) moves 2 — LO
-    // is not on the organiser's board and counts as moved — and loses nothing.
-    // The reply keeps HI where it was and leaves LO out: 0 moved, 0 lost, ONE
-    // placed. Fewer moves purely by having fewer rows; D6 must ship the seed.
-    const current = [row(HI, "A", T(9, 30), PEOPLE)];
-    const solve = fakeSolver(() => Promise.resolve(proved([{ fixtureId: HI, court: "A", startAtMs: T(9, 30) }])));
+    // `current` holds HI only, at 10:00, so the seed (current's line first:
+    // HI@A09:30, LO@A10:00) moves 2 — HI's start changed, and LO is not on the
+    // organiser's board and counts as moved — and loses nothing. The reply
+    // keeps HI where it was and leaves LO out: 0 moved, 0 lost, ONE placed.
+    // Fewer moves purely by having fewer rows; D6 must ship the seed.
+    const current = [row(HI, "A", T(10, 0), PEOPLE)];
+    const solve = fakeSolver(() => Promise.resolve(proved([{ fixtureId: HI, court: "A", startAtMs: T(10, 0) }])));
 
     const out = await buildSchedule({ fixtures: tbdFixtures, config, existing: semis, dependencies, current, solve, log: silentLogger });
 
@@ -266,9 +338,10 @@ describe("the tie-break never outranks D6's own evidence", () => {
   });
 
   it("an UNPROVED tied reply that moves fewer still goes through isStrictlyBetter, and the seed ships", async () => {
-    // (a)'s rig and reply, but the service proved only part of our ladder. The
-    // mirror ties on every term `isStrictlyBetter` ranks, so it is not better.
-    const current = clashing(HI, LO);
+    // The tie arm's rig and reply, but the service proved only part of our
+    // ladder. The mirror ties on every term `isStrictlyBetter` ranks, so it is
+    // not better. (The seed is HI@A09:30, LO@A10:00 and moves both.)
+    const current = lateClash(HI, LO);
     const partial = proved([
       { fixtureId: HI, court: "A", startAtMs: T(9, 30) },
       { fixtureId: LO, court: "A", startAtMs: T(10, 0) },
@@ -287,8 +360,9 @@ describe("the tie-break never outranks D6's own evidence", () => {
 
 describe("dropping an organiser's card never beats moving it (lost before moved)", () => {
   // One court, two half-hour slots (09:00, 09:30), three independent fixtures:
-  // only two fit. Greedy takes x and y by id. The organiser had x@09:30 and
-  // y@09:00 (z never on their board).
+  // only two fit. The organiser had y@09:30 and x@10:00 — x already outside the
+  // window — and z never on their board. Greedy takes y then x (current's order;
+  // z is not on it and follows) at 09:00 and 09:30, so both move.
   const oneCourt: SlotConfig & { courts: string[] } = {
     startAt: T(9, 0),
     matchMinutes: 30,
@@ -303,12 +377,12 @@ describe("dropping an organiser's card never beats moving it (lost before moved)
     { id: "y", people: ["p3", "p4"], roundNo: 1 },
     { id: "z", people: ["p5", "p6"], roundNo: 1 },
   ];
-  const current = [row("x", "A", T(9, 30), ["p1", "p2"]), row("y", "A", T(9, 0), ["p3", "p4"])];
+  const current = [row("y", "A", T(9, 30), ["p3", "p4"]), row("x", "A", T(10, 0), ["p1", "p2"])];
 
   it("premise: greedy places x and y, moving both and dropping nothing", async () => {
     const seed = await buildSchedule({ fixtures: three, config: oneCourt, current, solve: noService, log: silentLogger });
     expect(seed.engine).toBe("greedy");
-    expect(seed.assignments.map((a) => `${a.fixtureId}@${a.startAt}`).sort()).toEqual([`x@${T(9, 0)}`, `y@${T(9, 30)}`]);
+    expect(seed.assignments.map((a) => `${a.fixtureId}@${a.startAt}`).sort()).toEqual([`x@${T(9, 30)}`, `y@${T(9, 0)}`]);
     expect(seed.moved).toBe(2);
     expect(seed.lost).toBe(0);
   });
@@ -317,8 +391,8 @@ describe("dropping an organiser's card never beats moving it (lost before moved)
     const solve = fakeSolver(() =>
       Promise.resolve(
         proved([
-          { fixtureId: "y", court: "A", startAtMs: T(9, 0) },
-          { fixtureId: "z", court: "A", startAtMs: T(9, 30) },
+          { fixtureId: "z", court: "A", startAtMs: T(9, 0) },
+          { fixtureId: "y", court: "A", startAtMs: T(9, 30) },
         ]),
       ),
     );

@@ -996,7 +996,12 @@ function greedySeed(input: BuildInput): GreedySeed {
   // Without it a bracket stage had no ordering signal at all (apps/web stamps
   // `roundNo` only for round-robin), so the final could land before its semis
   // and be dropped — 2 of 3 placed, one run in three.
-  const rawSeed = slotFixtures({ fixtures, config, existing, dependencies });
+  //
+  // `current` forwarded so, in a repair, same-round lines are placed in the
+  // organiser's order rather than by uuid (smoke #401): the seed is what a
+  // repair ships when the solver's board is rejected, and an id-ordered seed
+  // moved both of two clashing lines in half of all draws.
+  const rawSeed = slotFixtures({ fixtures, config, existing, dependencies, current: input.current });
   const rawSeedConflicts = validateAssignments(
     rawSeed.assignments,
     verifyConfig,
