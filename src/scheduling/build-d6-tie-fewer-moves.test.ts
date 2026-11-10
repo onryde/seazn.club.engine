@@ -107,10 +107,12 @@ const proved = (assignments: SolveBuildOutcome["assignments"]): SolveBuildOutcom
   wallExhausted: false,
 });
 
-/** The one-move board: the line already on court A stays, the other goes to the
- *  next half hour behind it. It is greedy's seed with the two ids swapped —
- *  the MIRROR, so it ties the seed on every rung by construction (no rung reads
- *  a fixture id), which is exactly the tie this file is about.
+/** `stays` on court A at 09:30, `moves` on court A at 10:00. On the 09:30 rig
+ *  (`clashing`) with `stays` = the organiser's court-A line, this board EQUALS
+ *  greedy's seed (the seed honours `current`), so the tie keeps the seed. On
+ *  `lateClash`, `oneMoveReply(second, first)` is the seed's MIRROR — the two ids
+ *  swapped — so it ties the seed on every rung by construction (no rung reads a
+ *  fixture id) while moving one fewer: the tie arm this file is about.
  *
  *  A STAND-IN, CHOSEN FAVOURABLE. The real placement service is never told
  *  `current` (the solver port has no such field), so the engine guarantees only
@@ -339,12 +341,15 @@ describe("the tie-break never outranks D6's own evidence", () => {
 
   it("an UNPROVED tied reply that moves fewer still goes through isStrictlyBetter, and the seed ships", async () => {
     // The tie arm's rig and reply, but the service proved only part of our
-    // ladder. The mirror ties on every term `isStrictlyBetter` ranks, so it is
-    // not better. (The seed is HI@A09:30, LO@A10:00 and moves both.)
+    // ladder. The seed (HI@A09:30, LO@A10:00) moves both; the reply is its
+    // MIRROR (LO@A09:30, HI@A10:00 — HI stays where current had it), so it
+    // moves one and would win the tie arm were the ladder proved. It ties on
+    // every term `isStrictlyBetter` ranks, so it is not better, and unproved
+    // the tie arm is closed (`provedOurLadder`): the seed ships.
     const current = lateClash(HI, LO);
     const partial = proved([
-      { fixtureId: HI, court: "A", startAtMs: T(9, 30) },
-      { fixtureId: LO, court: "A", startAtMs: T(10, 0) },
+      { fixtureId: LO, court: "A", startAtMs: T(9, 30) },
+      { fixtureId: HI, court: "A", startAtMs: T(10, 0) },
     ]);
     const solve = fakeSolver(() =>
       Promise.resolve({ ...partial, status: "FEASIBLE" as const, tiersCompleted: TIER_COUNT - 1, objectiveValues: partial.objectiveValues.slice(0, TIER_COUNT - 1) }),

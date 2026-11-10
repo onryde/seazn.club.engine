@@ -14,10 +14,11 @@
 // THE FIX. With `current`, the seed orders same-round lines by their slot there
 // (start, then court order in `config.courts`) before falling back to the id.
 //
-// THE SOLVER here is a fake that enumerates every placement of the free lines on
-// the wire grid and takes the earliest — exactly the frozen-feeder straddle the
-// real CP-SAT produced in the investigation (both lines at 08:00/08:30, before
-// the semis), so the path under test is the real `verifier_rejected` fallback.
+// THE SOLVER here is a fake that enumerates the free lines' placements over the
+// earliest court-free slots of the wire grid and takes the earliest board —
+// exactly the frozen-feeder straddle the real CP-SAT produced in the
+// investigation (both lines at 08:00/08:30, before the semis), so the path under
+// test is the real `verifier_rejected` fallback (asserted from the log).
 //
 // Single-sport on purpose: the seed's order reads only `roundNo`, the board and
 // the court list, never a sport rule.
@@ -26,7 +27,7 @@ import { buildSchedule, TIER_NAMES } from "../build.ts";
 import { slotFixtures, type Assignment, type OrderDependency, type SchedulableFixture, type SlotConfig } from "../calendar.ts";
 import { repairDecomposedCpsat } from "../repair-decompose-cpsat.ts";
 import type { PlacementSolver, SolveBuildInput } from "../solver-port.ts";
-import { fakeSolver, silentLogger } from "./solver-fakes.ts";
+import { fakeSolver, recordingLogger, silentLogger } from "./solver-fakes.ts";
 
 const MIN = 60_000;
 const T = (h: number, m: number) => Date.UTC(2026, 9, 8, h, m);
@@ -128,6 +129,7 @@ describe("a knockout repair whose solver board straddles frozen feeders moves on
   it("moved 1, minimality proved, the court-A line stays — checked 2 orders", async () => {
     let checked = 0;
     for (const [first, second] of ORDERS) {
+      const { lines: logged, log } = recordingLogger();
       const r = await repairDecomposedCpsat({
         fixtures,
         proposal: [...semis, ...clashing(first, second)],
@@ -136,8 +138,11 @@ describe("a knockout repair whose solver board straddles frozen feeders moves on
         config,
         budgetMs: 20_000,
         solve: earliestSolver,
-        log: silentLogger,
+        log,
       });
+      // The seed shipped because the verifier rejected the solver's board —
+      // not because a legal solver board happened to be the one-move board.
+      expect(logged.filter((l) => l.level === "error" && l.message.includes("verifier rejected")).length).toBe(1);
       expect({ first, status: r.status, moved: r.moved, verdict: r.minimality.verdict, lowerBound: r.minimality.lowerBound }).toEqual({
         first,
         status: "repaired",
@@ -210,6 +215,22 @@ describe("the seed reads current's slot order for same-round lines", () => {
     const current = [row("r2", "A", T(9, 0), ["p3", "p4"]), row("r1", "A", T(9, 30), ["p1", "p2"])];
     const seed = slotFixtures({ fixtures: rounds, config: oneCourt, current });
     expect(seed.assignments.map((a) => a.fixtureId)).toEqual(["r1", "r2"]);
+  });
+});
+
+describe("current's guards: an unlisted court and a repeated id", () => {
+  it("a court not in config.courts ranks after every listed court at one start", () => {
+    // LO on "X" (deleted from config, still on the organiser's board), HI on B.
+    const current = [row(LO, "X", T(9, 30), PEOPLE), row(HI, "B", T(9, 30), PEOPLE)];
+    const seed = slotFixtures({ fixtures: lines, config, existing: semis, dependencies, current });
+    expect(seed.assignments.map((a) => a.fixtureId)).toEqual([HI, LO]);
+  });
+
+  it("a repeated id ranks by its FIRST row", () => {
+    // LO listed twice: first at 10:00, then at 09:00. HI at 09:30. First row wins ⇒ HI, LO.
+    const current = [row(LO, "A", T(10, 0), PEOPLE), row(HI, "A", T(9, 30), PEOPLE), row(LO, "A", T(9, 0), PEOPLE)];
+    const seed = slotFixtures({ fixtures: lines, config, existing: semis, dependencies, current });
+    expect(seed.assignments.map((a) => a.fixtureId)).toEqual([HI, LO]);
   });
 });
 
