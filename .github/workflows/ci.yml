@@ -6,8 +6,9 @@ name: CI
 # on this PR's snapshot). On a pull request the checkout is the merge commit, whose first parent (HEAD^1) is the base tip; on a push to
 # main HEAD^1 is the previous commit. The import commit's HEAD^1 is the README commit, which holds no engine: each HEAD^1 gate below checks
 # the tree against itself there, with a notice, and never skips (test/stryker-floor.test.ts, test/single-sport.test.ts and
-# test/fold-epoch-guard-cli.test.ts hold that case). test/ci-wiring.test.ts pins the gates job's floor and fold guard steps and the
-# engine-pack job line by line: read it before reshaping either.
+# test/fold-epoch-guard-cli.test.ts hold that case). test/ci-wiring.test.ts pins the gates job's floor and fold guard steps, the
+# engine-pack job and the engine-shard / engine split (the required check names, the shard matrix, the aggregator's gate) line by line:
+# read it before reshaping any of them.
 on:
   pull_request:
   push:
@@ -79,12 +80,27 @@ jobs:
       - run: pnpm lint
 
   # -------------------------------------------------------------------------
-  # The engine suite with its coverage gate, the golden ledgers it folds, and the bounded sim matrix. Named `engine` as in seazn.club
-  # (test/ci-wiring.test.ts reads the job list and expects it). Unconditional: in this repository every change is an engine change.
+  # The engine suite, split over shards. Each `engine-shard` job runs one slice (`vitest --shard=i/N`: the files sorted by the hash of
+  # their path, cut into N runs of equal COUNT, so a file's shard moves only when files are added) with the coverage provider on, checks
+  # the golden ledgers its own run could have rewritten, and uploads its blob report, which carries its raw coverage. The `engine` job
+  # below merges them. The shards are NOT required checks (their names carry the shard number); `engine` is.
+  #
+  # N is measured, not guessed (run 42750596439, 312 files, 1,386 s of test time summed over the workers, 577 s of wall clock): ONE file,
+  # test/fold-epoch-guard-cli.test.ts, is 452 s of it (a spawn-bound serial rig: 116 tests that start git and node), so no N below the
+  # file count makes a shard faster than that file, and the slice that holds it is the job's wall clock whatever N is. At N=2 that slice
+  # already runs 452 s beside 560 s of other tests on the two spare workers; N=3 drains the spare workers in ~215 s, so the big file runs
+  # alone for the rest, and the other two slices are ~85 s each. N=4 and up buy under 20 s more and cost a runner each. The lever past
+  # this is splitting that file, not more shards.
   # -------------------------------------------------------------------------
-  engine:
-    name: Engine coverage + golden ledgers + sim matrix
+  engine-shard:
+    name: Engine shard ${{ matrix.shard }}/${{ strategy.job-total }}
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      # A red shard does not cancel the others: the run shows every red shard, and the aggregator below reports on all of them.
+      fail-fast: false
+      matrix:
+        # 1..N in order, as many as the matrix has: `--shard=i/N` takes N from strategy.job-total, and test/ci-wiring.test.ts holds the list.
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v5
         # Full history: the suite's git-driven tests build their own scratch repositories, but a full checkout costs nothing here and
@@ -99,11 +115,17 @@ jobs:
           node-version: 26
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # The engine suite: every sport's golden corpus folded and compared byte for byte, the PROMPT-14 simulation harness (SIM_RUNS
-      # defaults to 200 divisions per sport x format when CI=true), and the coverage gate (vitest.config.ts thresholds).
-      - run: pnpm test:coverage
+      # This slice of the engine suite: every sport's golden corpus folded and compared byte for byte, the PROMPT-14 simulation harness
+      # (SIM_RUNS defaults to 200 divisions per sport x format when CI=true), with coverage collected. `pnpm test:coverage` is
+      # `vitest run --coverage`. A slice cannot judge the coverage thresholds (it runs only part of the code), so vitest.config.ts withholds
+      # them from a `--shard` run (isCoverageShard); the `engine` job judges them on the merged coverage. The reporters are NAMED so the
+      # run keeps what vitest picks by itself under GitHub Actions (`default` and `github-actions`) and adds `blob`; the coverage table is
+      # the summary only here (the merged run prints the full one).
+      - name: Engine suite shard (blob report, coverage collected)
+        run: pnpm test:coverage --reporter=default --reporter=github-actions --reporter=blob --coverage.reporter=text-summary --shard=${{ matrix.shard }}/${{ strategy.job-total }}
       # The golden ledgers are compared, never rewritten, in CI (no UPDATE_GOLDEN / REBASELINE_GOLDEN here; src/testkit/GOLDEN-POLICY.md):
-      # a run that left any *.golden.json other than as committed is a red, whatever the suite said.
+      # a run that left any *.golden.json other than as committed is a red, whatever the suite said. It runs HERE, in the job whose workspace
+      # the tests ran in: in the aggregating job `git status` would be a fresh checkout's, clean whatever the suite did.
       - name: Golden ledgers left as committed
         run: |
           drift="$(git status --porcelain -- ':(glob)**/*.golden.json')"
@@ -113,6 +135,100 @@ jobs:
             exit 1
           fi
           echo "golden ledgers: $(git ls-files -- ':(glob)**/*.golden.json' | wc -l | tr -d ' ') committed, none changed"
+      # The blob reporter writes .vitest-reports/blob-<i>-<N>.json, a hidden directory (upload-artifact leaves those out unless told). A
+      # shard that wrote no blob is a red here, never an empty artifact the merge would quietly do without.
+      - name: Upload the blob report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-blob-${{ matrix.shard }}
+          path: .vitest-reports/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # -------------------------------------------------------------------------
+  # The REQUIRED check `Engine coverage + golden ledgers + sim matrix` (branch protection matches this display name; the job id `engine` is
+  # what test/ci-wiring.test.ts reads): the shards' verdict, the coverage thresholds judged on the shards' MERGED coverage, and the bounded
+  # sim matrix. Unconditional: in this repository every change is an engine change.
+  #
+  # It runs when a shard failed or was skipped (`!cancelled()`), and its first step turns that into its own red. With a bare `needs` it
+  # would be SKIPPED instead, and GitHub counts a skipped required check as passing: the PR would show one red job that is not required,
+  # and merge. A cancelled RUN (a superseded push) is left alone: there is nothing to judge.
+  # -------------------------------------------------------------------------
+  engine:
+    name: Engine coverage + golden ledgers + sim matrix
+    needs: engine-shard
+    if: ${{ !cancelled() }}
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      # `needs.<job>.result` of a matrix job is one word for all its legs: success only when EVERY leg succeeded.
+      - name: Every engine shard succeeded
+        env:
+          SHARDS: ${{ needs.engine-shard.result }}
+        run: |
+          if [ "$SHARDS" != "success" ]; then
+            echo "::error::the engine shards finished '$SHARDS', not 'success': this check is red with them, whatever else ran"
+            exit 1
+          fi
+          echo "every engine shard succeeded"
+      - uses: actions/checkout@v5
+        # Full history, as in the shards: nothing here reads HEAD^1, but a shallow clone is no saving worth a surprise.
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # merge-multiple puts every artifact's files side by side in one directory, which is where `--merge-reports` reads by default.
+      - name: Download the blob reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vitest-blob-*
+          merge-multiple: true
+          path: .vitest-reports
+      # Every shard's blob, none other: a merge over fewer reports than the split has judges coverage on a suite with a slice left out,
+      # and one over a stray from another split merges tests twice. The count N is read off the names (`blob-<i>-<N>.json`), so it is
+      # written once, in the matrix.
+      - name: The shards' blob reports are all here
+        run: |
+          set -euo pipefail
+          if [ ! -d .vitest-reports ]; then
+            echo "::error::no .vitest-reports directory: no shard's blob report was downloaded"
+            exit 1
+          fi
+          cd .vitest-reports
+          shopt -s nullglob
+          blobs=(blob-*-*.json)
+          if [ "${#blobs[@]}" -eq 0 ]; then
+            echo "::error::no blob report of a shard was downloaded: there is nothing to merge, and a coverage gate over nothing proves nothing"
+            exit 1
+          fi
+          n="${blobs[0]##*-}"
+          n="${n%.json}"
+          if ! [[ "$n" =~ ^[0-9]+$ ]] || [ "$n" -lt 2 ]; then
+            echo "::error::${blobs[0]} names a split in '$n': the engine suite is split over at least 2 shards"
+            exit 1
+          fi
+          for i in $(seq 1 "$n"); do
+            if [ ! -f "blob-$i-$n.json" ]; then
+              echo "::error::blob-$i-$n.json is missing: the merge would judge coverage on a suite with shard $i of $n left out"
+              exit 1
+            fi
+          done
+          if [ "${#blobs[@]}" -ne "$n" ]; then
+            echo "::error::${#blobs[@]} blob reports for a split in $n (${blobs[*]}): one from another split would be merged in"
+            exit 1
+          fi
+          echo "$n blob reports, 1..$n all present"
+      # The coverage gate (vitest.config.ts thresholds, PROMPT-14 §4) on the merged coverage of every shard. This command carries no
+      # `--shard`, so the config keeps its thresholds; the merge replays the shards' test results through the reporters too, and a
+      # failed test in any blob is a red. Nothing here softens a threshold.
+      - name: Merge the shards' reports and judge the coverage thresholds on the whole suite
+        run: pnpm exec vitest run --merge-reports --coverage
       # Sim matrix (v3/09 §3): bounded profile — every module x format x SIM_SEEDS seeds + the permanent scenario suites; emits
       # sim-report.json. A failure line prints its reproducing seed token.
       - name: Sim matrix (bounded CI profile)
