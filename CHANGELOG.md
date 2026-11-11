@@ -1,5 +1,21 @@
 # @onryde/seazn-engine
 
+## 7.0.0
+
+### Major Changes
+
+- 67d687f: football: `extraTimeSubs` — Law 3's extra substitution and window in extra time
+  
+  A new optional football cfg key, `extraTimeSubs: { subs, windows }` (stage-scoped rule key), with no default. Once the match has reached extra time (ET_H1, ET_H2, or the shoot-out after extra time), the substitution cap is `maxSubs + subs` and the window cap is `subWindows + windows`, each only where its base cap is declared. Absent, every fold is unchanged. One reader, `effectiveSubCaps(cfg, phase)`: the fold's window check, football's `lineupPolicy` and the pad's `footballPadRules.subWindowsCap(cfg, phase)`. **Breaking:** `phase` is a new REQUIRED argument of `subWindowsCap` (pad and `sports/football`), so a caller that has not been updated fails to compile rather than quietly reading the cap before extra time; pass the match's phase.
+  
+  The kernel now asks a module's `lineupPolicy(cfg, state)` per lineup event with the state the event is judged in (the hook's `state` argument is new and optional), so `core.lineup.substitution` gets the extra-time cap too.
+  
+  Major, not minor: football's `FOLD_EPOCH` rises to 5. The key is opt-in and an epoch-4 client strips it, so a match that uses it folds differently there (GOLDEN-POLICY "Unexercised branches", the W2c precedent for opt-in keys), and a moved `FOLD_EPOCH` needs a major release. Found by the phone's replay of the 2022 World Cup final (F-R3).
+
+### Patch Changes
+
+- 8be8ffb: Rules reference: the 17 W4 app PR B rows (X-TP-1/2/3/6/7, X-FR-4/5, X-PL-2/5/6/7/8, X-SD-11, X-LE-14, X-CH-3/4/6) now name the app tests that prove them and the files that enforce them. X-WD-4's text now carries the vacant-title and third-place exceptions (rulings 267 and 274), and X-CH-3 says the title is reversed by Reinstate.
+
 ## 6.0.3
 
 ### Patch Changes
