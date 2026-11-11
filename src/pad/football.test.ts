@@ -382,9 +382,10 @@ describe("footballPadRules.periodMarkers", () => {
       expect(() => footballPadRules.eventAllowedInPhase("football.goal", "H1", cfg), `eventAllowedInPhase: ${name}`).toThrow();
       expect(() => footballPadRules.subWindowsCap(cfg, "H1"), `subWindowsCap: ${name}`).toThrow();
       expect(() => footballPadRules.reentryAllowed(cfg), `reentryAllowed: ${name}`).toThrow();
-      refused += 5;
+      expect(() => footballPadRules.effectiveSubCaps(cfg, "H1"), `effectiveSubCaps: ${name}`).toThrow();
+      refused += 6;
     }
-    expect(refused).toBe(invalid.length * 5);
+    expect(refused).toBe(invalid.length * 6);
   });
 });
 
@@ -568,5 +569,24 @@ describe("FB-SU-1: footballPadRules.reentryAllowed", () => {
     expect(footballPadRules.reentryAllowed({})).toBe(false);
     expect(footballPadRules.reentryAllowed({ rollingSubs: true })).toBe(true);
     expect(footballPadRules.reentryAllowed({ rollingSubs: false })).toBe(false);
+  });
+});
+
+describe("FB-SU-3: footballPadRules.effectiveSubCaps", () => {
+  // The facade reads the stored cfg through the schema and answers what football's own `effectiveSubCaps` answers (one function for
+  // the fold, the web and the phone). The expected caps are Law 3's numbers, never the function's own output.
+  const law3 = { maxSubs: 5, subWindows: 3, extraTime: { enabled: true, halfMinutes: 15 }, extraTimeSubs: { subs: 1, windows: 1 } };
+
+  it("is 5 and 3 before extra time, 6 and 4 in it", () => {
+    for (const phase of ["pre", "H1", "H2"]) expect(footballPadRules.effectiveSubCaps(law3, phase), phase).toEqual({ maxSubs: 5, subWindows: 3 });
+    for (const phase of ["ET_H1", "ET_H2", "SHOOTOUT"]) expect(footballPadRules.effectiveSubCaps(law3, phase), phase).toEqual({ maxSubs: 6, subWindows: 4 });
+  });
+
+  it("agrees with subWindowsCap, and leaves an undeclared cap undeclared", () => {
+    for (const phase of ["H2", "ET_H1"]) {
+      expect(footballPadRules.effectiveSubCaps(law3, phase).subWindows).toBe(footballPadRules.subWindowsCap(law3, phase));
+    }
+    expect(footballPadRules.effectiveSubCaps({}, "ET_H1")).toEqual({ maxSubs: undefined, subWindows: undefined });
+    expect(footballPadRules.effectiveSubCaps({ maxSubs: 5, extraTime: { enabled: true, halfMinutes: 15 } }, "ET_H1")).toEqual({ maxSubs: 5, subWindows: undefined });
   });
 });

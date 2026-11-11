@@ -51,6 +51,10 @@ export interface FootballPadRules extends PadRulesBase {
    *  `phase` is required (7.0.0): a caller that has not been updated fails to compile rather than quietly reading the cap before
    *  extra time. */
   subWindowsCap(cfg: unknown, phase: string): number | undefined;
+  /** Both substitution caps in force in `phase` (football's `effectiveSubCaps`, F-R3): `maxSubs` and `subWindows`, each raised by
+   *  `extraTimeSubs` once the match has reached extra time, undefined where the competition declared none. The one function the
+   *  fold, the web and the phone read both caps from. (`maxSubs` is the declared cap; under `rollingSubs` the fold applies none.) */
+  effectiveSubCaps(cfg: unknown, phase: string): { readonly maxSubs: number | undefined; readonly subWindows: number | undefined };
   /** `eventType` is one of this sport's own event types; any other throws, naming it; a skin filters first. Takes the cfg because the fold's period-marker refusals do (`cfg.halves`). */
   eventAllowedInPhase(eventType: string, phase: string, cfg: unknown): boolean;
   /** The `football.period` markers this cfg offers, in offer order (halves HT/FT, quarters QT/HT/3QT/FT, plus ET_HT/ET_FT with extra time). Added by P1.2. */

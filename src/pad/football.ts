@@ -17,6 +17,7 @@ import {
   periodMarkers,
   reentryAllowed,
   subWindowsCap,
+  effectiveSubCaps,
 } from "../sports/football/football.ts";
 import type { FootballPadRules } from "./types.ts";
 
@@ -43,6 +44,7 @@ export const footballPadRules: FootballPadRules = Object.freeze<FootballPadRules
   playPhases: PLAY_PHASES,
   teamSizeDefault: FOOTBALL_TEAM_SIZE,
   subWindowsCap: (cfg, phase) => subWindowsCap(resolve(cfg), phase),
+  effectiveSubCaps: (cfg, phase) => effectiveSubCaps(resolve(cfg), phase),
   eventAllowedInPhase: (eventType, phase, cfg) => eventAllowedInPhase(ownType(eventType), phase, resolve(cfg)),
   periodMarkers: (cfg) => periodMarkers(resolve(cfg)),
   legalPeriodMarkers: (phase, cfg) => legalPeriodMarkers(phase, resolve(cfg)),
