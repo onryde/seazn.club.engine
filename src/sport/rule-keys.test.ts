@@ -269,7 +269,8 @@ describe("X-SR-1 P1 engine sweep — ruleKeys", () => {
   // rulebook's: FB-SO-1 (the kicks are the penalty shoot-out's) and the period kernel's own comment (the overtime and the
   // shoot-out are stage objects whose LENGTH leaves a match may lower).
   const DETAILS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-    football: { shootoutAttempts: "shootout" },
+    // F-R3 (ruling 157): Law 3's extra-time allowance is read only once extra time is reached (`effectiveSubCaps`).
+    football: { shootoutAttempts: "shootout", extraTimeSubs: "extraTime" },
     hockey: { "shootout.attempts": "shootout" },
     icehockey: { "overtime.minutes": "overtime", "shootout.attempts": "shootout" },
     // W2e Task 7 (A1c-2, ruling 157): what a TIED super over does (repeat / boundary count / shared) is only asked while

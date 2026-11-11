@@ -2822,8 +2822,9 @@ export const football: SportModule<FootballCfg, FootballEv, FootballState> = {
     sinBinMinutes: { scope: "stage" },
     rollingSubs: { scope: "stage" },
     concussionSubs: { scope: "stage" },
-    // F-R3 (controller ruling 157) — Law 3's extra-time substitution and window, beside the caps it raises.
-    extraTimeSubs: { scope: "stage" },
+    // F-R3 (controller ruling 157) — Law 3's extra-time substitution and window, beside the caps it raises. A DETAIL of
+    // extra time: it means nothing while extra time is off, so the editor holds it then (paired web PR, #41).
+    extraTimeSubs: { scope: "stage", detailOf: "extraTime" },
     points: { scope: "points" },
     awardScore: { scope: "points" },
     // W2c Q10 - what an abandoned match counts as is the stage's: replay, or the result as it stood (FB-AB-1).
