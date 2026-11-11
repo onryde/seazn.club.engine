@@ -54,7 +54,7 @@ nothing. GitHub Actions may not open pull requests in this organisation, so a pe
 
 A check that is red on `main` for a reason already owned elsewhere. A release or merge may pass over ONLY these, each matched by test name in the job log; anything else red stops the merge. Delete the line in the PR that fixes it.
 
-- **Downstream** (onryde/seazn.club@main on this PR's snapshot): `pnpm run typecheck` in apps/web exits 1 with exactly 3 tsc errors, all TS2554 (expected 2 arguments) on `subWindowsCap`, whose `phase` is required from 7.0.0: components/v2/scorepad/v3/skins/football.tsx:1156, skins/__tests__/pad-rules-football.test.ts:250/260. Reason: the paired seazn.club PR moves the web to 7.0.0 and passes the phase. Delete when seazn.club takes ^7. (The 17-error W4 entry it replaces is gone: seazn.club main pins ^6.0.3, and this PR's Downstream run shows none of them.)
+None currently.
 
 ## Porting a branch that was in flight at the cutover (D37)
 
