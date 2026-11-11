@@ -147,7 +147,7 @@ const SET_PLAN = { points: ["pointsMap"] } as const;
 const PLAN_ONLY: Readonly<Record<string, Partial<Record<RuleScope, readonly string[]>>>> = {
   volleyball: SET_PLAN, badminton: SET_PLAN, tabletennis: SET_PLAN,
   tennis: { points: ["points"] },
-  football: { stage: ["rollingSubs", "concussionSubs"], points: ["awardScore"] },
+  football: { stage: ["rollingSubs", "concussionSubs", "extraTimeSubs"], points: ["awardScore"] }, // extraTimeSubs: F-R3, controller ruling 157
   cricket: { stage: ["superOverStillTied", "minOversForResult"], points: ["points"] },
   // W2d (spec D10(e), PS-1): ice hockey keeps its `points` key for `otWin`/`otLoss` (a GWS pays them); Q5's shoot-out
   // names became football's and hockey's `soBonus`, which a result sport's schema does not take.
@@ -269,7 +269,8 @@ describe("X-SR-1 P1 engine sweep — ruleKeys", () => {
   // rulebook's: FB-SO-1 (the kicks are the penalty shoot-out's) and the period kernel's own comment (the overtime and the
   // shoot-out are stage objects whose LENGTH leaves a match may lower).
   const DETAILS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-    football: { shootoutAttempts: "shootout" },
+    // F-R3 (ruling 157): Law 3's extra-time allowance is read only once extra time is reached (`effectiveSubCaps`).
+    football: { shootoutAttempts: "shootout", extraTimeSubs: "extraTime" },
     hockey: { "shootout.attempts": "shootout" },
     icehockey: { "overtime.minutes": "overtime", "shootout.attempts": "shootout" },
     // W2e Task 7 (A1c-2, ruling 157): what a TIED super over does (repeat / boundary count / shared) is only asked while
@@ -563,7 +564,7 @@ describe("X-SR-1 P1 engine sweep — ruleKeys", () => {
     // Optional keys no declared cfg (and no bracket decider) gives a value: the engine names no ON state for them, and
     // any value here would be the test's own invention. Pinned, so the skip stays visible and a new one goes red.
     expect(sorted(noOnValue)).toEqual(sorted([
-      "football.maxSubs", "football.subWindows", "football.sinBinMinutes", "football.concussionSubs",
+      "football.maxSubs", "football.subWindows", "football.sinBinMinutes", "football.concussionSubs", "football.extraTimeSubs",
       "boardgame.clock", "boardgame.tiebreakRungs", "volleyball.cap", // tiebreakRungs: absent = every rung; no declared cfg lists any
       // W2c Task 7: a policy, not an on/off switch - `share` is one of two values, and no declared cfg sets either.
       "carrom.abandonPolicy", "generic.abandonPolicy",

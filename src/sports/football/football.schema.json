@@ -52,6 +52,25 @@
         ],
         "type": "object"
       },
+      "extraTimeSubs": {
+        "properties": {
+          "subs": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "windows": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "subs",
+          "windows"
+        ],
+        "type": "object"
+      },
       "fairPlay": {
         "default": true,
         "type": "boolean"
