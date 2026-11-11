@@ -1,8 +1,9 @@
 # Dependencies
 node_modules/
 
-# Local agent settings (never committed)
-.claude/
+# Local agent settings and agent memory (never committed); the shared agent definitions in .claude/agents/ are tracked.
+.claude/*
+!.claude/agents/
 
 # Test output
 coverage/
