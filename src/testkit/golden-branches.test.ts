@@ -69,7 +69,7 @@ const storyById = (id: string): BranchStory => {
 const byId = (id: string): Case => caseOf(storyById(id));
 
 describe("the branch table", () => {
-  it("names exactly the four opt-in branches W2c raised a major for by hand, then the six arms 16c recorded beside them (the award abandon's expunge and level arms, and the shoot-out's sudden death), then W2e's tennis set tie-break margin (summarised, then played) and the final-set tie-break's, the football and cricket epoch witnesses, once each, in this order", () => {
+  it("names exactly the four opt-in branches W2c raised a major for by hand, then the six arms 16c recorded beside them (the award abandon's expunge and level arms, and the shoot-out's sudden death), then W2e's tennis set tie-break margin (summarised, then played) and the final-set tie-break's, the football and cricket epoch witnesses, then football's extraTimeSubs (F-R3), once each, in this order", () => {
     expect(BRANCH_STORIES.map((s) => s.id)).toEqual([
       "football.shootoutAttempts",
       "hockey.q4_stands",
@@ -87,6 +87,7 @@ describe("the branch table", () => {
       "tennis.fast4_deciding_point_played",
       "football.pitch_retirement",
       "cricket.mid_over_bowler_change",
+      "football.extraTimeSubs",
     ]);
   });
 
@@ -791,6 +792,21 @@ describe("each verdict has teeth: the stream passes, its counterfactuals do not"
           ["the change before the over begins", { ...c.recorded, events: [...events.slice(0, 7), change, ...events.slice(7).filter((e) => e !== change).map((e) => (e.type === "cricket.ball" && (e.payload as { over: number }).over === 1 ? { ...e, payload: { ...(e.payload as object), bowler: incoming } } : e))] }, /no over is in progress/],
         ];
       }
+      case "football.extraTimeSubs": {
+        const last = events[events.length - 1]!;
+        const lastPayload = last.payload as Record<string, unknown>;
+        const { at: _stamp, ...unstamped } = lastPayload;
+        const notStamped = /does not end on a stamped football\.sub/;
+        return [
+          ["the key dropped", { ...c.recorded, raw: without(c.raw, "extraTimeSubs") }, /declares no extraTimeSubs/],
+          ["the last substitution unstamped", { ...c.recorded, events: [...events.slice(0, -1), { ...last, payload: unstamped }] }, notStamped],
+          ["the last substitution dropped", { ...c.recorded, events: events.slice(0, -1) }, notStamped],
+          // the sixth made before the final whistle: the allowance is not in force in regulation, so the cap of five refuses it
+          ["the sixth made in regulation", { ...c.recorded, events: [...events.slice(0, -2), { ...last, payload: { ...lastPayload, at: { period: "H2", elapsed: 2000 } } }] }, /used all 5 substitutions/],
+          // caps wide enough without the allowance: the key decided nothing
+          ["caps that need no allowance", { ...c.recorded, raw: { ...c.raw, maxSubs: 6, subWindows: 4 } }, /allowance decided nothing/],
+        ];
+      }
       default:
         throw new Error(`${c.story.id}: no counterfactuals declared for this story`);
     }
@@ -879,12 +895,12 @@ describe("extendBranches - the append path", () => {
     const donor: GoldenStream = { ...shootout.stream, config: "youthKnockout", seed: 4242 };
     const result = extendBranches(football, { ...base, streams: [...base.streams, donor] });
     // the donor reaches the shoot-out count and nothing else: the sudden death, the awards and the draw are still holes
-    expect(result.appended.map((a) => a.split(" ")[0])).toEqual(["football.award_expunge", "football.award_draw", "football.shootout_sudden_death", "football.pitch_retirement"]);
+    expect(result.appended.map((a) => a.split(" ")[0])).toEqual(["football.award_expunge", "football.award_draw", "football.shootout_sudden_death", "football.pitch_retirement", "football.extraTimeSubs"]);
     expect(result.corpus.streams.filter((s) => s.config === "youthKnockout").map((s) => s.seed)).not.toContain(BRANCH_SEED_BASE + 1);
     // a sudden-death donor reaches BOTH shoot-out stories (the sudden death is a shoot-out win inside the key's count too)
     const sudden = byId("football.shootout_sudden_death");
     const both = extendBranches(football, { ...base, streams: [...base.streams, { ...sudden.stream, config: "youthKnockout", seed: 4243 }] });
-    expect(both.appended.map((a) => a.split(" ")[0])).toEqual(["football.award_expunge", "football.award_draw", "football.pitch_retirement"]);
+    expect(both.appended.map((a) => a.split(" ")[0])).toEqual(["football.award_expunge", "football.award_draw", "football.pitch_retirement", "football.extraTimeSubs"]);
   });
 
   it("refuses by name an identity another stream holds, and a config name held with a different raw", () => {
@@ -905,5 +921,26 @@ describe("extendBranches - the append path", () => {
     expect(dry.stillMissing).toEqual(["football.award_expunge"]);
     expect(dry.corpus.streams.length).toBe(base.streams.length);
     expect(() => extendBranches(football, base, [{ ...story, build: () => [{ type: "core.start", payload: {} }] }])).toThrow(/does not reach its branch/);
+  });
+  // F-R3 (controller ruling 157). The football epoch bump to 5 is for `extraTimeSubs`: an epoch-4 phone strips the key, so this
+  // ledger, accepted now, is refused there. The witness proves both halves on the recorded stream.
+  it("football.extraTimeSubs: the sixth substitution in a fourth window is accepted in extra time, and the same ledger without the key is refused", () => {
+    const c = byId("football.extraTimeSubs");
+    const events = c.stream.events;
+    const lineups = c.stream.lineups;
+    expect(lineups, "recorded with the coverage bench").toBeDefined();
+    const played = fold(c.module, c.raw, events, lineups);
+    expect(played.state.phase).toBe("ET_H1");
+    const home = (played.state.squads as { home: { offUsed: string[]; subWindows: unknown[] } }).home;
+    expect(home.offUsed).toHaveLength(6);
+    expect(home.subWindows).toHaveLength(4);
+    let refused: unknown;
+    try {
+      fold(c.module, without(c.raw, "extraTimeSubs"), events, lineups);
+    } catch (error) {
+      refused = error;
+    }
+    expect(EngineError.is(refused, "INVALID_EVENT"), "the cap of five refuses the sixth").toBe(true);
+    expect((refused as EngineError).data).toMatchObject({ reason: "sub-cap-reached" });
   });
 });

@@ -888,7 +888,9 @@ export interface SportModule<Cfg, Ev, State> extends FoldableModule<Cfg, State> 
   // squads it reads from `ctx.squads` never move from the team sheet. A module
   // that wants the kernel's most restrictive answer declares
   // `lineupPolicy: () => DEFAULT_LINEUP_POLICY` rather than omitting it.
-  lineupPolicy?(cfg: Cfg): LineupPolicy;
+  //    The kernel asks it per event with the State the event is judged in (`state`), so a policy may move during a match:
+  //    football's cap rises in extra time (Law 3, `extraTimeSubs`).
+  lineupPolicy?(cfg: Cfg, state?: State): LineupPolicy;
   onLineup?(state: State, squads: SquadState): State;
   // W2e T32 fix (M12b) — a module whose OWN events also move people on and off (football's `football.sub`) hands the kernel
   // the squads a `core.lineup.*` event is judged against, with who is on the field read from its State. Full reasoning on

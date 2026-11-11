@@ -42,7 +42,7 @@ export const footballPadRules: FootballPadRules = Object.freeze<FootballPadRules
   penaltyOffences: PenaltyOffence.options,
   playPhases: PLAY_PHASES,
   teamSizeDefault: FOOTBALL_TEAM_SIZE,
-  subWindowsCap: (cfg) => subWindowsCap(resolve(cfg)),
+  subWindowsCap: (cfg, phase) => subWindowsCap(resolve(cfg), phase),
   eventAllowedInPhase: (eventType, phase, cfg) => eventAllowedInPhase(ownType(eventType), phase, resolve(cfg)),
   periodMarkers: (cfg) => periodMarkers(resolve(cfg)),
   legalPeriodMarkers: (phase, cfg) => legalPeriodMarkers(phase, resolve(cfg)),

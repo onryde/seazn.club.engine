@@ -47,7 +47,9 @@ export interface FootballPadRules extends PadRulesBase {
   readonly penaltyOffences: readonly string[];
   readonly playPhases: readonly string[];
   readonly teamSizeDefault: number;
-  subWindowsCap(cfg: unknown): number | undefined;
+  /** The window cap in force in `phase` (football's `subWindowsCap`): from extra time on it includes `extraTimeSubs.windows` (F-R3).
+   *  Without a phase, the cap before extra time. */
+  subWindowsCap(cfg: unknown, phase?: string): number | undefined;
   /** `eventType` is one of this sport's own event types; any other throws, naming it; a skin filters first. Takes the cfg because the fold's period-marker refusals do (`cfg.halves`). */
   eventAllowedInPhase(eventType: string, phase: string, cfg: unknown): boolean;
   /** The `football.period` markers this cfg offers, in offer order (halves HT/FT, quarters QT/HT/3QT/FT, plus ET_HT/ET_FT with extra time). Added by P1.2. */

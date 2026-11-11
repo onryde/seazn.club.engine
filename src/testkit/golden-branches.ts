@@ -229,6 +229,22 @@ function reachesPitchRetirement(r: Recorded): string | null {
   return null;
 }
 
+/** football `extraTimeSubs` (F-R3, FB-SU-3; controller ruling 157, Law 3): in extra time a side may make one substitution, in one
+ *  window, beyond `maxSubs` and `subWindows`. The ledger spends both caps before extra time and ends on the substitution only the
+ *  allowance admits; the verdict is a DIFFERENTIAL, the same ledger refolded without the key refused (an epoch-4 phone strips the key). */
+function reachesExtraTimeSubs(r: Recorded): string | null {
+  const raw = obj(r.raw);
+  if (raw.extraTimeSubs === undefined) return "its config declares no extraTimeSubs";
+  const last = lastEvent(r);
+  if (last?.type !== "football.sub" || obj(last.payload).at === undefined) return "the ledger does not end on a stamped football.sub";
+  const played = replay(r, r.raw);
+  if (typeof played === "string") return played;
+  if (played.state.phase !== "ET_H1" && played.state.phase !== "ET_H2") return `the last substitution is made in "${String(played.state.phase)}", not in extra time`;
+  const without_ = replay(r, without(r.raw, "extraTimeSubs"));
+  if (typeof without_ !== "string") return "without extraTimeSubs the same ledger still folds, so the allowance decided nothing";
+  return null;
+}
+
 /** cricket `maxOversPerBowler` with a mid-over bowler change (CK-BC-1, CK-BO-3; ruling 278, Law 17.8): an over split
  *  between two bowlers by a `cricket.bowler.change` has ENDED, so the fold bars both from the next over and charges each a
  *  whole over toward the cap. Cricket's fold epoch 2 refuses the ledger outright (it has no such event), which is what makes
@@ -684,6 +700,42 @@ export const BRANCH_STORIES: readonly BranchStory[] = [
         ...dots(1, 3, 4, second, first, incoming),
       ];
       return reachesMidOverBowlerChange(c.recorded(events)) === null ? events : null;
+    },
+  },
+  {
+    // F-R3 (controller ruling 157; owner 2026-11-11): the football epoch bump to 5 is for `extraTimeSubs`, an opt-in key an epoch-4
+    // phone strips (GOLDEN-POLICY "Unexercised branches": a new opt-in key owes a story). Hand-built from the coverage bench: five
+    // substitutions in three windows in regulation, a level final whistle, then a sixth in a fourth window in extra time.
+    id: "football.extraTimeSubs",
+    sport: "football",
+    key: "extraTimeSubs",
+    seed: BRANCH_SEED_BASE + 17,
+    config: {
+      name: "law3ExtraTime",
+      raw: { maxSubs: 5, subWindows: 3, extraTime: { enabled: true, halfMinutes: 15 }, extraTimeSubs: { subs: 1, windows: 1 } },
+    },
+    benched: true,
+    what: "a sixth substitution in a fourth window in extra time, beyond maxSubs 5 and subWindows 3, under Law 3's extra-time allowance (FB-SU-3)",
+    reached: reachesExtraTimeSubs,
+    build: (c) => {
+      const side = c.lineups.home;
+      const outfield = side.slots.filter((slot) => slot.slot === "starting" && slot.positionKey !== "GK").map((slot) => slot.personId);
+      const bench = side.slots.filter((slot) => slot.slot === "bench").map((slot) => slot.personId);
+      if (outfield.length < 6 || bench.length < 6) return null;
+      const sub = (i: number, period: string, elapsed: number): GoldenEvent =>
+        ev("football.sub", { by: side.entrantId, off: outfield[i], on: bench[i], at: { period, elapsed } });
+      const events = [
+        ev("core.start"),
+        sub(0, "H1", 2400),
+        sub(1, "H1", 2400),
+        ev("football.period", { phase: "HT" }),
+        sub(2, "H2", 600),
+        sub(3, "H2", 600),
+        sub(4, "H2", 1500),
+        ev("football.period", { phase: "FT" }),
+        sub(5, "ET_H1", 300),
+      ];
+      return reachesExtraTimeSubs(c.recorded(events)) === null ? events : null;
     },
   },
 ];

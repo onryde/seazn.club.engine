@@ -770,8 +770,12 @@ export interface FoldableModule<Cfg = unknown, State = unknown> {
    * `lineupPolicy: () => DEFAULT_LINEUP_POLICY`, as table tennis does. A ledger
    * that already holds a lineup event for such a module still REPLAYS: only the
    * write path refuses.
+   *
+   * `state` is the module's State at the event being judged (the kernel passes it on the write path), for a policy that moves
+   * during a match: football's cap rises in extra time (Law 3, `extraTimeSubs`). A caller with no match in hand (the golden
+   * floor's planner) passes none, and a module answers its policy before play.
    */
-  lineupPolicy?(cfg: Cfg): LineupPolicy;
+  lineupPolicy?(cfg: Cfg, state?: State): LineupPolicy;
 
   /**
    * S3/W4b (#426) — the kernel handing over the squads after it has folded a
@@ -975,7 +979,8 @@ export function foldMatchWithStoppage<Cfg, State>(
   // own State and the kernel's can never be two constructions of one fact.
   // (a module with no `lineupPolicy` reaches the fallback only on REPLAY of a ledger that already holds a lineup event: the
   // write path refuses the event before the reducer is asked, see the gate below)
-  const lineupPolicy = module.lineupPolicy?.(cfg) ?? DEFAULT_LINEUP_POLICY;
+  // Asked per event, with the State the event is judged in: a policy may move during a match (football's extra-time allowance).
+  const lineupPolicyAt = (now: State): LineupPolicy => module.lineupPolicy?.(cfg, now) ?? DEFAULT_LINEUP_POLICY;
   let squads = initSquads(lineups);
   if (module.onLineup !== undefined) state = module.onLineup(state, squads);
 
@@ -1310,7 +1315,7 @@ export function foldMatchWithStoppage<Cfg, State>(
       const reduced = reduceLineupEventFor(
         module, state, squads,
         event, // judged on the module's squads; on replay a refusal there falls back to the kernel's (`judgeLineupEvent`)
-        strict ? lineupPolicy : REPLAY_LINEUP_POLICY, strict,
+        strict ? lineupPolicyAt(state) : REPLAY_LINEUP_POLICY, strict,
       );
       if (!reduced.ok) {
         if (strict) {

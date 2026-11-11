@@ -195,6 +195,20 @@ export const FootballCfg = z.object({
   // windows, which is what every stream recorded before this wave assumed, and
   // a default would land in the cfg serialised into every frozen golden state.
   subWindows: z.number().int().nonnegative().optional(),
+  // F-R3 (controller ruling 157; owner 2026-11-11, "Apply rec") — Law 3's extra-time allowance: a competition that plays
+  // extra time may permit one additional substitution, and one additional substitution opportunity, in extra time,
+  // whether or not the side has used its full allowance. `subs` is added to `maxSubs` and `windows` to `subWindows`
+  // once the match has reached extra time (`effectiveSubCaps`), each only where its base cap is declared. Found by the
+  // phone's replay of the 2022 World Cup final, whose 116' and 120+1' substitutions the 5-and-3 caps refused.
+  //
+  // Optional with NO default, like `subWindows`: absent is the behaviour every recorded stream assumed, and a default
+  // would land in the cfg serialised into every frozen golden state.
+  extraTimeSubs: z
+    .object({
+      subs: z.number().int().nonnegative(),
+      windows: z.number().int().nonnegative(),
+    })
+    .optional(),
   // engine/sports/football.md §8 — core.abandon policy: `replay` leaves the
   // fixture undecided (flagged for regeneration), `award` decides for the
   // current leader (level score ⇒ no_result).
@@ -807,10 +821,42 @@ export function eventAllowedInPhase(eventType: string, phase: string, cfg: Perio
   return acceptsPhase(eventType as PhaseGatedType, phase as Phase);
 }
 
+/** The cfg leaves the substitution caps read. Structural, so the resolved `FootballCfg` fits it and so does a partial cfg. */
+export interface SubCapsCfg {
+  readonly maxSubs?: number;
+  readonly subWindows?: number;
+  readonly extraTimeSubs?: { readonly subs: number; readonly windows: number };
+  readonly extraTime?: { readonly enabled?: boolean };
+}
+
+/** The phases in which the match has reached extra time (F-R3). There is no break phase: the final whistle of a level match moves
+ *  the fold straight into ET_H1 under `extraTime.enabled` (`resolveFullTime`), so a substitution made in the break before extra
+ *  time, or at its half-time, is folded in ET_H1 or ET_H2, stamped or not. The shoot-out counts only after extra time was
+ *  played, which `extraTime.enabled` says (a level match always plays it first when it is on). */
+function reachedExtraTime(cfg: SubCapsCfg, phase: string): boolean {
+  if (phase === "ET_H1" || phase === "ET_H2") return true;
+  return phase === "SHOOTOUT" && cfg.extraTime?.enabled === true;
+}
+
+/**
+ * THE substitution caps in force in `phase` (F-R3, Law 3): `maxSubs` and `subWindows`, each raised by `extraTimeSubs` once the match
+ * has reached extra time, and only where the base cap is declared (an uncapped side stays uncapped). Before extra time, or with no
+ * `extraTimeSubs`, they are the cfg's own. The one reading: the fold's window check, football's `lineupPolicy` (so the kernel's
+ * `maxSubs` for both substitution vocabularies) and the pad's `subWindowsCap` all go through it.
+ */
+export function effectiveSubCaps(cfg: SubCapsCfg, phase: string): { readonly maxSubs: number | undefined; readonly subWindows: number | undefined } {
+  const extra = cfg.extraTimeSubs !== undefined && reachedExtraTime(cfg, phase) ? cfg.extraTimeSubs : undefined;
+  return {
+    maxSubs: cfg.maxSubs === undefined ? undefined : cfg.maxSubs + (extra?.subs ?? 0),
+    subWindows: cfg.subWindows === undefined ? undefined : cfg.subWindows + (extra?.windows ?? 0),
+  };
+}
+
 /** The cap on substitution WINDOWS this competition declared (Law 3: five substitutions in three windows), or undefined for none. The
- *  bound `applySub` enforces alongside `maxSubs`; a declared 0 is a cap of zero windows, not "none". */
-export function subWindowsCap(cfg: Pick<FootballCfg, "subWindows">): number | undefined {
-  return cfg.subWindows;
+ *  bound `applySub` enforces alongside `maxSubs`; a declared 0 is a cap of zero windows, not "none". `phase` is the match's: from extra
+ *  time on, `extraTimeSubs.windows` is added (F-R3, `effectiveSubCaps`). Without a phase, the cap before extra time. */
+export function subWindowsCap(cfg: SubCapsCfg, phase = "pre"): number | undefined {
+  return effectiveSubCaps(cfg, phase).subWindows;
 }
 
 function opponent(side: Side): Side {
@@ -1351,7 +1397,7 @@ function applySub(
   const verdict = reduceLineupEvent(
     liftSquads(state),
     subAsLineup(payload),
-    isStrictFold(ctx) ? lineupPolicy(state.cfg) : REPLAY_LINEUP_POLICY,
+    isStrictFold(ctx) ? lineupPolicy(state.cfg, state) : REPLAY_LINEUP_POLICY,
   );
   if (!verdict.ok) {
     invalid(verdict.message, { by: payload.by, reason: verdict.reason });
@@ -1384,7 +1430,7 @@ function applySub(
       (window) => window.period === stamp.period && window.elapsed === stamp.elapsed,
     );
     if (!known) {
-      const cap = subWindowsCap(state.cfg);
+      const cap = subWindowsCap(state.cfg, state.phase);
       if (cap !== undefined && windows.length >= cap) {
         throw new EngineError(
           "SUB_WINDOW_EXCEEDED",
@@ -1979,13 +2025,19 @@ function positionsFor(cfg: FootballCfg): PositionCatalog {
  *    undeclared key is refused, which is what stops a pad evading the cap by
  *    inventing one.
  */
-function lineupPolicy(cfg: Pick<FootballCfg, "rollingSubs" | "maxSubs" | "concussionSubs">): LineupPolicy {
+function lineupPolicy(
+  cfg: Pick<FootballCfg, "rollingSubs" | "maxSubs" | "concussionSubs"> & SubCapsCfg,
+  state?: Pick<FootballState, "phase">,
+): LineupPolicy {
   const rolling = cfg.rollingSubs === true;
+  // F-R3 — the cap in force in the state's phase: `maxSubs`, plus `extraTimeSubs.subs` once extra time is reached. No state (the
+  // planner's question, `reentryAllowed`) is the cap before extra time.
+  const { maxSubs } = effectiveSubCaps(cfg, state?.phase ?? "pre");
   return {
     reentry: rolling ? "unlimited" : "none",
     reentryPositionLock: false,
     allowSquadGrowth: false,
-    ...(rolling || cfg.maxSubs === undefined ? {} : { maxSubs: cfg.maxSubs }),
+    ...(rolling || maxSubs === undefined ? {} : { maxSubs }),
     ...(cfg.concussionSubs === undefined
       ? {}
       : { exemptions: { concussion: { max: cfg.concussionSubs } } }),
@@ -2769,6 +2821,8 @@ export const football: SportModule<FootballCfg, FootballEv, FootballState> = {
     sinBinMinutes: { scope: "stage" },
     rollingSubs: { scope: "stage" },
     concussionSubs: { scope: "stage" },
+    // F-R3 (controller ruling 157) — Law 3's extra-time substitution and window, beside the caps it raises.
+    extraTimeSubs: { scope: "stage" },
     points: { scope: "points" },
     awardScore: { scope: "points" },
     // W2c Q10 - what an abandoned match counts as is the stage's: replay, or the result as it stood (FB-AB-1).
