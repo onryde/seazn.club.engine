@@ -101,10 +101,10 @@ describe("FB-SU-3: effectiveSubCaps (F-R3): the caps in force in a phase", () =>
     expect(effectiveSubCaps(cfgOf({ ...LAW3, subWindows: undefined }), "ET_H1")).toEqual({ maxSubs: 6, subWindows: undefined });
   });
 
-  it("subWindowsCap and the pad's read the same: before extra time with no phase, raised in extra time", () => {
-    expect(subWindowsCap(cfg)).toBe(3);
+  it("subWindowsCap and the pad's read the same: unchanged before extra time, raised in extra time", () => {
+    expect(subWindowsCap(cfg, "H2")).toBe(3);
     expect(subWindowsCap(cfg, "ET_H1")).toBe(4);
-    expect(footballPadRules.subWindowsCap(LAW3)).toBe(3);
+    expect(footballPadRules.subWindowsCap(LAW3, "pre")).toBe(3);
     expect(footballPadRules.subWindowsCap(LAW3, "H2")).toBe(3);
     expect(footballPadRules.subWindowsCap(LAW3, "ET_H2")).toBe(4);
     expect(footballPadRules.subWindowsCap(SENIOR, "ET_H2")).toBe(3);
@@ -220,7 +220,8 @@ describe("FB-SU-3: extraTimeSubs {subs: 1, windows: 1}", () => {
 // The 2022 World Cup final (Lusail, 18 December 2022), Argentina 3–3 France, Argentina 4–2 on penalties: the replay that found
 // F-R3, every substitution as it was made. Stamps are seconds into the period: 41' is H1 2460, 64' is H2 1140, 96' is ET_H1 360,
 // 113' is ET_H2 480, 120+1' is ET_H2 960. Argentina's 91' substitution was made in the break before extra time, so it carries no
-// stamp. France's 96' substitution is recorded as the concussion replacement, as the replay recorded it.
+// stamp. France's 96' substitution is recorded as the concussion replacement, as the replay recorded it. Source: Wikipedia, "2022
+// FIFA World Cup final", which records the head knock (94') behind that replacement; ESPN's match report does not mark it.
 // ---------------------------------------------------------------------------
 
 const named = (entrantId: string, xi: readonly string[], bench: readonly string[]): Lineup => {

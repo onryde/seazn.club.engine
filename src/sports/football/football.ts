@@ -854,8 +854,9 @@ export function effectiveSubCaps(cfg: SubCapsCfg, phase: string): { readonly max
 
 /** The cap on substitution WINDOWS this competition declared (Law 3: five substitutions in three windows), or undefined for none. The
  *  bound `applySub` enforces alongside `maxSubs`; a declared 0 is a cap of zero windows, not "none". `phase` is the match's: from extra
- *  time on, `extraTimeSubs.windows` is added (F-R3, `effectiveSubCaps`). Without a phase, the cap before extra time. */
-export function subWindowsCap(cfg: SubCapsCfg, phase = "pre"): number | undefined {
+ *  time on, `extraTimeSubs.windows` is added (F-R3, `effectiveSubCaps`). `phase` is required, so no caller can read the cap before
+ *  extra time by forgetting it. */
+export function subWindowsCap(cfg: SubCapsCfg, phase: string): number | undefined {
   return effectiveSubCaps(cfg, phase).subWindows;
 }
 

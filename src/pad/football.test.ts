@@ -380,7 +380,7 @@ describe("footballPadRules.periodMarkers", () => {
       expect(() => footballPadRules.periodMarkers(cfg), `periodMarkers: ${name}`).toThrow();
       expect(() => footballPadRules.legalPeriodMarkers("H1", cfg), `legalPeriodMarkers: ${name}`).toThrow();
       expect(() => footballPadRules.eventAllowedInPhase("football.goal", "H1", cfg), `eventAllowedInPhase: ${name}`).toThrow();
-      expect(() => footballPadRules.subWindowsCap(cfg), `subWindowsCap: ${name}`).toThrow();
+      expect(() => footballPadRules.subWindowsCap(cfg, "H1"), `subWindowsCap: ${name}`).toThrow();
       expect(() => footballPadRules.reentryAllowed(cfg), `reentryAllowed: ${name}`).toThrow();
       refused += 5;
     }
@@ -511,7 +511,7 @@ describe("FB-SU-2: footballPadRules.subWindowsCap", () => {
   it("is the cap the fold enforces, for more than one cap", () => {
     for (const cap of [2, 3]) {
       const cfg = cfgOf({ rollingSubs: true, subWindows: cap });
-      expect(footballPadRules.subWindowsCap(cfg), `cap ${cap}`).toBe(cap);
+      expect(footballPadRules.subWindowsCap(cfg, "H1"), `cap ${cap}`).toBe(cap);
       const { accepted, refusal } = windowsAccepted(cfg, cap + 2);
       expect(accepted, `windows accepted under a cap of ${cap}`).toBe(cap);
       expect(EngineError.is(refusal, "SUB_WINDOW_EXCEEDED"), `the ${cap + 1}th window is refused for the window cap`).toBe(true);
@@ -520,13 +520,13 @@ describe("FB-SU-2: footballPadRules.subWindowsCap", () => {
 
   it("is undefined when the competition declared none, and the fold then accepts every window", () => {
     const cfg = cfgOf({ rollingSubs: true });
-    expect(footballPadRules.subWindowsCap(cfg)).toBeUndefined();
-    expect(footballPadRules.subWindowsCap({})).toBeUndefined();
+    expect(footballPadRules.subWindowsCap(cfg, "H1")).toBeUndefined();
+    expect(footballPadRules.subWindowsCap({}, "H1")).toBeUndefined();
     expect(windowsAccepted(cfg, 6)).toEqual({ accepted: 6, refusal: undefined });
   });
 
   it("keeps a declared zero (no windows at all) distinct from none", () => {
-    expect(footballPadRules.subWindowsCap(cfgOf({ rollingSubs: true, subWindows: 0 }))).toBe(0);
+    expect(footballPadRules.subWindowsCap(cfgOf({ rollingSubs: true, subWindows: 0 }), "H1")).toBe(0);
     expect(windowsAccepted(cfgOf({ rollingSubs: true, subWindows: 0 }), 2).accepted).toBe(0);
   });
 });
