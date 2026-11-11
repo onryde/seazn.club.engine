@@ -488,37 +488,37 @@
       "reason": "doubleWalkoverCredit returns the SAME zeroed ledger for both sides, so which side's credit creditedMetrics reads (\"\" reads index 1) is unobservable."
     },
     {
-      "mutant": "src/sports/football/football.ts:1892:7 ConditionalExpression → false",
+      "mutant": "src/sports/football/football.ts:1939:7 ConditionalExpression → false",
       "original": "reason === \"bye\"",
       "line": "if (reason === \"bye\") return state.goals;",
       "reason": "For a bye footballForfeitCredit returns the played ledger, whose gf is state.goals[side] (sideMetrics with zero=false), so displayedGoals reads state.goals either way."
     },
     {
-      "mutant": "src/sports/football/football.ts:1892:18 StringLiteral → \"\"",
+      "mutant": "src/sports/football/football.ts:1939:18 StringLiteral → \"\"",
       "original": "\"bye\"",
       "line": "if (reason === \"bye\") return state.goals;",
       "reason": "For a bye footballForfeitCredit returns the played ledger, whose gf is state.goals[side] (sideMetrics with zero=false), so displayedGoals reads state.goals either way."
     },
     {
-      "mutant": "src/sports/football/football.ts:2958:58 StringLiteral → \"\"",
+      "mutant": "src/sports/football/football.ts:3014:58 StringLiteral → \"\"",
       "original": "\"walkover\"",
       "line": "const credit = footballForfeitCredit(cfg, state, \"walkover\", \"both\");",
       "reason": "footballForfeitCredit returns doubleWalkoverCredit for by \"both\" before it reads `reason`, so the reason passed for a double walkover is never read."
     },
     {
-      "mutant": "src/sports/football/football.ts:2959:133 BooleanLiteral → true",
+      "mutant": "src/sports/football/football.ts:3015:133 BooleanLiteral → true",
       "original": "false",
       "line": "const at = (side: Side): StandingsDelta => ({ ...build(side, 0, 0, 1, 0), metrics: creditedMetrics(sideMetrics(state, side, false), credit, side) });",
       "reason": "The zero flag only zeroes gf/ga/gd of the played ledger; the double-walkover credit lays 0 over every key that ledger carries (and excludes them), so the played values are never observable."
     },
     {
-      "mutant": "src/sports/football/football.ts:2950:61 BooleanLiteral → true",
+      "mutant": "src/sports/football/football.ts:3006:61 BooleanLiteral → true",
       "original": "false",
       "line": "metrics: creditedMetrics(sideMetrics(state, side, false), credit, side),",
       "reason": "The zero flag only zeroes gf/ga/gd of the played ledger; every non-bye credit carries gf, ga and gd, and a bye's credit is the played ledger with the real goals (computed with zero=false), so creditedMetrics overwrites those three keys either way."
     },
     {
-      "mutant": "src/sports/football/football.ts:3030:9 ConditionalExpression → false",
+      "mutant": "src/sports/football/football.ts:3086:9 ConditionalExpression → false",
       "original": "cfg.points.soBonus === undefined",
       "line": "...(cfg.points.soBonus === undefined ? {} : { soBonus: cfg.points.soBonus }),",
       "reason": "With no soBonus the mutant writes `soBonus: undefined` into the table rule instead of leaving the key out; PointsRule declares it optional, its refinement tests `rule.soBonus !== undefined`, and both payers (payout's draw_plus_bonus arm and coverage's so prices) read `rule.soBonus ?? 1`, so undefined pays the same 1 either way (JSON drops the key)."
@@ -614,25 +614,25 @@
       "reason": "A walkover is admitted only while nothing is played (rulings 112, 114: any sport event after Start is play) and every set-kernel event refuses outside phase \"live\", so an admitted walkover's state has no sets and setsWon 0-0 (6,000 admitted walkovers measured): reading them adds nothing."
     },
     {
-      "mutant": "src/core/events.ts:1094:7 LogicalOperator → decided || event.type === \"core.forfeit\"",
+      "mutant": "src/core/events.ts:1099:7 LogicalOperator → decided || event.type === \"core.forfeit\"",
       "original": "decided &&",
       "line": "decided &&",
       "reason": "Undecided, a withdrawal is over a level result only if outcomeOf reads level, and an undecided fold's outcomeOf is null or a settle's win (CoreSettle requires a winner), never level — so `decided ||` admits nothing that `decided &&` does not."
     },
     {
-      "mutant": "src/core/events.ts:1095:7 ConditionalExpression → true",
+      "mutant": "src/core/events.ts:1100:7 ConditionalExpression → true",
       "original": "event.type === \"core.forfeit\"",
       "line": "event.type === \"core.forfeit\" &&",
       "reason": "forfeitReasonOf parses the payload as CoreForfeit, a strict {by, reason} object; no other kernel or sport event declares exactly that shape (set sanctions need `level`, period suspensions `class`, carrom adjustments `entrantId` and `delta`, nested game awards `winner`), so only a core.forfeit reads \"withdrew\"."
     },
     {
-      "mutant": "src/core/events.ts:1120:11 ConditionalExpression → true",
+      "mutant": "src/core/events.ts:1125:11 ConditionalExpression → true",
       "original": "phase !== \"over\"",
       "line": "if (phase !== \"over\") {",
       "reason": "In phase \"over\" a forfeit reaches the guard only as a withdrawal over a held level result: guarantee 4 (ALREADY_DECIDED) and X-AB-4 (ABANDONED_SETTLE_OR_VOID) answer every other one first (measured: every sport, every reason, after an abandon settled or not), modules refuse to finalize an undecided state, and \"withdrew\" is admitted in every phase (R5) — so judging it there changes nothing."
     },
     {
-      "mutant": "src/core/events.ts:1120:21 StringLiteral → \"\"",
+      "mutant": "src/core/events.ts:1125:21 StringLiteral → \"\"",
       "original": "\"over\"",
       "line": "if (phase !== \"over\") {",
       "reason": "In phase \"over\" a forfeit reaches the guard only as a withdrawal over a held level result: guarantee 4 (ALREADY_DECIDED) and X-AB-4 (ABANDONED_SETTLE_OR_VOID) answer every other one first (measured: every sport, every reason, after an abandon settled or not), modules refuse to finalize an undecided state, and \"withdrew\" is admitted in every phase (R5) — so judging it there changes nothing."
