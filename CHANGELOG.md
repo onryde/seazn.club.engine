@@ -1,5 +1,18 @@
 # @onryde/seazn-engine
 
+## 8.0.0
+
+### Major Changes
+
+- 7efe8b8: Tennis records the toss: who serves first (TN-TS-1; owner ruling 233, Seazn Capture S2-7, 2026-11-12: "Toss event first"). Tennis's fold epoch rises to 3 (FOLD_MINOR stays 0), so the server's 426 gate refuses tennis scoring writes from an epoch-2 client (the capture app on engine 7.x included) until it updates.
+  
+  - **New event `tennis.toss` `{ serving: EntrantId }`** (strict: any other key is refused). It names the entrant who serves the match's first game (ITF Rule 9). It is accepted before `core.start` and after it, once per match while it is held, at any time before the match is over, play or not; a voided toss may be recorded again. A toss recorded after play seats the serve for the whole match exactly as if it had been recorded before play (`state.serving` and a live tie-break's first server are re-seated, and `serveContext` recomputes every past turn and the doubles pair order). A second live toss is refused `WRONG_PHASE`; a toss after an abandon too; a toss naming a non-entrant, or a malformed payload, is `INVALID_EVENT`; a toss after the match is decided is the fold's `ALREADY_DECIDED`. Undo is `core.void`.
+  - **Serve order follows the toss.** `state.serving` and a new optional `NestedState.opener` (absent until a toss, so every ledger without one folds exactly as before: home serves first) are set to the toss's side, and `serveContext`'s turn walk starts from it, so `serveOrderKnown` stays true when away serves first: games alternate from that side, a tie-break's first server is the side due, the next set opens with its opponent (Rule 5(b)), the match tie-break carries the order in (App VI), and in doubles the side's first-named partner (`pairOrder`) serves its first service game.
+  - **Pad.** `tennisPadRules.tossOpen(state)` is the fold's own predicate (exported from the nested kernel as `tossOpen`); false with no folded state. `padSpec` offers the toss (`pad.tennis.action.toss`, attribution `side` at `serving`) in a `pre` and a `live` panel (`pad.tennis.panel.toss`), each gated on no toss being held; a client chooses whether to show the live one after play. The toss sits at fidelity band 3, the points' band. `NestedToss` (the schema) is exported from the kernel.
+  - **Ruling 112 applies to it as to any sport event:** a toss after the Start is play, so a walkover is no longer recordable after it (a retirement, a disqualification or a withdrawal is); a toss before the Start is not play. A client that controls the order and wants the walkover kept open sends the toss before `core.start`.
+  - An epoch-2 engine refuses `tennis.toss` as an unknown event type on write and on replay, so a ledger holding one does not fold there at all.
+  - Golden: two appended branch streams, tennis `doubles-noad-mtb10#90018` (`tennis.toss_away_serves`, the toss after the Start) and `#90019` (`tennis.toss_before_start`, before it), are the epoch-3 witnesses; no recorded stream moved. `tennis.schema.json` gains the event.
+
 ## 7.0.0
 
 ### Major Changes
