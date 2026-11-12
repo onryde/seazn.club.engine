@@ -1,7 +1,7 @@
 // @seazn/engine/pad - the tennis record (pad wave P3.2). Each field is the very object the fold and padSpec read (the point-kind,
 // interruption-kind and sanction-level enums, the fidelity map, POINT_CALLS, PLAUSIBLE_INTERRUPTION_SECONDS) or a pure function
 // of the nested kernel's own (gamesFieldBound, tbFieldBound, rulesFor and tiebreakSetScore, breakerInForce,
-// tiebreakServeRotatesAfter, endsChanged). No value is typed here.
+// tiebreakServeRotatesAfter, endsChanged, tossOpen). No value is typed here.
 //
 // Every cfg is read through tennis's own configSchema: an absent key is the schema's default, an invalid cfg throws (the schema's
 // own refusal). A state is `PadHostView.state`, `unknown` by contract: the folded NestedState, or `{}` on a pad mounted before
@@ -19,6 +19,7 @@ import {
   tbFieldBound,
   tiebreakServeRotatesAfter,
   tiebreakSetScore,
+  tossOpen,
   type GamePoints,
   type NestedCfg,
   type NestedState,
@@ -55,6 +56,14 @@ function setsWonOf(state: unknown): NestedState["setsWon"] {
   return isScore(setsWon) ? { home: setsWon.home, away: setsWon.away } : { home: 0, away: 0 };
 }
 
+/** The fields `tossOpen` reads, or null when `state` is not a folded NestedState. `opener` is absent until a toss; any value
+ *  present (a side, or anything else) is a toss held, so it is passed on as it is and never re-validated here. */
+function tossOf(state: unknown): Parameters<typeof tossOpen>[0] | null {
+  const play = playOf(state);
+  if (play === null || !isRecord(state)) return null;
+  return { phase: play.phase, ...(state.opener === undefined ? {} : { opener: state.opener as NestedState["opener"] }) };
+}
+
 function fidelityOf(): TennisPadRules["eventBands"] {
   if (tennis.padSpec === undefined) throw new Error("@seazn/engine/pad: tennis declares no padSpec");
   // `nestedFidelity`: one object for every cfg, so reading it at the schema default reads it for all of them
@@ -82,4 +91,8 @@ export const tennisPadRules: TennisPadRules = Object.freeze({
     return points !== null && breakerInForce(points);
   },
   tiebreakServeRotatesAfter,
+  tossOpen: (state: unknown) => {
+    const toss = tossOf(state);
+    return toss !== null && tossOpen(toss);
+  },
 });
