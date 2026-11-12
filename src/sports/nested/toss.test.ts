@@ -11,6 +11,7 @@
 //  - Appendix VI (match tie-break): the service order of the match carries into it, and its serve rotates as a tie-break's.
 // The doubles fixture names each pair first-named first while `orderNo` runs the other way (serve-context.test.ts's fixture),
 // so a reader that used `orderNo` would name the wrong partner.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { EngineError } from "../../core/errors.ts";
 import { foldMatch, type EventEnvelope } from "../../core/events.ts";
@@ -179,7 +180,7 @@ describe("TN-TS-1 tennis.toss: the toss decides who serves the first game (ITF R
   });
 });
 
-describe("TN-TS-1 tennis.toss is refused once the toss is closed, and when it is malformed", () => {
+describe("TN-TS-1 tennis.toss is refused while a toss is held, once the match is over, and when it is malformed", () => {
   it("TN-TS-1 a second toss is WRONG_PHASE, whichever side it names", () => {
     expect(codeOf([start, toss(A), toss(H)])).toBe("WRONG_PHASE");
     expect(codeOf([start, toss(A), toss(A)])).toBe("WRONG_PHASE");
@@ -187,12 +188,13 @@ describe("TN-TS-1 tennis.toss is refused once the toss is closed, and when it is
     expect(() => fold([start, toss(A), toss(H)])).toThrow(/toss not allowed: a toss is already recorded/);
   });
 
-  it("TN-TS-1 a toss after the first point, a game award or a set score is WRONG_PHASE", () => {
-    expect(codeOf([start, point(H), toss(A)])).toBe("WRONG_PHASE");
-    expect(codeOf([start, point(A), toss(A)])).toBe("WRONG_PHASE");
-    expect(codeOf([start, award(A), toss(A)])).toBe("WRONG_PHASE");
-    expect(codeOf([start, summary(6, 4), toss(A)])).toBe("WRONG_PHASE");
-    expect(() => fold([start, point(H), toss(A)])).toThrow(/toss not allowed: play has started: the toss precedes the first point/);
+  it("TN-TS-1 play does not close the toss (fix round 3, option B): one after a point, a game award or a set score is taken and seats the serve for the whole match", () => {
+    for (const played of [[point(H)], [point(A)], [award(A)], [summary(6, 4)], levelGames(3)]) {
+      const late = fold([start, ...played, toss(A)]);
+      expect(late, JSON.stringify(played[0])).toEqual(fold([toss(A), start, ...played]));
+    }
+    // a second toss is still refused after play
+    expect(codeOf([start, point(H), toss(A), point(H), toss(H)])).toBe("WRONG_PHASE");
   });
 
   it("TN-TS-1 a toss once the match is over is refused: the fold's ALREADY_DECIDED for a decided match, the module's WRONG_PHASE for an abandoned one or a done state handed to apply", () => {
@@ -208,11 +210,14 @@ describe("TN-TS-1 tennis.toss is refused once the toss is closed, and when it is
     expect(state.serving).toBe("away");
   });
 
-  it("TN-TS-1 a code violation moves no score, so it leaves the toss open; the penalty point entered for it closes it", () => {
+  it("TN-TS-1 a code violation leaves the toss open, and so does the penalty point entered for it (fix round 3: play no longer closes it)", () => {
     const sanction = (level: string): ModuleEvent => ({ type: "tennis.sanction", payload: { by: H, level } });
     expect(fold([start, sanction("warning"), toss(A)]).serving).toBe("away");
     expect(fold([start, sanction("point_penalty"), toss(A)]).serving).toBe("away");
-    expect(codeOf([start, sanction("point_penalty"), point(A), toss(A)])).toBe("WRONG_PHASE");
+    // after the penalty point the server is still the one due: home served it (home first), so away now; the toss re-seats it
+    const late = fold([start, sanction("point_penalty"), point(A), toss(A)]);
+    expect(late.opener).toBe("away");
+    expect(late).toEqual(fold([toss(A), start, sanction("point_penalty"), point(A)]));
   });
 
   it("TN-TS-1 a toss while play is suspended is refused by the core's stoppage guard (WRONG_PHASE)", () => {
@@ -245,27 +250,93 @@ describe("TN-TS-1 Undo of the toss is core.void", () => {
     expect(fold([start, toss(A), [VOID, 1], toss(H)]).opener).toBe("home");
   });
 
-  it("TN-TS-1 voiding the first point reopens the toss; voiding a later one does not", () => {
+  it("TN-TS-1 with no toss held the toss stays open whatever is voided: after the only point is voided, and after a later one (fix round 3)", () => {
     expect(tossOpen(fold([start, point(H), [VOID, 1]]))).toBe(true);
-    // the strict fold takes the toss once the only point is voided: nothing was served under the old order
     const retossed = fold([start, point(H), [VOID, 1], toss(A)]);
     expect(retossed.serving).toBe("away");
     expect(serveContext(retossed)).toEqual({ side: "away", serviceTurn: 0, personId: null, serveOrderKnown: true });
-    expect(codeOf([start, point(H), point(H), [VOID, 2], toss(A)])).toBe("WRONG_PHASE");
-    expect(tossOpen(fold([start, point(H), point(H), [VOID, 2]]))).toBe(false);
+    expect(tossOpen(fold([start, point(H), point(H), [VOID, 2]]))).toBe(true);
+    expect(fold([start, point(H), point(H), [VOID, 2], toss(A)])).toEqual(fold([toss(A), start, point(H)]));
+  });
+
+  it("TN-TS-1 a wrong toss voided mid-match may be recorded again, and the new one re-seats the serve for the whole match", () => {
+    // home was tossed by mistake; three games and a point later the scorer voids it and records away
+    const played = [...levelGames(3), point(A)];
+    const corrected = fold([start, toss(H), ...played, [VOID, 1], toss(A)]);
+    const right = fold([start, toss(A), ...played]);
+    expect(corrected).toEqual(right);
+    expect(serveContext(corrected)).toEqual(serveContext(right));
+    // games 1-3 were served away, home, away: home serves game 4
+    expect(serveContext(corrected)).toEqual({ side: "home", serviceTurn: 1, personId: null, serveOrderKnown: true });
+    // while the wrong toss is still held, the right one is refused
+    expect(codeOf([start, toss(H), ...played, toss(A)])).toBe("WRONG_PHASE");
   });
 });
 
 describe("TN-TS-1 tossOpen: the one predicate the fold and the pad read", () => {
-  it("TN-TS-1 open before and after the Start while nothing is scored and nothing tossed; closed otherwise", () => {
+  it("TN-TS-1 open before and after the Start while no toss is held, play or not; closed while one is held and once the match is over", () => {
     expect(tossOpen(fold([]))).toBe(true);
     expect(tossOpen(fold([start]))).toBe(true);
     expect(tossOpen(fold([start, toss(A)]))).toBe(false);
     expect(tossOpen(fold([start, toss(H)]))).toBe(false);
-    expect(tossOpen(fold([start, point(H)]))).toBe(false);
-    expect(tossOpen(fold([start, award(H)]))).toBe(false);
-    expect(tossOpen(fold([start, summary(6, 4)]))).toBe(false);
+    expect(tossOpen(fold([start, point(H)]))).toBe(true);
+    expect(tossOpen(fold([start, award(H)]))).toBe(true);
+    expect(tossOpen(fold([start, summary(6, 4)]))).toBe(true);
+    expect(tossOpen(fold([start, point(H), toss(A), point(H)]))).toBe(false);
+    expect(tossOpen(fold([start, summary(6, 4), summary(6, 4)]))).toBe(false);
     expect(tossOpen(fold([start, { type: "core.abandon", payload: { reason: "rain" } }]))).toBe(false);
     expect(tossOpen(fold([{ type: "core.forfeit", payload: { by: A, reason: "walkover" } }]))).toBe(false);
+  });
+});
+
+describe("TN-TS-1 a late toss seats the serve for the whole match: every prefix of every tennis golden stream", () => {
+  type Golden = { configs: Record<string, unknown>; streams: { config: string; seed: number; lineups?: LineupPair; events: ModuleEvent[] }[] };
+  const corpus = JSON.parse(readFileSync(new URL("../tennis/tennis.golden.json", import.meta.url), "utf8")) as Golden;
+  const SCORING = new Set(["tennis.point", "tennis.game.award", "tennis.set_summary"]);
+  /** The whole state with its keys sorted (key order is where the toss arrived, not a fact), and its serve context. */
+  const view = (state: NestedState): string => JSON.stringify([Object.fromEntries(Object.entries(state).sort()), serveContext(state)]);
+  const plain = (lineups: LineupPair, cfg: unknown, events: readonly ModuleEvent[]): NestedState =>
+    foldMatch(tennis, cfg as never, lineups, events.map((e, i) => makeEnvelope(i, e)));
+
+  it("TN-TS-1 a toss inserted after the first score or at the end equals the same toss before play: whole state and serveContext, singles and doubles, through breakers and match tie-breaks (counted)", () => {
+    const counts = { compared: 0, early: 0, late: 0, doubles: 0, breaker: 0, mtb: 0, away: 0, home: 0 };
+    for (const stream of corpus.streams) {
+      if (stream.events.some((e) => e.type === "tennis.toss" || e.type === "core.void")) continue;
+      const cfg = tennis.configSchema.parse(corpus.configs[stream.config]);
+      const asRecorded = stream.lineups ?? singles;
+      const pairs: LineupPair = { home: pairSide(asRecorded.home.entrantId, "H-first", "H-second"), away: pairSide(asRecorded.away.entrantId, "A-first", "A-second") };
+      for (const lineups of [asRecorded, pairs]) {
+        const firstScore = stream.events.findIndex((e) => SCORING.has(e.type));
+        for (let n = 1; n <= stream.events.length; n++) {
+          const prefix = stream.events.slice(0, n);
+          for (const [where, at] of [["early", firstScore + 1], ["late", n]] as const) {
+            if (firstScore < 0 || at > n || (where === "early" && at === n)) continue;
+            for (const side of ["home", "away"] as const) {
+              const t = toss(lineups[side].entrantId);
+              let before: NestedState, after: NestedState;
+              try {
+                before = plain(lineups, cfg, [t, ...prefix]);
+                after = plain(lineups, cfg, [...prefix.slice(0, at), t, ...prefix.slice(at)]);
+              } catch (error) {
+                // a prefix already decided refuses the late toss; a ledger the doubles sheet cannot carry is not this test's
+                if (error instanceof EngineError) continue;
+                throw error;
+              }
+              expect(view(after), `${stream.config}#${stream.seed} @${n} ${where} ${side}`).toBe(view(before));
+              counts.compared++;
+              counts[where]++;
+              counts[side]++;
+              if (lineups === pairs) counts.doubles++;
+              if (before.points.kind === "tiebreak" || before.sets.some((set) => set.tb !== undefined)) counts.breaker++;
+              if (before.points.kind === "matchTiebreak" || before.sets.some((set) => set.mtb === true)) counts.mtb++;
+            }
+          }
+        }
+      }
+    }
+    // eslint-disable-next-line no-console -- the sweep reports what it compared; the same counts are asserted below
+    console.info(`[toss] late-toss states compared: ${JSON.stringify(counts)}`);
+    expect(counts.compared).toBeGreaterThan(1000);
+    for (const key of ["early", "late", "doubles", "breaker", "mtb", "away", "home"] as const) expect(counts[key], key).toBeGreaterThan(0);
   });
 });

@@ -471,8 +471,8 @@ export interface NestedState {
   /**
    * S2-7 (TN-TS-1) — the side the toss gave the match's first service game. ABSENT until a `tennis.toss` arrives, same rule
    * as the fields above: a ledger with no toss folds exactly as before (home serves first) and every recorded state stays
-   * byte for byte. Present (either side) means the toss is recorded, which closes it (`tossOpen`); `walkServe` starts its
-   * walk here.
+   * byte for byte. Present (either side) means a toss is held, which closes it (`tossOpen`) until voided; `walkServe`
+   * starts its walk here.
    */
   opener?: Side;
 }
@@ -1227,36 +1227,41 @@ function applyPoint(state: NestedState, payload: NestedPoint): NestedState {
 }
 
 /**
- * TN-TS-1 — whether a `tennis.toss` may be recorded now: the match is not over (before the Start or after it), no toss is
- * recorded, and nothing has been scored — no point (a tie-break's included: `pointsWon` counts every point), no game (a game
- * award moves `games`) and no set (a summary banks one). A record that moves no score (a sanction, a break) leaves it open.
- * The one reader of the rule: `applyToss` refuses by it and the pad asks it (`tennisPadRules.tossOpen`); the padSpec's toss
- * panels gate on the same fields (`TOSS_GATE`), and `pad/tennis.test.ts` holds the three to one answer.
+ * TN-TS-1 — whether a `tennis.toss` may be recorded now: the match is not over (before the Start or after it) and no toss is
+ * held. Once per match while held; a voided toss (`core.void`, the fold never sees it) leaves none held, so it may be recorded
+ * again. Play does not close it (fix round 3, the controller's ruling, option B): a toss recorded late seats the serve for the
+ * whole match (`applyToss`). The one reader of the rule: `applyToss` refuses by it and the pad asks it
+ * (`tennisPadRules.tossOpen`); the padSpec's toss panels gate on the same field (`TOSS_GATE`), and `pad/tennis.test.ts` holds
+ * the three to one answer.
  */
-export function tossOpen(state: Pick<NestedState, "phase" | "opener" | "sets" | "games" | "pointsWon">): boolean {
-  return (
-    (state.phase === "pre" || state.phase === "live") &&
-    state.opener === undefined &&
-    state.sets.length === 0 &&
-    state.games.home + state.games.away === 0 &&
-    state.pointsWon.home + state.pointsWon.away === 0
-  );
+export function tossOpen(state: Pick<NestedState, "phase" | "opener">): boolean {
+  return (state.phase === "pre" || state.phase === "live") && state.opener === undefined;
 }
 
-// TN-TS-1 — the toss: who serves the first game. Refused WRONG_PHASE once it is closed (`tossOpen`): a second toss, or one
-// after anything was scored, would re-seat the serve under a match already played from it. Undo is `core.void`.
+/**
+ * TN-TS-1 — the toss: who serves the first game. Refused WRONG_PHASE once it is closed (`tossOpen`). Undo is `core.void`.
+ *
+ * RE-SEATING. With no toss held, every serve the fold has tracked so far is the home-first order, and every serve transition
+ * is relative to the one before it: a game hands the serve to `opponent(serving)`, a breaker seeds `tbFirstServer` from
+ * `serving`, flips after its odd points and opens the next set with `opponent(tbFirstServer)`, a summary freezes it. So a
+ * toss naming away, at any point, is exactly the home-first state with `serving` and a live `tbFirstServer` flipped, and
+ * `walkServe` recomputes every past turn and the doubles pair order from `opener`. `toss.test.ts` holds that against the
+ * same ledger with the toss before play, at every prefix of every tennis golden stream.
+ */
 function applyToss(state: NestedState, payload: NestedToss): NestedState {
   if (!tossOpen(state)) {
     const why =
-      state.phase !== "pre" && state.phase !== "live"
-        ? `the match is over (phase "${state.phase}")`
-        : state.opener !== undefined
-          ? "a toss is already recorded"
-          : "play has started: the toss precedes the first point";
+      state.phase !== "pre" && state.phase !== "live" ? `the match is over (phase "${state.phase}")` : "a toss is already recorded";
     wrongPhase(`toss not allowed: ${why}`, { phase: state.phase });
   }
   const side = sideOf(state, payload.serving);
-  return { ...state, serving: side, opener: side };
+  if (side === "home") return { ...state, opener: side };
+  return {
+    ...state,
+    serving: opponent(state.serving),
+    tbFirstServer: state.tbFirstServer === null ? null : opponent(state.tbFirstServer),
+    opener: side,
+  };
 }
 
 function applySanction(state: NestedState, payload: NestedSanction): NestedState {
@@ -1817,18 +1822,9 @@ function nestedFidelity(preset: NestedPreset): PadSpec["fidelity"] {
   } satisfies Record<string, FidelityBand>);
 }
 
-/** TN-TS-1 — `tossOpen` in the gate DSL, for the padSpec's two toss panels (each panel's own `phase` is the phase half). No
- *  set is banked exactly when no set was won (`bankSet` credits every set it banks), since a gate path cannot read an array's
- *  length. `pad/tennis.test.ts` holds it to `tossOpen` at every step of real play. */
-const TOSS_GATE: PadGate = {
-  op: "and",
-  of: [
-    { op: "not", of: { op: "path-truthy", path: "state.opener" } },
-    ...(["setsWon", "games", "pointsWon"] as const).flatMap((field) =>
-      (["home", "away"] as const).map((side): PadGate => ({ op: "path-equals", path: `state.${field}.${side}`, value: 0 })),
-    ),
-  ],
-};
+/** TN-TS-1 — `tossOpen` in the gate DSL, for the padSpec's two toss panels (each panel's own `phase` is the phase half): no
+ *  toss held. `pad/tennis.test.ts` holds it to `tossOpen` at every step of real play. */
+const TOSS_GATE: PadGate = { op: "not", of: { op: "path-truthy", path: "state.opener" } };
 
 function nestedPadSpec(preset: NestedPreset, cfg: NestedCfg, fidelity: PadSpec["fidelity"]): PadSpec {
   const key = preset.key;
@@ -1918,7 +1914,7 @@ function nestedPadSpec(preset: NestedPreset, cfg: NestedCfg, fidelity: PadSpec["
   };
 
   const panels: PadPanel[] = [
-    // TN-TS-1 — the toss, before the Start and after it until the first point; the gate is `tossOpen`'s fields.
+    // TN-TS-1 — the toss, before the Start and after it while none is held; the gate is `tossOpen`'s field.
     { labelKey: { key: `pad.${key}.panel.toss`, label: "Toss" }, phase: "pre", layout: "primary", actions: [tossAction], gate: TOSS_GATE },
     { labelKey: { key: `pad.${key}.panel.toss`, label: "Toss" }, phase: "live", layout: "primary", actions: [tossAction], gate: TOSS_GATE },
     {

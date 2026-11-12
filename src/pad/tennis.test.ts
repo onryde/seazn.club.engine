@@ -661,7 +661,7 @@ describe("TN-SE-2 tennisPadRules.breakerInForce: exactly when the strict fold re
   });
 });
 
-describe("TN-TS-1 tennisPadRules.tossOpen: exactly when the strict fold takes a tennis.toss", () => {
+describe("TN-TS-1 tennisPadRules.tossOpen: exactly when the strict fold takes a tennis.toss (fix round 3: open while no toss is held, play or not)", () => {
   const toss = (side: Side): ModuleEvent => ({ type: "tennis.toss", payload: { serving: side === "home" ? H : A } });
   /** The panel that offers the toss in `phase`, and its gate. */
   const tossPanel = (cfg: NestedCfg, phase: "pre" | "live") => {
@@ -692,10 +692,10 @@ describe("TN-TS-1 tennisPadRules.tossOpen: exactly when the strict fold takes a 
     check("tossed before the start", tour, [toss("home")]);
     check("tossed, then the start", tour, [toss("away"), start]);
     check("tossed after the start", tour, [start, toss("home")]);
-    // a game award moves the games and no point: only the games close the toss here
+    // play no longer closes the toss: a game award, a set summary, and a toss held after play
     check("a game award", tour, [start, gameAward("away")]);
-    // a set summary banks a set with no point or game left standing: only the set closes it
     check("a set summary", tour, [start, summary(6, 4)]);
+    check("tossed after a point", tour, [start, point("home"), toss("away")]);
     for (const walk of walks()) {
       const events: ModuleEvent[] = [];
       for (const b of walk.beats) {
@@ -711,9 +711,11 @@ describe("TN-TS-1 tennisPadRules.tossOpen: exactly when the strict fold takes a 
   it("is false for a state that is not a fold's", () => {
     expect(tennisPadRules.tossOpen({})).toBe(false);
     expect(tennisPadRules.tossOpen(undefined)).toBe(false);
-    // a fold's play fields with no points tally: nothing says nothing has been scored
-    const { pointsWon: _tally, ...noTally } = fold(parse({}), [start]);
-    expect(tennisPadRules.tossOpen(noTally)).toBe(false);
+    // anything in `opener` is a toss held: closed
+    expect(tennisPadRules.tossOpen({ ...fold(parse({}), [start]), opener: "north" })).toBe(false);
+    // and a fold's state with no phase is not one either
+    const { phase: _phase, ...noPhase } = fold(parse({}), [start]);
+    expect(tennisPadRules.tossOpen(noPhase)).toBe(false);
   });
 
   it("the toss sits in the points' band (3): it decides only who serves, which a point-by-point pad shows", () => {

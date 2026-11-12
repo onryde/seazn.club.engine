@@ -56,13 +56,12 @@ function setsWonOf(state: unknown): NestedState["setsWon"] {
   return isScore(setsWon) ? { home: setsWon.home, away: setsWon.away } : { home: 0, away: 0 };
 }
 
-/** The fields `tossOpen` reads, or null when `state` is not a folded NestedState. `opener` is absent until a toss. */
+/** The fields `tossOpen` reads, or null when `state` is not a folded NestedState. `opener` is absent until a toss; any value
+ *  present (a side, or anything else) is a toss held, so it is passed on as it is and never re-validated here. */
 function tossOf(state: unknown): Parameters<typeof tossOpen>[0] | null {
   const play = playOf(state);
-  if (play === null || !isRecord(state) || !isScore(state.pointsWon)) return null;
-  const opener = state.opener;
-  if (opener !== undefined && opener !== "home" && opener !== "away") return null;
-  return { ...play, pointsWon: state.pointsWon, ...(opener === undefined ? {} : { opener }) };
+  if (play === null || !isRecord(state)) return null;
+  return { phase: play.phase, ...(state.opener === undefined ? {} : { opener: state.opener as NestedState["opener"] }) };
 }
 
 function fidelityOf(): TennisPadRules["eventBands"] {

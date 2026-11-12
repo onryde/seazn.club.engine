@@ -822,8 +822,8 @@ describe("each verdict has teeth: the stream passes, its counterfactuals do not"
           // with no toss the same ledger is home serving first: the toss is what the story is about
           ["the toss dropped", { ...c.recorded, events: events.filter((e) => e.type !== "tennis.toss") }, noToss],
           ["the toss naming home", { ...c.recorded, events: events.map((e, i) => (i === at ? { ...e, payload: { serving: home } } : e)) }, noToss],
-          // the engine's own refusal reaches the verdict: a toss after the first game is closed (TN-TS-1)
-          ["the toss after the first game", { ...c.recorded, events: [events[0]!, events[at + 1]!, toss, ...events.slice(at + 2)] }, /toss not allowed: play has started/],
+          // the engine's own refusal reaches the verdict: a second toss while one is held (TN-TS-1)
+          ["a second toss", { ...c.recorded, events: [...events.slice(0, at + 2), { ...toss, payload: { serving: home } }, ...events.slice(at + 2)] }, /toss not allowed: a toss is already recorded/],
         ];
       }
       case "tennis.toss_before_start": {
