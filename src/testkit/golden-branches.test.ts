@@ -69,7 +69,7 @@ const storyById = (id: string): BranchStory => {
 const byId = (id: string): Case => caseOf(storyById(id));
 
 describe("the branch table", () => {
-  it("names exactly the four opt-in branches W2c raised a major for by hand, then the six arms 16c recorded beside them (the award abandon's expunge and level arms, and the shoot-out's sudden death), then W2e's tennis set tie-break margin (summarised, then played) and the final-set tie-break's, the football and cricket epoch witnesses, then football's extraTimeSubs (F-R3), then the tennis toss's epoch witness (S2-7), once each, in this order", () => {
+  it("names exactly the four opt-in branches W2c raised a major for by hand, then the six arms 16c recorded beside them (the award abandon's expunge and level arms, and the shoot-out's sudden death), then W2e's tennis set tie-break margin (summarised, then played) and the final-set tie-break's, the football and cricket epoch witnesses, then football's extraTimeSubs (F-R3), then the tennis toss's epoch witnesses (S2-7: after the Start, then before it), once each, in this order", () => {
     expect(BRANCH_STORIES.map((s) => s.id)).toEqual([
       "football.shootoutAttempts",
       "hockey.q4_stands",
@@ -89,6 +89,7 @@ describe("the branch table", () => {
       "cricket.mid_over_bowler_change",
       "football.extraTimeSubs",
       "tennis.toss_away_serves",
+      "tennis.toss_before_start",
     ]);
   });
 
@@ -615,6 +616,7 @@ describe("each verdict has teeth: the stream passes, its counterfactuals do not"
     "football.pitch_retirement": /caps no substitutions/,
     "cricket.mid_over_bowler_change": /caps no bowler's overs/,
     "tennis.toss_away_serves": /plays no match tie-break/,
+    "tennis.toss_before_start": /plays no match tie-break/,
   };
   const DECIDER_GONE: Record<string, RegExp> = {
     "football.shootoutAttempts": /does not end in a shoot-out win/,
@@ -634,6 +636,7 @@ describe("each verdict has teeth: the stream passes, its counterfactuals do not"
     "football.pitch_retirement": /does not end on a goal/,
     "cricket.mid_over_bowler_change": /no over split by a cricket\.bowler\.change has ended/,
     "tennis.toss_away_serves": /no match tie-break decides the match/,
+    "tennis.toss_before_start": /no match tie-break decides the match/,
   };
   /** Counterfactuals every story has: the key gone, and the deciding event (the last one in every story) dropped. */
   const common = (c: Case): Counterfactual[] => [
@@ -821,6 +824,16 @@ describe("each verdict has teeth: the stream passes, its counterfactuals do not"
           ["the toss naming home", { ...c.recorded, events: events.map((e, i) => (i === at ? { ...e, payload: { serving: home } } : e)) }, noToss],
           // the engine's own refusal reaches the verdict: a toss after the first game is closed (TN-TS-1)
           ["the toss after the first game", { ...c.recorded, events: [events[0]!, events[at + 1]!, toss, ...events.slice(at + 2)] }, /toss not allowed: play has started/],
+        ];
+      }
+      case "tennis.toss_before_start": {
+        const [toss, start, ...rest] = events as [GoldenEvent, GoldenEvent, ...GoldenEvent[]];
+        const home = c.stream.lineups?.home.entrantId ?? "H";
+        return [
+          // the same match tossed after the Start: the other story's ledger, not this one's
+          ["the toss after the Start", { ...c.recorded, events: [start, toss, ...rest] }, /the toss does not precede core\.start/],
+          ["the toss dropped", { ...c.recorded, events: [start, ...rest] }, /no tennis\.toss hands the first serve to away/],
+          ["the toss naming home", { ...c.recorded, events: [{ ...toss, payload: { serving: home } }, start, ...rest] }, /no tennis\.toss hands the first serve to away/],
         ];
       }
       default:

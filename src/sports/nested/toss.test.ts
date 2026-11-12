@@ -208,6 +208,17 @@ describe("TN-TS-1 tennis.toss is refused once the toss is closed, and when it is
     expect(state.serving).toBe("away");
   });
 
+  it("TN-TS-1 a code violation moves no score, so it leaves the toss open; the penalty point entered for it closes it", () => {
+    const sanction = (level: string): ModuleEvent => ({ type: "tennis.sanction", payload: { by: H, level } });
+    expect(fold([start, sanction("warning"), toss(A)]).serving).toBe("away");
+    expect(fold([start, sanction("point_penalty"), toss(A)]).serving).toBe("away");
+    expect(codeOf([start, sanction("point_penalty"), point(A), toss(A)])).toBe("WRONG_PHASE");
+  });
+
+  it("TN-TS-1 a toss while play is suspended is refused by the core's stoppage guard (WRONG_PHASE)", () => {
+    expect(codeOf([start, { type: "core.suspend", payload: {} }, toss(A)])).toBe("WRONG_PHASE");
+  });
+
   it("TN-TS-1 a toss naming a non-entrant, or malformed, is INVALID_EVENT", () => {
     expect(codeOf([start, toss("X")])).toBe("INVALID_EVENT");
     expect(codeOf([start, tossRaw({})])).toBe("INVALID_EVENT");
@@ -236,6 +247,11 @@ describe("TN-TS-1 Undo of the toss is core.void", () => {
 
   it("TN-TS-1 voiding the first point reopens the toss; voiding a later one does not", () => {
     expect(tossOpen(fold([start, point(H), [VOID, 1]]))).toBe(true);
+    // the strict fold takes the toss once the only point is voided: nothing was served under the old order
+    const retossed = fold([start, point(H), [VOID, 1], toss(A)]);
+    expect(retossed.serving).toBe("away");
+    expect(serveContext(retossed)).toEqual({ side: "away", serviceTurn: 0, personId: null, serveOrderKnown: true });
+    expect(codeOf([start, point(H), point(H), [VOID, 2], toss(A)])).toBe("WRONG_PHASE");
     expect(tossOpen(fold([start, point(H), point(H), [VOID, 2]]))).toBe(false);
   });
 });

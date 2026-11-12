@@ -280,6 +280,17 @@ function reachesTossAwayServes(r: Recorded): string | null {
   return null;
 }
 
+/** `reachesTossAwayServes` with the toss recorded BEFORE `core.start`: the order the web and the phone send (fix round 1, M1).
+ *  The order is checked last, so every other reason reads as the story above's. */
+function reachesTossBeforeStart(r: Recorded): string | null {
+  const served = reachesTossAwayServes(r);
+  if (served !== null) return served;
+  const toss = r.events.findIndex((e) => e.type === "tennis.toss");
+  const start = r.events.findIndex((e) => e.type === "core.start");
+  if (start !== -1 && toss > start) return "the toss does not precede core.start";
+  return null;
+}
+
 /** Whether a closed set in `state` was won on its tie-break's deciding point: the target to one below it (5–4 to five). */
 function closedOnDecidingPoint(state: Record<string, unknown>, to: number): boolean {
   const sets = Array.isArray(state.sets) ? (state.sets as unknown[]) : [];
@@ -779,6 +790,30 @@ export const BRANCH_STORIES: readonly BranchStory[] = [
         ...Array.from({ length: 10 }, () => ev("tennis.point", { by: H })),
       ];
       return reachesTossAwayServes(c.recorded(events)) === null ? events : null;
+    },
+  },
+  {
+    // S2-7 fix round 1 (review M1): the same match with the toss BEFORE core.start, the order both apps send. A core change
+    // that reset module state at the Start, or refused sport events before it, would pass the story above and break this one.
+    id: "tennis.toss_before_start",
+    sport: "tennis",
+    key: "finalSet",
+    seed: BRANCH_SEED_BASE + 19,
+    config: { name: "doubles-noad-mtb10", raw: { game: { noAd: true }, finalSet: { matchTiebreakTo: 10 } } },
+    what: "away wins the toss before the Start and serves first, and the match is decided in its match tie-break with the serve order the toss set (TN-TS-1)",
+    reached: reachesTossBeforeStart,
+    build: (c) => {
+      const H = c.lineups.home.entrantId;
+      const A = c.lineups.away.entrantId;
+      const awards = (winner: string): GoldenEvent[] => Array.from({ length: 6 }, () => ev("tennis.game.award", { winner }));
+      const events = [
+        ev("tennis.toss", { serving: A }),
+        ev("core.start"),
+        ...awards(H),
+        ...awards(A),
+        ...Array.from({ length: 10 }, () => ev("tennis.point", { by: H })),
+      ];
+      return reachesTossBeforeStart(c.recorded(events)) === null ? events : null;
     },
   },
 ];
