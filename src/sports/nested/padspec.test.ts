@@ -81,7 +81,7 @@ describe("tennis padSpec — no cfg-mutual-exclusivity (asserted, not merely cla
     );
     const [first, ...rest] = typeSets;
     for (const set of rest) expect([...set].sort()).toEqual([...first!].sort());
-    // And every one of tennis's 5 registered types is in that set.
+    // And every one of tennis's 6 registered types is in that set (S2-7 added tennis.toss, TN-TS-1).
     expect([...first!].sort()).toEqual(
       [
         "tennis.game.award",
@@ -89,6 +89,7 @@ describe("tennis padSpec — no cfg-mutual-exclusivity (asserted, not merely cla
         "tennis.point",
         "tennis.sanction",
         "tennis.set_summary",
+        "tennis.toss",
       ].sort(),
     );
   });

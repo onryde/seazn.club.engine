@@ -379,6 +379,17 @@ export const NestedGameAward = z.strictObject({
 });
 export type NestedGameAward = z.infer<typeof NestedGameAward>;
 
+// S2-7 (TN-TS-1; owner ruling 233, Seazn Capture S2-7, 2026-11-12: "Toss event first") — the toss's one fact the fold
+// needs: which entrant serves the match's first game (ITF Rule 9). Before it the kernel kept the old convention, home
+// serves first, in TWO places (`init`'s `serving` and `walkServe`'s opener), so a scorer had no way to record an away
+// server and the walk behind `serveContext` would have disagreed with the fold had one been forced in. The choice of ends
+// is not recorded: nothing the fold or the pad computes reads an end. Strict, like every branch: an extra key (`elected`,
+// `by`) is refused, never stripped.
+export const NestedToss = z.strictObject({
+  serving: EntrantId,
+});
+export type NestedToss = z.infer<typeof NestedToss>;
+
 // Appended, never reordered: `{by, level}` cannot parse as a point (strict
 // branches reject the extra key) and a summary needs home+away, so every
 // pre-W4 payload still lands on the branch it always did. `NestedInterruption`
@@ -390,12 +401,15 @@ export type NestedGameAward = z.infer<typeof NestedGameAward>;
 // swallows a sibling nor is swallowed either. `interruption.test.ts` and
 // `game-award.test.ts` both assert every shape parses against exactly ONE
 // branch, which is the claim that actually fails when a branch is widened.
+// S2-7 appends `NestedToss` after it: its only key, `serving`, is required and
+// declared by no sibling, and every sibling requires a key it lacks (`toss.test.ts`).
 export const NestedEv = z.union([
   NestedPoint,
   NestedSetSummary,
   NestedSanction,
   NestedInterruption,
   NestedGameAward,
+  NestedToss,
 ]);
 export type NestedEv = z.infer<typeof NestedEv>;
 
@@ -454,6 +468,13 @@ export interface NestedState {
    * initialise it in `init`.
    */
   squads?: SquadState;
+  /**
+   * S2-7 (TN-TS-1) — the side the toss gave the match's first service game. ABSENT until a `tennis.toss` arrives, same rule
+   * as the fields above: a ledger with no toss folds exactly as before (home serves first) and every recorded state stays
+   * byte for byte. Present (either side) means the toss is recorded, which closes it (`tossOpen`); `walkServe` starts its
+   * walk here.
+   */
+  opener?: Side;
 }
 
 /**
@@ -532,8 +553,8 @@ function splitTbTurns(turns: number, firstServer: Side): Record<Side, number> {
  * for the rest of the match (`serve-context.test.ts`'s "does not desync…"
  * case pins exactly this).
  *
- * HOW THIS COMPUTES IT. Walks `state.sets` forward from `init`'s fixed
- * "home serves first" convention, applying the same two transitions the
+ * HOW THIS COMPUTES IT. Walks `state.sets` forward from the toss's side
+ * (`state.opener`, TN-TS-1; absent, `init`'s "home serves first"), applying the same two transitions the
  * fold itself applies: a plain set's N standard games alternate one turn
  * each, split `ceil`/`floor` between whoever opened the set and their
  * partner; a set that closed via a breaker splits its own standard games
@@ -572,7 +593,9 @@ function splitTbTurns(turns: number, firstServer: Side): Record<Side, number> {
  * public scoreboard's serve indicator, which ten golden streams pin.
  */
 function walkServe(state: NestedState): { turns: Record<Side, number>; opener: Side } {
-  let opener: Side = "home"; // init's fixed convention: home serves first
+  // The toss's side (TN-TS-1), else init's convention: home serves first. It must follow the toss, or the walk and the
+  // fold disagree from the first point of every match away serves first and `serveOrderKnown` is false for all of it.
+  let opener: Side = state.opener ?? "home";
   const turns: Record<Side, number> = { home: 0, away: 0 };
   const credit = (side: Side, n: number): void => {
     turns[side] += n;
@@ -1203,6 +1226,39 @@ function applyPoint(state: NestedState, payload: NestedPoint): NestedState {
   }
 }
 
+/**
+ * TN-TS-1 — whether a `tennis.toss` may be recorded now: the match is not over (before the Start or after it), no toss is
+ * recorded, and nothing has been scored — no point (a tie-break's included: `pointsWon` counts every point), no game (a game
+ * award moves `games`) and no set (a summary banks one). A record that moves no score (a sanction, a break) leaves it open.
+ * The one reader of the rule: `applyToss` refuses by it and the pad asks it (`tennisPadRules.tossOpen`); the padSpec's toss
+ * panels gate on the same fields (`TOSS_GATE`), and `pad/tennis.test.ts` holds the three to one answer.
+ */
+export function tossOpen(state: Pick<NestedState, "phase" | "opener" | "sets" | "games" | "pointsWon">): boolean {
+  return (
+    (state.phase === "pre" || state.phase === "live") &&
+    state.opener === undefined &&
+    state.sets.length === 0 &&
+    state.games.home + state.games.away === 0 &&
+    state.pointsWon.home + state.pointsWon.away === 0
+  );
+}
+
+// TN-TS-1 — the toss: who serves the first game. Refused WRONG_PHASE once it is closed (`tossOpen`): a second toss, or one
+// after anything was scored, would re-seat the serve under a match already played from it. Undo is `core.void`.
+function applyToss(state: NestedState, payload: NestedToss): NestedState {
+  if (!tossOpen(state)) {
+    const why =
+      state.phase !== "pre" && state.phase !== "live"
+        ? `the match is over (phase "${state.phase}")`
+        : state.opener !== undefined
+          ? "a toss is already recorded"
+          : "play has started: the toss precedes the first point";
+    wrongPhase(`toss not allowed: ${why}`, { phase: state.phase });
+  }
+  const side = sideOf(state, payload.serving);
+  return { ...state, serving: side, opener: side };
+}
+
 function applySanction(state: NestedState, payload: NestedSanction): NestedState {
   if (state.phase !== "live") wrongPhase(`sanction not allowed in phase "${state.phase}"`);
   const record: NestedSanctionRec = {
@@ -1686,8 +1742,8 @@ function nestedPosition(state: NestedState): MatchPosition {
 
 // ---------------------------------------------------------------------------
 // S6/#416 (W5) — padSpec. Pure function of (preset, resolved cfg). Unlike the
-// set-based kernel, `NestedEv`'s five branches (Point/SetSummary/Sanction/
-// Interruption/GameAward) are ALWAYS reachable — this kernel has no
+// set-based kernel, `NestedEv`'s six branches (Point/SetSummary/Sanction/
+// Interruption/GameAward/Toss) are ALWAYS reachable — this kernel has no
 // `records`-shaped per-preset gating at all (every `apply()` case dispatches
 // unconditionally). So `eventSchemas` (built in `makeNestedModule` below) has
 // no kernel-union over-registration problem, and `checkActionCoverage` is
@@ -1734,14 +1790,15 @@ export function tbFieldBound(cfg: NestedCfg): number {
 export const PLAUSIBLE_INTERRUPTION_SECONDS = 3600;
 
 /**
- * The fidelity map of one preset: one band per registered type (all 5 — see the module-level note above). The bare set score
+ * The fidelity map of one preset: one band per registered type (all 6 — see the module-level note above). The bare set score
  * alone (band 0) already reaches a decided match (`bankSet` off summaries, exactly like the set-based kernel); code violations
  * and interruptions are administrative records that never move the score, band 1 (matching the set-based kernel's own
  * timeout/sanction placement); points and game-awards are both SCORE-MOVING facts at the kernel's maximum granularity — a game
  * award is one level up from a point ("the game a code violation concedes"), not a discipline record like
  * sanction/interruption — so both sit at band 3, the kernel's maximum granularity. Band 2 is unoccupied — same honest gap as
  * the set-based kernel's (no player-line/box-score analogue here either); S2/#430 parked this kernel's own T3 addition
- * (1st-vs-2nd serve, rally length) as future work, not this session's.
+ * (1st-vs-2nd serve, rally length) as future work, not this session's. The toss (S2-7, TN-TS-1) joins the points at band 3:
+ * it decides only who serves, which only a point-by-point pad shows; a set-score pad has no use for the question.
  *
  * It reads no cfg. Pad wave P3.2: built ONCE per module (`makeNestedModule`) and handed to every `padSpec(cfg)`, so every
  * cfg's padSpec carries the same object, the one `@seazn/engine/pad` exposes as `tennisPadRules.eventBands`.
@@ -1755,8 +1812,23 @@ function nestedFidelity(preset: NestedPreset): PadSpec["fidelity"] {
     [`${key}.interruption`]: 1,
     [`${key}.point`]: 3,
     [`${key}.game.award`]: 3,
+    // TN-TS-1: the toss decides only who serves, which only a point-by-point pad shows: the points' band.
+    [`${key}.toss`]: 3,
   } satisfies Record<string, FidelityBand>);
 }
+
+/** TN-TS-1 — `tossOpen` in the gate DSL, for the padSpec's two toss panels (each panel's own `phase` is the phase half). No
+ *  set is banked exactly when no set was won (`bankSet` credits every set it banks), since a gate path cannot read an array's
+ *  length. `pad/tennis.test.ts` holds it to `tossOpen` at every step of real play. */
+const TOSS_GATE: PadGate = {
+  op: "and",
+  of: [
+    { op: "not", of: { op: "path-truthy", path: "state.opener" } },
+    ...(["setsWon", "games", "pointsWon"] as const).flatMap((field) =>
+      (["home", "away"] as const).map((side): PadGate => ({ op: "path-equals", path: `state.${field}.${side}`, value: 0 })),
+    ),
+  ],
+};
 
 function nestedPadSpec(preset: NestedPreset, cfg: NestedCfg, fidelity: PadSpec["fidelity"]): PadSpec {
   const key = preset.key;
@@ -1837,8 +1909,18 @@ function nestedPadSpec(preset: NestedPreset, cfg: NestedCfg, fidelity: PadSpec["
     fields: [],
     attribution: [{ kind: "side", path: "winner" }],
   };
+  // TN-TS-1 — "Who serves first?": the side is the answer.
+  const tossAction: PadAction = {
+    type: `${key}.toss`,
+    labelKey: { key: `pad.${key}.action.toss`, label: "Who serves first" },
+    fields: [],
+    attribution: [{ kind: "side", path: "serving" }],
+  };
 
   const panels: PadPanel[] = [
+    // TN-TS-1 — the toss, before the Start and after it until the first point; the gate is `tossOpen`'s fields.
+    { labelKey: { key: `pad.${key}.panel.toss`, label: "Toss" }, phase: "pre", layout: "primary", actions: [tossAction], gate: TOSS_GATE },
+    { labelKey: { key: `pad.${key}.panel.toss`, label: "Toss" }, phase: "live", layout: "primary", actions: [tossAction], gate: TOSS_GATE },
     {
       labelKey: { key: `pad.${key}.panel.points`, label: "Points" },
       phase: "live",
@@ -2168,11 +2250,12 @@ export function makeNestedModule(
   const sanctionType = `${preset.key}.sanction`;
   const interruptionType = `${preset.key}.interruption`;
   const gameAwardType = `${preset.key}.game.award`;
+  const tossType = `${preset.key}.toss`;
   // W2e X-SE-1 — the sanction levels that END a match in this sport (`NestedPreset.sanctionEnding`); none when it declares
   // none. Read by `arbitraryEvent` below.
   const endLevels: readonly string[] = preset.sanctionEnding?.endLevels ?? [];
   // S6/#416 (W5) — type string -> its own payload schema, by reference, the
-  // SAME 5 schema objects `NestedEv` unions (top of this file). Unlike the
+  // SAME 6 schema objects `NestedEv` unions (top of this file). Unlike the
   // set-based kernel, this is a true bijection with no kernel-union
   // over-registration: every branch here dispatches unconditionally in
   // `apply()` below, for every preset this kernel has ever had (tennis is
@@ -2183,6 +2266,7 @@ export function makeNestedModule(
     [sanctionType]: NestedSanction,
     [interruptionType]: NestedInterruption,
     [gameAwardType]: NestedGameAward,
+    [tossType]: NestedToss,
   };
   // One per module — see `sports/squad-state.ts` for the init handshake it
   // keys on.
@@ -2295,7 +2379,7 @@ export function makeNestedModule(
         games: { home: 0, away: 0 },
         points: FRESH_GAME,
         setsWon: { home: 0, away: 0 },
-        serving: "home", // convention: the toss is not modelled; home serves first
+        serving: "home", // home serves first until a `tennis.toss` says otherwise (TN-TS-1); `opener` stays absent
         tbPointsPlayed: 0,
         tbFirstServer: null,
         pointsWon: { home: 0, away: 0 },
@@ -2331,6 +2415,8 @@ export function makeNestedModule(
             parsePayload(NestedGameAward, ev.payload, ev.type),
             isStrictFold(ctx),
           );
+        case tossType:
+          return applyToss(state, parsePayload(NestedToss, ev.payload, ev.type));
         case "core.forfeit":
           return applyForfeit(state, forfeitOf(ev.payload).by, forfeitOf(ev.payload).reason);
         case "core.abandon":

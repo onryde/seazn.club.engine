@@ -403,6 +403,19 @@
           "winner"
         ],
         "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "properties": {
+          "serving": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "serving"
+        ],
+        "type": "object"
       }
     ]
   },
@@ -458,6 +471,9 @@
       ],
       "interruptions[].set": [
         "number"
+      ],
+      "opener": [
+        "string"
       ],
       "outcome": [
         "null",

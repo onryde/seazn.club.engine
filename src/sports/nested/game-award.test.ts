@@ -23,6 +23,7 @@ import type { ModuleEvent } from "../../sport/module.ts";
 import { tennis } from "../tennis/tennis.ts";
 import {
   NestedEv,
+  NestedToss,
   NestedGameAward,
   NestedInterruption,
   NestedPoint,
@@ -257,10 +258,11 @@ describe("NestedEv union — tennis.game.award (§8 convention)", () => {
     expect(NestedEv.parse(payload)).toEqual(payload);
   });
 
-  it("appends game.award LAST, after interruption — appended, never reordered", () => {
-    expect(NestedEv.options).toHaveLength(5);
-    expect(NestedEv.options[NestedEv.options.length - 1]).toBe(NestedGameAward);
-    expect(NestedEv.options[NestedEv.options.length - 2]).toBe(NestedInterruption);
+  it("appends game.award after interruption — appended, never reordered (S2-7's toss follows it)", () => {
+    expect(NestedEv.options).toHaveLength(6);
+    expect(NestedEv.options[4]).toBe(NestedGameAward);
+    expect(NestedEv.options[3]).toBe(NestedInterruption);
+    expect(NestedEv.options[5]).toBe(NestedToss);
   });
 
   it("does not let the game-award branch accept a point, summary, sanction or interruption — and no sibling accepts a game award", () => {

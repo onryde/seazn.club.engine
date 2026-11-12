@@ -157,6 +157,9 @@ export interface TennisPadRules extends PadRulesBase {
   breakerInForce(state: unknown): boolean;
   /** P3.2: ITF Rule 5(b), whether the serve changes after a breaker's `pointsPlayed`-th point (the fold's own rotation). */
   tiebreakServeRotatesAfter(pointsPlayed: number): boolean;
+  /** TN-TS-1: whether the fold takes a `tennis.toss` now ("Who serves first?"): the match not over, no toss recorded and
+   *  nothing scored (no point, game or set). False with no folded state. */
+  tossOpen(state: unknown): boolean;
 }
 
 /** carrom (P4). */

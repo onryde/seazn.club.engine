@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { EngineError } from "../core/errors.ts";
 import { foldMatch, type EventEnvelope } from "../core/events.ts";
 import type { LineupPair } from "../core/types.ts";
-import type { ModuleEvent, PadSpec } from "../sport/module.ts";
+import { evalPadGate, type ModuleEvent, type PadSpec } from "../sport/module.ts";
 import {
   NestedInterruptionKind,
   NestedPointKind,
@@ -118,7 +118,7 @@ describe("tennisPadRules.eventBands", () => {
       cfgs++;
     }
     expect(Object.keys(tennisPadRules.eventBands).sort()).toEqual(Object.keys(tennis.eventSchemas ?? {}).sort());
-    expect(Object.keys(tennisPadRules.eventBands)).toHaveLength(5);
+    expect(Object.keys(tennisPadRules.eventBands)).toHaveLength(6);
     // one object for every cfg and the record, so nobody may write to it
     expect(Object.isFrozen(tennisPadRules.eventBands)).toBe(true);
     expect(cfgs).toBeGreaterThanOrEqual(2);
@@ -658,5 +658,66 @@ describe("TN-SE-2 tennisPadRules.breakerInForce: exactly when the strict fold re
     expect(tennisPadRules.breakerInForce(undefined)).toBe(false);
     // a score with no game kind is not a fold's game points: nothing says a breaker is in force
     expect(tennisPadRules.breakerInForce({ points: { home: 3, away: 2 } })).toBe(false);
+  });
+});
+
+describe("TN-TS-1 tennisPadRules.tossOpen: exactly when the strict fold takes a tennis.toss", () => {
+  const toss = (side: Side): ModuleEvent => ({ type: "tennis.toss", payload: { serving: side === "home" ? H : A } });
+  /** The panel that offers the toss in `phase`, and its gate. */
+  const tossPanel = (cfg: NestedCfg, phase: "pre" | "live") => {
+    const panel = specOf(cfg).panels.find((p) => p.phase === phase && p.actions.some((a) => a.type === "tennis.toss"));
+    if (panel?.gate === undefined) throw new Error(`premise: tennis offers the toss in a gated ${phase} panel`);
+    return panel;
+  };
+
+  it("at every step of every walk and around a toss (counted, both answers seen), and the pad's gate says the same", () => {
+    let compared = 0;
+    let open = 0;
+    const check = (label: string, cfg: NestedCfg, events: readonly ModuleEvent[]) => {
+      const state = fold(cfg, events);
+      const result = attempt(cfg, [...events, toss("away")]);
+      // a decided match is the fold's own refusal (ALREADY_DECIDED), ahead of the module's
+      if (!result.ok) expect(result.code, `${label}: refused for the closed toss or not at all`).toBe(state.phase === "done" ? "ALREADY_DECIDED" : "WRONG_PHASE");
+      expect(tennisPadRules.tossOpen(state), label).toBe(result.ok);
+      if (state.phase === "pre" || state.phase === "live") {
+        const gate = tossPanel(cfg, state.phase).gate!;
+        expect(evalPadGate(gate, { state, summary: tennis.summary(state) }), `${label}: the ${state.phase} panel's gate`).toBe(result.ok);
+      }
+      compared++;
+      if (result.ok) open++;
+    };
+    const tour = parse({});
+    check("nothing yet", tour, []);
+    check("start", tour, [start]);
+    check("tossed before the start", tour, [toss("home")]);
+    check("tossed, then the start", tour, [toss("away"), start]);
+    check("tossed after the start", tour, [start, toss("home")]);
+    // a game award moves the games and no point: only the games close the toss here
+    check("a game award", tour, [start, gameAward("away")]);
+    // a set summary banks a set with no point or game left standing: only the set closes it
+    check("a set summary", tour, [start, summary(6, 4)]);
+    for (const walk of walks()) {
+      const events: ModuleEvent[] = [];
+      for (const b of walk.beats) {
+        events.push(b.event);
+        check(`${walk.name} @${events.length}`, walk.cfg, events);
+      }
+    }
+    report(`toss steps compared: ${compared}, open: ${open}`);
+    expect(compared).toBeGreaterThan(300);
+    expect(open).toBeGreaterThanOrEqual(2 + walks().length);
+  });
+
+  it("is false for a state that is not a fold's", () => {
+    expect(tennisPadRules.tossOpen({})).toBe(false);
+    expect(tennisPadRules.tossOpen(undefined)).toBe(false);
+    // a fold's play fields with no points tally: nothing says nothing has been scored
+    const { pointsWon: _tally, ...noTally } = fold(parse({}), [start]);
+    expect(tennisPadRules.tossOpen(noTally)).toBe(false);
+  });
+
+  it("the toss sits in the points' band (3): it decides only who serves, which a point-by-point pad shows", () => {
+    expect(tennisPadRules.eventBands["tennis.toss"]).toBe(3);
+    expect(tennisPadRules.eventBands["tennis.toss"]).toBe(tennisPadRules.eventBands["tennis.point"]);
   });
 });

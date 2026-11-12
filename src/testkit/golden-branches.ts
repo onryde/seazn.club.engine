@@ -33,6 +33,7 @@ import { resolvePositions } from "../sport/catalog.ts";
 import type { AnySportModule } from "../sport/module.ts";
 import { orderFromLineup } from "../sports/cricket/cricket.ts";
 import { SHOOTOUT_ATTEMPTS_DEFAULT } from "../sports/football/football.ts";
+import { serveContext, type NestedState } from "../sports/nested/kernel.ts";
 import { periodLabels } from "../sports/period/kernel.ts";
 import { benchedLineups, corpusFormat, recomputeStream, slimStream, type GoldenCorpus, type GoldenEvent, type GoldenStream } from "./golden.ts";
 import { buildWalk, defaultLineupPair, makeEnvelope } from "./helpers.ts";
@@ -260,6 +261,22 @@ function reachesMidOverBowlerChange(r: Recorded): string | null {
   if ((split.prevOverBowlers as unknown[]).some((bowler) => parts[String(bowler)] !== 1)) {
     return "the fold does not charge each bowler of the split over one part over";
   }
+  return null;
+}
+
+/** tennis `tennis.toss` (S2-7, TN-TS-1; owner ruling 233): away wins the toss and serves first, and the match is decided in its
+ *  match tie-break with the serve walk still agreeing with the fold (`serveContext().serveOrderKnown`). The decider is checked
+ *  first, so a ledger cut short says so before it says anything about the toss. */
+function reachesTossAwayServes(r: Recorded): string | null {
+  if (typeof obj(obj(r.raw).finalSet).matchTiebreakTo !== "number") return "its config plays no match tie-break, so the toss's order is never carried into one";
+  const played = replay(r, r.raw);
+  if (typeof played === "string") return played;
+  const sets = Array.isArray(played.state.sets) ? (played.state.sets as unknown[]) : [];
+  if (held(played.state) === null || obj(sets[sets.length - 1]).mtb !== true) return "no match tie-break decides the match";
+  const away = obj(played.state.entrants).away;
+  if (!r.events.some((e) => e.type === "tennis.toss" && obj(e.payload).serving === away)) return "no tennis.toss hands the first serve to away";
+  if (played.state.opener !== "away") return "the fold does not seat away as the toss's opener";
+  if (!serveContext(played.state as unknown as NestedState).serveOrderKnown) return "the serve walk disagrees with the fold after the match tie-break";
   return null;
 }
 
@@ -736,6 +753,32 @@ export const BRANCH_STORIES: readonly BranchStory[] = [
         sub(5, "ET_H1", 300),
       ];
       return reachesExtraTimeSubs(c.recorded(events)) === null ? events : null;
+    },
+  },
+  {
+    // S2-7 (TN-TS-1; owner ruling 233, "Toss event first"): the tennis epoch bump to 3 is for `tennis.toss`, which no generator
+    // walk writes (a change of the generator's walks would move every floor stream). This stream is its witness. Hand-built:
+    // away wins the toss, the sets go 6-0 and 0-6 by game awards (six games each, so the opener never changes), and away serves
+    // the first point of the match tie-break, which home takes 10-0.
+    id: "tennis.toss_away_serves",
+    sport: "tennis",
+    key: "finalSet",
+    seed: BRANCH_SEED_BASE + 18,
+    config: { name: "doubles-noad-mtb10", raw: { game: { noAd: true }, finalSet: { matchTiebreakTo: 10 } } },
+    what: "away wins the toss and serves first, and the match is decided in its match tie-break with the serve order the toss set (TN-TS-1)",
+    reached: reachesTossAwayServes,
+    build: (c) => {
+      const H = c.lineups.home.entrantId;
+      const A = c.lineups.away.entrantId;
+      const awards = (winner: string): GoldenEvent[] => Array.from({ length: 6 }, () => ev("tennis.game.award", { winner }));
+      const events = [
+        ev("core.start"),
+        ev("tennis.toss", { serving: A }),
+        ...awards(H),
+        ...awards(A),
+        ...Array.from({ length: 10 }, () => ev("tennis.point", { by: H })),
+      ];
+      return reachesTossAwayServes(c.recorded(events)) === null ? events : null;
     },
   },
 ];
