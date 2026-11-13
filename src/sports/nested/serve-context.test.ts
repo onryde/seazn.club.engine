@@ -441,4 +441,136 @@ describe("serveContext", () => {
       expect(serveContext(state).serveOrderKnown).toBe(true);
     });
   });
+
+  // Review L1 of engine PR #47 (9.0.0). The summary rows above are checked against hand-worked values only. Here the
+  // oracle is the fold itself on the other path: the same set (or match tie-break) entered as one `tennis.set_summary`
+  // must leave the serve, the breaker's first server, the walk's answer and the result exactly where the same set
+  // rallied point by point leaves them. No expected value in this block is written by hand.
+  describe("summary path agrees with the rally path (parity, review L1 of #47)", () => {
+    const toss = (serving: string): ModuleEvent => ({ type: "tennis.toss", payload: { serving } });
+    const other = (side: string): string => (side === H ? A : H);
+
+    // A unit (game or breaker point) sequence reaching `won`-`lost` for `winner`: the sides alternate, winner first,
+    // until each has `lost`, then the winner takes the rest. The lead never exceeds one before the last run, so the
+    // unit closes exactly at the score asked for, never early.
+    function alternating(winner: string, won: number, lost: number, unit: (by: string) => ModuleEvent[]): ModuleEvent[] {
+      const seq: ModuleEvent[] = [];
+      for (let i = 0; i < lost; i++) seq.push(...unit(winner), ...unit(other(winner)));
+      for (let i = lost; i < won; i++) seq.push(...unit(winner));
+      return seq;
+    }
+    const pointUnit = (by: string): ModuleEvent[] => [point(by)];
+
+    // `won`-`lost` from the winner's side, with an optional tie-break (also from the winner's side).
+    type SetScore = { won: number; lost: number; tb?: { won: number; lost: number } };
+    function ralliedSet(winner: string, s: SetScore): ModuleEvent[] {
+      if (s.tb === undefined) return alternating(winner, s.won, s.lost, game);
+      // To 6-all by alternating games, then the breaker.
+      return [...alternating(winner, s.lost, s.lost, game), ...alternating(winner, s.tb.won, s.tb.lost, pointUnit)];
+    }
+    function summarisedSet(winner: string, s: SetScore): ModuleEvent {
+      const flip = <T>(w: T, l: T) => (winner === H ? { home: w, away: l } : { home: l, away: w });
+      const games = flip(s.won, s.lost);
+      return summary(games.home, games.away, s.tb === undefined ? undefined : flip(s.tb.won, s.tb.lost));
+    }
+
+    function expectParity(lineups: LineupPair, cfg: unknown, rallied: ModuleEvent[], summarised: ModuleEvent[]) {
+      const r = fold(lineups, cfg, rallied);
+      const s = fold(lineups, cfg, summarised);
+      // Sanity: both paths banked the same score — otherwise the parity below compares two different matches.
+      expect(s.sets).toEqual(r.sets);
+      expect(s.setsWon).toEqual(r.setsWon);
+      expect(s.phase).toBe(r.phase);
+      expect(s.outcome).toEqual(r.outcome);
+      expect(s.serving).toBe(r.serving);
+      expect(s.tbFirstServer).toBe(r.tbFirstServer);
+      expect(serveContext(s)).toEqual(serveContext(r));
+      return r;
+    }
+
+    const LINEUPS: Array<[string, LineupPair]> = [
+      ["singles", singles],
+      ["doubles (declared pair order)", doubles],
+    ];
+    const OPENERS: Array<[string, ModuleEvent[]]> = [
+      ["home first", []],
+      ["away tossed to serve", [toss(A)]],
+    ];
+    const WINNERS = [H, A];
+
+    describe("a set entered as a summary vs the same set rallied", () => {
+      const SETS: Array<[string, SetScore]> = [
+        ["6-3", { won: 6, lost: 3 }],
+        ["6-4", { won: 6, lost: 4 }],
+        ["7-6 (7-5)", { won: 7, lost: 6, tb: { won: 7, lost: 5 } }],
+        ["7-6 (12-10)", { won: 7, lost: 6, tb: { won: 12, lost: 10 } }],
+      ];
+      // The tour default and the doubles no-ad preset (its first two sets are ordinary sets).
+      const CFGS: Array<[string, unknown]> = [
+        ["tour", cfgFor()],
+        ["doubles-noad-mtb10", cfgFor("doubles-noad-mtb10")],
+      ];
+      for (const [lineupName, lineups] of LINEUPS)
+        for (const [cfgName, cfg] of CFGS)
+          for (const [openerName, opener] of OPENERS)
+            for (const winner of WINNERS)
+              for (const [setName, score] of SETS) {
+                it(`${lineupName}, ${cfgName}, ${openerName}: set 1 ${setName} to ${winner}, and the game after it`, () => {
+                  const head = [start, ...opener];
+                  const rallied = [...head, ...ralliedSet(winner, score)];
+                  const summarised = [...head, summarisedSet(winner, score)];
+                  const r = expectParity(lineups, cfg, rallied, summarised);
+                  expect(r.sets).toHaveLength(1); // sanity — the rallied set really closed
+                  // One more game on top: the next server must agree too, not only the banked state.
+                  expectParity(lineups, cfg, [...rallied, ...game(H)], [...summarised, ...game(H)]);
+                  // And a second set entered the other way round (summary after rally, rally after summary).
+                  expectParity(
+                    lineups,
+                    cfg,
+                    [...rallied, ...ralliedSet(other(winner), score)],
+                    [...summarised, summarisedSet(other(winner), score)],
+                  );
+                });
+              }
+    });
+
+    describe("a match tie-break entered as a summary vs the same breaker rallied", () => {
+      // The doubles no-ad MTB10 preset, and a singles tour config with the same App VI decider.
+      const CFGS: Array<[string, LineupPair, unknown]> = [
+        ["doubles, doubles-noad-mtb10", doubles, cfgFor("doubles-noad-mtb10")],
+        ["singles, MTB10 decider", singles, cfgFor(undefined, { finalSet: { matchTiebreakTo: 10 } })],
+      ];
+      // Two rallied routes to one set all: an even total (6-4, 4-6: home opens the MTB as it opened the match) and an
+      // odd one (6-4, 3-6: the opener changes). Both ledgers share this prefix verbatim.
+      const ROUTES: Array<[string, ModuleEvent[]]> = [
+        ["6-4 4-6", [...ralliedSet(H, { won: 6, lost: 4 }), ...ralliedSet(A, { won: 6, lost: 4 })]],
+        ["6-4 3-6", [...ralliedSet(H, { won: 6, lost: 4 }), ...ralliedSet(A, { won: 6, lost: 3 })]],
+      ];
+      const MTBS: Array<[number, number]> = [
+        [10, 0],
+        [10, 1],
+        [10, 8],
+        [12, 10],
+      ];
+      for (const [cfgName, lineups, cfg] of CFGS)
+        for (const [openerName, opener] of OPENERS)
+          for (const [routeName, route] of ROUTES)
+            for (const winner of WINNERS)
+              for (const [won, lost] of MTBS) {
+                it(`${cfgName}, ${openerName}, ${routeName}: MTB ${won}-${lost} to ${winner}`, () => {
+                  const head = [start, ...opener, ...route];
+                  const atDecider = fold(lineups, cfg, head);
+                  expect(atDecider.points.kind).toBe("matchTiebreak"); // sanity — both ledgers reach the decider
+                  const r = expectParity(
+                    lineups,
+                    cfg,
+                    [...head, ...alternating(winner, won, lost, pointUnit)],
+                    [...head, summarisedSet(winner, { won, lost })],
+                  );
+                  expect(r.phase).toBe("done"); // sanity — the rallied breaker really ended the match
+                  expect(r.sets[2]).toMatchObject({ mtb: true });
+                });
+              }
+    });
+  });
 });
