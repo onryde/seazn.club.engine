@@ -439,7 +439,7 @@ export interface NestedState {
   games: { home: number; away: number }; // current set
   points: GamePoints;
   setsWon: { home: number; away: number };
-  // Serve tracking (rally fidelity only; summary sets leave it untouched).
+  // Serve tracking. A summary-banked set hands it on as the same set rallied would (`bankSummarySet`, T12-F2).
   serving: Side;
   tbPointsPlayed: number; // serve rotation inside a TB/MTB (1 then 2-2)
   tbFirstServer: Side | null;
@@ -577,20 +577,15 @@ function splitTbTurns(turns: number, firstServer: Side): Record<Side, number> {
  * the breaker opened, never following the point-by-point ITF handoff
  * inside it (see `expectedDoublesServer`'s doc comment).
  *
- * NOT scoped like `state.serving`, and that asymmetry is the whole reason
- * `serveContext` reports `serveOrderKnown`. `serving` is "rally fidelity
- * only; summary sets leave it untouched" (this struct's own field comment):
- * `bankSet` never assigns it, so a tier-0 `*.set_summary` freezes it. This
- * walk has no such gap — a closed set records its games either way, so the
- * transitions above fire for a summary-banked set exactly as for a
- * rally-scored one. An odd-game summary (6-3, 6-1 — ordinary scorelines)
- * therefore advances `opener` here while `serving` stands still, and the two
- * disagree from that point on. Neither is patched to match the other: the
- * walk is right about the rotation, `serving` is right about what the fold
- * actually committed to, and `serveContext` compares them and declines to
- * name a person rather than picking a winner. Correcting `serving` on the
- * summary path is the real fix and belongs to its own wave — it moves the
- * public scoreboard's serve indicator, which ten golden streams pin.
+ * A closed set records its games whether it was rallied or entered as a
+ * tier-0 `*.set_summary`, so the transitions above fire for both. Until
+ * T12-F2 the fold did NOT match on the summary path: `serving` stood still
+ * across a summary set, so after an odd-game one (6-3, 6-1, 7-6 — ordinary
+ * scorelines) the two disagreed and `serveContext` named no server for the
+ * rest of the match. `bankSummarySet` now hands `serving` on by the same
+ * three transitions, so the walk and the fold agree after a summary set too;
+ * `serveContext`'s `serveOrderKnown` stays as the drift detector should any
+ * future change fork them again.
  */
 function walkServe(state: NestedState): { turns: Record<Side, number>; opener: Side } {
   // The toss's side (TN-TS-1), else init's convention: home serves first. It must follow the toss, or the walk and the
@@ -679,9 +674,10 @@ function walkServe(state: NestedState): { turns: Record<Side, number>; opener: S
  * over a second, riskier derivation.
  *
  * `serveOrderKnown` is false exactly when the fold's serve tracking and the
- * turn walk have diverged, which today means one thing: a tier-0
- * `*.set_summary` banked a set without advancing `state.serving`, while the
- * walk advanced across it (see `walkServe`). `personId` is `null` whenever
+ * turn walk have diverged. Until T12-F2 a tier-0 `*.set_summary` did that
+ * after every odd-game set (it banked the set without advancing
+ * `state.serving`); `bankSummarySet` now advances it, so no known ledger
+ * diverges and the check stands as a drift detector. `personId` is `null` whenever
  * it is false — an omitted fact over an authoritative-looking wrong one, the
  * same posture as an undeclared pair order. `side` and `serviceTurn` are
  * still returned: `side` is `state.serving`, which is what the rest of the
@@ -711,7 +707,7 @@ export function serveContext(state: NestedState): {
   // flipped by the live games played so far. `tbFirstServer` is what a live
   // breaker's opening server actually was; outside one (`bankSet` nulls it)
   // `serving` is the fold's answer directly. Rally-scored history keeps these
-  // identical by construction; a summary-banked set is what breaks them.
+  // identical by construction, and a summary-banked set hands it on the same way (T12-F2).
   const liveStdGames = state.games.home + state.games.away;
   const expectedFirst: Side = liveStdGames % 2 === 0 ? opener : opponent(opener);
   const serveOrderKnown = (state.tbFirstServer ?? state.serving) === expectedFirst;
@@ -1243,7 +1239,8 @@ export function tossOpen(state: Pick<NestedState, "phase" | "opener">): boolean 
  *
  * RE-SEATING. With no toss held, every serve the fold has tracked so far is the home-first order, and every serve transition
  * is relative to the one before it: a game hands the serve to `opponent(serving)`, a breaker seeds `tbFirstServer` from
- * `serving`, flips after its odd points and opens the next set with `opponent(tbFirstServer)`, a summary freezes it. So a
+ * `serving`, flips after its odd points and opens the next set with `opponent(tbFirstServer)`, a summary set hands it on
+ * by its own parity (`bankSummarySet`). So a
  * toss naming away, at any point, is exactly the home-first state with `serving` and a live `tbFirstServer` flipped, and
  * `walkServe` recomputes every past turn and the doubles pair order from `opener`. `toss.test.ts` holds that against the
  * same ledger with the toss before play, at every prefix of every tennis golden stream.
@@ -1446,6 +1443,24 @@ function setInProgress(state: NestedState): boolean {
   return pts.home > 0 || pts.away > 0;
 }
 
+/**
+ * T12-F2 — bank a summary-entered set with the serve handed on exactly as the same set played point by point would leave
+ * it, so `state.serving` and `walkServe` agree after it and `serveContext` keeps naming the server. The rally path's
+ * transitions, applied in one step (the set opened with `state.serving` due, since a summary is refused mid-set):
+ *  - a set of standard games (`winGame`): the serve turns over after every game, so it has passed iff `home + away` is odd;
+ *  - a set closed by a tie-break (`applyTbPoint`, ITF Rule 5(b)): the tie-break opens at an even games score with the set's
+ *    opener due, and its first server receives the next set, so the serve always passes — which is again `home + away`
+ *    odd, the tie-break banked as the one game it adds (7–6, 5–4, …). The same parity holds for a tie-break score banked
+ *    on its games alone on replay;
+ *  - a match tie-break (`applyTbPoint`'s MTB branch, App VI): no next set, no Rule 5(b) hand-off; the serve turns after
+ *    points 1, 3, 5, …, so it has passed iff `ceil(points / 2)` is odd.
+ * Each is relative to the serve before the set, as every serve transition is, so `applyToss`'s re-seating still holds.
+ */
+function bankSummarySet(state: NestedState, winnerSide: Side, closed: ClosedSet): NestedState {
+  const passes = closed.mtb === true ? Math.ceil((closed.home + closed.away) / 2) % 2 === 1 : (closed.home + closed.away) % 2 === 1;
+  return bankSet(passes ? { ...state, serving: opponent(state.serving) } : state, winnerSide, closed);
+}
+
 // `strict` is the §3.3 seam. EVERY refusal below whose condition reads
 // `rulesFor(state)` or `state.cfg` is gated on it: the set predicate is built
 // from `bestOf`, `set.tiebreakAt`, `set.tiebreakTo`, `set.tiebreakWinBy`,
@@ -1481,7 +1496,7 @@ function applySetSummary(
     }
     const winner: Side = home > away ? "home" : "away";
     const tally = { home: state.pointsWon.home + home, away: state.pointsWon.away + away };
-    return bankSet({ ...state, pointsWon: tally }, winner, { home, away, mtb: true });
+    return bankSummarySet({ ...state, pointsWon: tally }, winner, { home, away, mtb: true });
   }
 
   // Tie-break set score (tiebreakAt+1 : tiebreakAt) — tb block required. (`rules.mtbTo` is null here: the match tie-break
@@ -1499,7 +1514,7 @@ function applySetSummary(
       // under. Nothing was recorded for a tie-break that was never played, so
       // the set banks on its games alone.
       const side: Side = home > away ? "home" : "away";
-      return bankSet(state, side, { home, away });
+      return bankSummarySet(state, side, { home, away });
     }
     const winner: Side = home > away ? "home" : "away";
     const tbh = payload.tb.home;
@@ -1515,7 +1530,7 @@ function applySetSummary(
       invalid("tie-break winner must match the set winner", { home, away, tb: payload.tb });
     }
     const tally = { home: state.pointsWon.home + tbh, away: state.pointsWon.away + tba };
-    return bankSet({ ...state, pointsWon: tally }, winner, {
+    return bankSummarySet({ ...state, pointsWon: tally }, winner, {
       home,
       away,
       tb: { home: tbh, away: tba },
@@ -1545,7 +1560,7 @@ function applySetSummary(
       { home, away, rules },
     );
   }
-  return bankSet(state, winner, { home, away });
+  return bankSummarySet(state, winner, { home, away });
 }
 
 // ---------------------------------------------------------------------------

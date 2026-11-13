@@ -217,15 +217,13 @@ describe("serveContext", () => {
   });
 
   describe("the match-tie-break trap", () => {
-    // 6-4 then 3-6, both banked via a `*.set_summary`. `serving` is never
-    // touched by a summary fold (this struct's own field comment: "rally
-    // fidelity only"), so it stays at `init`'s "home serves first" through
-    // both closures — but the turn walk DOES cross them, and 3-6 is nine
-    // games, so it flips its opener where the fold did not. This fixture is
-    // therefore a desynced one, deliberately: it pins the MTB turn
-    // arithmetic (what these two tests are for) AND the refusal that
-    // desync must produce. The even-game fixture below is the paired case
-    // where the rotation survives a summary backfill intact.
+    // 6-4 then 3-6, both banked via a `*.set_summary`. 6-4 is ten games, so
+    // home opens set 2 as it opened set 1; 3-6 is nine, so the serve passes
+    // to away, who opens the match tie-break (Rule 14; Appendix VI carries
+    // the order in). Until T12-F2 a summary left `serving` where it was, so
+    // this fixture used to pin a desync (home at the MTB, `serveOrderKnown`
+    // false); a summary now hands the serve on like the games it records,
+    // and these two tests pin the MTB turn arithmetic on a known order.
     const oneSetAll = [start, summary(6, 4), summary(3, 6)];
 
     it("adds nothing for an MTB still in progress, same as any other current game", () => {
@@ -239,13 +237,15 @@ describe("serveContext", () => {
       // not yet counted) MTB — unaffected by the 3 MTB points already
       // played, same as any other live breaker (see the live-tie-break
       // test above).
-      // The turn count stands on its own; the person does not, because the
-      // 3-6 summary desynced the rotation (see the fixture comment).
+      // Away opens the MTB (the fixture comment): point 1 is away's, points
+      // 2 and 3 home's, so away is due again after three. Away's pair has
+      // served nine standard games (A-first on 0, 2, 4, 6, 8), so its
+      // tenth turn, index 9, is A-second's.
       expect(serveContext(midMtb)).toEqual({
-        side: "home",
-        serviceTurn: 10,
-        personId: null,
-        serveOrderKnown: false,
+        side: "away",
+        serviceTurn: 9,
+        personId: "A-second",
+        serveOrderKnown: true,
       });
     });
 
@@ -255,24 +255,24 @@ describe("serveContext", () => {
       // is even — not its 10 raw points and not zero. Either wrong count
       // changes `serviceTurn` here (10 raw turns/side inflates it further;
       // 0 turns leaves it at 10/9) — proven by mutation testing on the
-      // production line, not re-derived in this file.
+      // production line, not re-derived in this file. Away opened it and
+      // the serve turned after points 1, 3, 5, 7 and 9 (five times), so
+      // home is due: its turn 10 + 3 = 13, H-second.
       const done = fold(doubles, cfg, [...oneSetAll, ...straight(H, 10)]);
       expect(done.sets[2]).toEqual({ home: 10, away: 0, mtb: true }); // sanity
       expect(serveContext(done)).toEqual({
-        side: "away",
-        serviceTurn: 12,
-        personId: null,
-        serveOrderKnown: false,
+        side: "home",
+        serviceTurn: 13,
+        personId: "H-second",
+        serveOrderKnown: true,
       });
     });
 
     it("still names the partner into an MTB when both summary sets are even", () => {
-      // The paired case: 6-4 (10 games) and 2-6 (8) both leave the opener
-      // where it was, so the walk and the fold never diverge and a scorer
-      // who backfilled two sets still gets a serve pip in the decider.
-      // Guards against the refusal above being a blanket "any summary set
-      // kills the rotation" — that would cost the feature its most common
-      // real use, a late-arriving scorer entering the sets already played.
+      // The even case: 6-4 (10 games) and 2-6 (8) both leave the opener
+      // where it was, so home opens the decider and a scorer who backfilled
+      // two sets gets a serve pip there — the most common real use, a
+      // late-arriving scorer entering the sets already played.
       const cfg = cfgFor("doubles-noad-mtb10");
       const atDecider = fold(doubles, cfg, [start, summary(6, 4), summary(2, 6)]);
       expect(atDecider.points.kind).toBe("matchTiebreak"); // sanity
@@ -335,36 +335,106 @@ describe("serveContext", () => {
     }
   });
 
-  // A tier-0 `*.set_summary` banks a set without advancing `state.serving`
-  // (`bankSet` never touches it) — but the turn walk DOES advance its own
-  // opener across that set's game parity. Where those two disagree the pair
-  // rotation has no honest answer, and `serveContext` must not invent one.
-  describe("a summary-banked set can desync the fold from the walk", () => {
-    it("refuses to name a partner after an ODD-game summary set", () => {
-      const state = fold(doubles, cfgFor(), [start, summary(6, 3), ...game(H)]);
-      // 9 games: the walk flips its opener, `serving` did not. Naming anyone
-      // here picks a partner off a rotation the fold never agreed to.
-      expect(serveContext(state).serveOrderKnown).toBe(false);
-      expect(serveContext(state).personId).toBeNull();
+  // T12-F2 (seen on a phone, Seazn Capture S2-7). A tier-0 `*.set_summary` used to bank a set without advancing
+  // `state.serving` while the turn walk advanced across it, so after any summary set with an ODD number of games
+  // `serveOrderKnown` was false, and `personId` null, for the rest of the match. A summary set now hands the serve on
+  // exactly as the same set played point by point would. Every expected value below is worked from the ITF Rules of
+  // Tennis, never read off the code:
+  //  - Rule 14: the serve alternates every game, whoever wins it; in doubles each pair's partners alternate their
+  //    service games, first-named first.
+  //  - Rule 5(b): the side due serves the tie-break's first point, then each side serves two in turn; the player (side)
+  //    who served first in the tie-break receives in the first game of the next set. In doubles the pair order runs on
+  //    through the tie-break's turns.
+  //  - Appendix VI: the match tie-break carries the order in and rotates by the same 1-then-2 rule; it ends the match.
+  describe("a summary-banked set hands the serve on like the games it records (T12-F2)", () => {
+    const toss = (serving: string): ModuleEvent => ({ type: "tennis.toss", payload: { serving } });
+
+    it("Grand Slam, away tossed to serve, set 1 entered as 7-6 (7-5): home serves set 2 game 1, and the order is known", () => {
+      // Away served set 1's games 1, 3, …, 11 and, as the side due at 6-all, the tie-break's first point (Rule 5(b)).
+      // The tie-break's first server receives first in set 2, so home serves set 2 game 1, then away game 2.
+      const set1 = [start, toss(A), summary(7, 6, { home: 7, away: 5 })];
+      const atSet2 = fold(singles, cfgFor("grand-slam"), set1);
+      expect(atSet2.sets).toEqual([{ home: 7, away: 6, tb: { home: 7, away: 5 } }]); // sanity
+      expect(serveContext(atSet2)).toMatchObject({ side: "home", serveOrderKnown: true });
+      const game2 = fold(singles, cfgFor("grand-slam"), [...set1, ...game(H)]);
+      expect(serveContext(game2)).toMatchObject({ side: "away", serveOrderKnown: true });
     });
 
-    it("still names the partner after an EVEN-game summary set", () => {
-      // 8 games: the walk does not flip either, so the two agree and the
-      // rotation is genuinely derivable — the guard must not over-refuse.
+    it("an ODD-game summary set (6-3, home first): away opens set 2, and the doubles partner is named", () => {
+      // Nine games: home served 1, 3, 5, 7, 9 (H-first, H-second, H-first, H-second, H-first), away 2, 4, 6, 8
+      // (A-first, A-second, A-first, A-second). Set 2 game 1 goes to the receiver of game 9, away, on its fifth turn:
+      // A-first. Game 2 is home's sixth turn: H-second.
+      const atSet2 = fold(doubles, cfgFor(), [start, summary(6, 3)]);
+      expect(serveContext(atSet2)).toEqual({ side: "away", serviceTurn: 4, personId: "A-first", serveOrderKnown: true });
+      const game2 = fold(doubles, cfgFor(), [start, summary(6, 3), ...game(H)]);
+      expect(serveContext(game2)).toEqual({ side: "home", serviceTurn: 5, personId: "H-second", serveOrderKnown: true });
+    });
+
+    it("an ODD-game summary after an away toss (6-1): home opens set 2 with its fourth turn, H-second", () => {
+      // Seven games from away: away served 1, 3, 5, 7 (four turns), home 2, 4, 6 (H-first, H-second, H-first).
+      // Set 2 game 1 is home's fourth turn (index 3): H-second.
+      const state = fold(doubles, cfgFor(), [start, toss(A), summary(6, 1)]);
+      expect(serveContext(state)).toEqual({ side: "home", serviceTurn: 3, personId: "H-second", serveOrderKnown: true });
+    });
+
+    it("still names the partner after an EVEN-game summary set, unchanged", () => {
+      // 6-2 is eight games, four turns each, so home opens set 2 as it opened set 1, on its fifth turn: H-first.
       const state = fold(doubles, cfgFor(), [start, summary(6, 2)]);
-      expect(serveContext(state)).toMatchObject({
-        side: "home",
-        serviceTurn: 4,
-        serveOrderKnown: true,
-        personId: "H-first",
-      });
+      expect(serveContext(state)).toEqual({ side: "home", serviceTurn: 4, personId: "H-first", serveOrderKnown: true });
     });
 
-    it("refuses after a tie-break summary set (ITF 5b flips, the fold did not)", () => {
+    it("a tie-break summary set (7-6, 7-5, home first): the tie-break's first server, home, receives set 2", () => {
+      // Twelve games: six turns each (indices 0-5). Home, due at 6-all, serves the tie-break's first point; its twelve
+      // points are seven turns, H A A H H A A H H A A H by point, so home 6, 7, 8, 9 (H-first, H-second, H-first,
+      // H-second) and away 6, 7, 8 (A-first, A-second, A-first). Rule 5(b): away serves set 2 game 1, its turn 9:
+      // A-second.
       const state = fold(doubles, cfgFor(), [start, summary(7, 6, { home: 7, away: 5 })]);
-      expect(serveContext(state).serveOrderKnown).toBe(false);
-      expect(serveContext(state).personId).toBeNull();
+      expect(serveContext(state)).toEqual({ side: "away", serviceTurn: 9, personId: "A-second", serveOrderKnown: true });
     });
+
+    it("a tie-break summary set agrees with the same set played point by point", () => {
+      // The same 7-6 (7-5) set, rallied: home serves first, the sides trade games to 6-all, then the tie-break goes
+      // 5-5 alternately and home takes the last two. Both ledgers must leave the serve in the same place.
+      const sixAll = Array.from({ length: 12 }, (_, i) => game(i % 2 === 0 ? H : A)).flat();
+      const tb = [...Array.from({ length: 10 }, (_, i) => point(i % 2 === 0 ? H : A)), point(H), point(H)];
+      const rallied = fold(doubles, cfgFor(), [start, ...sixAll, ...tb]);
+      expect(rallied.sets).toEqual([{ home: 7, away: 6, tb: { home: 7, away: 5 } }]); // sanity
+      const summarised = fold(doubles, cfgFor(), [start, summary(7, 6, { home: 7, away: 5 })]);
+      expect(summarised.serving).toBe(rallied.serving);
+      expect(serveContext(summarised)).toEqual(serveContext(rallied));
+    });
+
+    it("the deciding match tie-break opens with the side the summary sets leave due", () => {
+      // 6-4 (ten games) keeps home as opener; 3-6 (nine games) hands set 3 to away, so away serves the match
+      // tie-break's first point (Appendix VI: the order carries in).
+      const atMtb = fold(doubles, cfgFor("doubles-noad-mtb10"), [start, summary(6, 4), summary(3, 6)]);
+      expect(atMtb.points.kind).toBe("matchTiebreak"); // sanity
+      expect(atMtb.tbFirstServer).toBe("away");
+      expect(serveContext(atMtb)).toMatchObject({ side: "away", serveOrderKnown: true });
+    });
+
+    // A match tie-break entered as its summary ends the match where the same breaker rallied would: home opens it
+    // (both sets even) and the server turns after points 1, 3, 5, …, so the serve has passed iff the turns of serve,
+    // ceil(points / 2), are odd: 10-0 (five turns) and 10-7 (nine) leave away due, 10-1 (six) and 10-6 (eight) home.
+    // 10-0 and 10-1 are where that differs from the parity of the points themselves. The rows are MTB_ROTATION's.
+    const MTB_SUMMARY: Array<{ lost: number; side: "home" | "away"; serviceTurn: number; personId: string }> = [
+      { lost: 0, side: "away", serviceTurn: 12, personId: "A-first" },
+      { lost: 1, side: "home", serviceTurn: 12, personId: "H-first" },
+      { lost: 6, side: "home", serviceTurn: 14, personId: "H-first" },
+      { lost: 7, side: "away", serviceTurn: 13, personId: "A-second" },
+    ];
+    for (const row of MTB_SUMMARY) {
+      it(`a match tie-break summary 10-${row.lost} leaves the serve where the rallied breaker does`, () => {
+        const done = fold(doubles, cfgFor("doubles-noad-mtb10"), [start, summary(6, 4), summary(2, 6), summary(10, row.lost)]);
+        expect(done.phase).toBe("done"); // sanity
+        expect(serveContext(done)).toEqual({
+          side: row.side,
+          serviceTurn: row.serviceTurn,
+          personId: row.personId,
+          serveOrderKnown: true,
+        });
+      });
+    }
 
     it("reports a rally-scored match as known throughout, live tie-break included", () => {
       const state = fold(doubles, cfgFor(), [start, ...gamesFor(H, 6), ...gamesFor(A, 6)]);
