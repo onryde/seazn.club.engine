@@ -1,5 +1,15 @@
 # @onryde/seazn-engine
 
+## 9.0.0
+
+### Major Changes
+
+- f0c63c4: Tennis: a set entered as its summary hands the serve on exactly as the same set played point by point would (T12-F2, seen on a phone in Seazn Capture S2-7). Tennis's fold epoch rises to 4 (FOLD_MINOR stays 0), so the server's 426 gate refuses tennis scoring writes from an epoch-3 client (the capture app on engine 8.x included) until it updates.
+  
+  - **The bug.** A tier-0 `tennis.set_summary` banked its set without advancing `state.serving`, while `serveContext`'s turn walk advanced across it. After any summary set with an odd number of games (6-3, 6-1, 7-6 …) `serveContext().serveOrderKnown` was false and `personId` null for the rest of the match, so apps hid the server for every later set. Example: a Grand Slam best of five, away tossed to serve, set 1 entered as 7-6 (7-5): home serves set 2's first game (Rule 5(b)), and the fold still said away.
+  - **The rule (`bankSummarySet`, nested kernel).** Relative to the side due when the set opened, the same transitions the rally path applies: a set of standard games passes the serve when its games are odd (Rule 14); a tie-break set always passes it, since the tie-break's first server receives the next set (Rule 5(b)) — which is its games (7-6, 5-4) being odd, the tie-break banked as the one game it adds, the same parity on replay where a tie-break score was banked on its games alone; a match tie-break passes it when its turns of serve, `ceil(points / 2)`, are odd (App VI: no next set, no hand-off), and it opens with the side the summary sets leave due. The doubles pair order follows `expectedDoublesServer` as before; `personId` is now named after a summary set.
+  - **What moves.** `state.serving`, a match tie-break's `tbFirstServer` and `summary.detail.serving`. 17 of tennis's 39 recorded golden streams were re-baselined (events, configs, outcomes and standings deltas byte for byte). No other sport uses the nested kernel.
+
 ## 8.0.0
 
 ### Major Changes
