@@ -5,6 +5,7 @@
 // bye award, or a feed from another fixture's winner/loser.
 import type { EntrantId } from "../core/types.ts";
 import { EngineError } from "../core/errors.ts";
+import { shuffle } from "../core/rng.ts";
 import { seedOrder } from "./roundrobin.ts";
 
 // A slot filled by the winner or loser of an earlier fixture (spec 05 §2.3
@@ -264,6 +265,147 @@ export function crossPoolSeedOrder(pools: readonly (readonly EntrantId[])[]): En
     }
   }
   return order;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-pool draw (W5) — rulebook RB5-D1..D8, RB5-D10; rows X-PD-1..7
+// ---------------------------------------------------------------------------
+
+/** One qualifier into a knockout fed from groups, in seed order. */
+export interface PooledSeed {
+  entrantId: EntrantId;
+  /** The source pool (ResolvedProgressionEntry.pool). */
+  pool: string;
+  /** group_rank → descriptor.rank; best_nth → descriptor.nth. Non-decreasing along the input; tier 1 = pool winners. */
+  tier: number;
+  /** true: this seed and the PREVIOUS seed (same tier) are level on the cross-pool comparison (ruling 281, G3). */
+  tied?: boolean;
+}
+
+export type FirstRoundShape = "single_elim" | "stepladder" | "page_playoff";
+
+export interface CrossPoolDraw {
+  order: EntrantId[];
+  /** single_elim only: seedPositions(nextPowerOfTwo(n)) with the seeds beyond n as null (bye lines). */
+  slotOrder: (number | null)[] | null;
+}
+
+// The round-one pairs the shape declares, as 0-based seed indices, both real: single_elim from the fold (a pair holding a
+// seed beyond n is a bye line and never constrains, RB5-D6), stepladder its first rung (the two lowest seeds, as
+// generateStepladder's game 0), page_playoff 1v2 and 3v4.
+function firstRoundPairs(shape: FirstRoundShape, n: number): [number, number][] {
+  if (shape === "stepladder") return n >= 2 ? [[n - 2, n - 1]] : [];
+  if (shape === "page_playoff") return [[0, 1], [2, 3]];
+  const pos = seedPositions(nextPowerOfTwo(n));
+  const pairs: [number, number][] = [];
+  for (let i = 0; i < pos.length; i += 2) {
+    const a = pos[i] as number;
+    const b = pos[i + 1] as number;
+    // A bye seed is always its pair's later seed (beyond n), so the search never reaches it; this filter states RB5-D6
+    // rather than enforcing it (removing it is an equivalent mutant).
+    if (a <= n && b <= n) pairs.push([a - 1, b - 1]);
+  }
+  return pairs;
+}
+
+/** The cross-pool draw for a knockout fed from groups (ruling 281): entrants from one pool never meet in round one.
+ *  Step 1 (RB5-D3): each run of seeds linked by `tied` is reordered by shuffle(drawSeed, run). Step 2 (RB5-D10): tier 1
+ *  keeps its step-1 positions; each later tier is permuted within itself, depth-first in lexicographic order of step-1
+ *  positions, and the first ordering with no same-pool real-vs-real round-one pair wins. None → refused by name (RB5-D4).
+ *  Deterministic in (seeded, shape, drawSeed) (RB5-D7). */
+export function crossPoolDraw(
+  seeded: readonly PooledSeed[],
+  shape: FirstRoundShape,
+  drawSeed: number,
+): CrossPoolDraw {
+  const n = seeded.length;
+  if (n === 0) throw new EngineError("CONFIG_INVALID", "a cross-pool draw needs qualifiers", { reason: "no_qualifiers" });
+  for (let i = 1; i < n; i++) {
+    if ((seeded[i] as PooledSeed).tier < (seeded[i - 1] as PooledSeed).tier) {
+      throw new EngineError("CONFIG_INVALID", "seed tiers must not go down along the draw", {
+        reason: "tiers_out_of_order",
+        entrantId: (seeded[i] as PooledSeed).entrantId,
+      });
+    }
+  }
+  for (let i = 0; i < n; i++) {
+    const s = seeded[i] as PooledSeed;
+    const prev = seeded[i - 1];
+    if (s.tied === true && (prev === undefined || prev.tier !== s.tier)) {
+      throw new EngineError("CONFIG_INVALID", "a tie links a seed to the previous seed of its own tier", {
+        reason: "tie_link_invalid",
+        entrantId: s.entrantId,
+      });
+    }
+  }
+  if (!Number.isInteger(drawSeed)) {
+    throw new EngineError("CONFIG_INVALID", "the draw seed must be a finite integer", { reason: "draw_seed_invalid" });
+  }
+  if (shape === "page_playoff" && n !== 4) {
+    throw new EngineError("CONFIG_INVALID", `page playoffs need exactly 4 entrants, got ${n}`, {
+      reason: "page_playoff_needs_four",
+      entrants: n,
+    });
+  }
+
+  // Step 1: shuffle each maximal tied run with the stored draw seed; no `tied` anywhere → identity.
+  const step1: PooledSeed[] = [];
+  for (let i = 0; i < n; ) {
+    let j = i + 1;
+    while (j < n && (seeded[j] as PooledSeed).tied === true) j++;
+    const run = seeded.slice(i, j);
+    step1.push(...(run.length > 1 ? shuffle(drawSeed, run) : run));
+    i = j;
+  }
+
+  // Step 2: depth-first over the positions in seed order. A position's candidates are its own step-1 seed (tier 1) or
+  // the unused members of its tier block, lowest step-1 index first; a branch is pruned at the first same-pool pair it
+  // completes (the pair's later seed is the one being placed).
+  const earlierMate = new Map<number, number>();
+  for (const [a, b] of firstRoundPairs(shape, n)) earlierMate.set(Math.max(a, b), Math.min(a, b));
+  const blockStart: number[] = [];
+  const blockEnd: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = (step1[i] as PooledSeed).tier;
+    blockStart[i] = i > 0 && (step1[i - 1] as PooledSeed).tier === t ? (blockStart[i - 1] as number) : i;
+  }
+  for (let i = n - 1; i >= 0; i--) {
+    const t = (step1[i] as PooledSeed).tier;
+    blockEnd[i] = i < n - 1 && (step1[i + 1] as PooledSeed).tier === t ? (blockEnd[i + 1] as number) : i;
+  }
+  const placed: PooledSeed[] = [];
+  const used = new Array<boolean>(n).fill(false);
+  const place = (p: number): boolean => {
+    if (p === n) return true;
+    const own = step1[p] as PooledSeed;
+    const lo = own.tier === 1 ? p : (blockStart[p] as number);
+    const hi = own.tier === 1 ? p : (blockEnd[p] as number);
+    const mate = earlierMate.get(p);
+    for (let c = lo; c <= hi; c++) {
+      if (used[c] === true) continue;
+      const cand = step1[c] as PooledSeed;
+      if (mate !== undefined && (placed[mate] as PooledSeed).pool === cand.pool) continue;
+      used[c] = true;
+      placed[p] = cand;
+      if (place(p + 1)) return true;
+      used[c] = false;
+    }
+    return false;
+  };
+  if (!place(0)) {
+    const supplies: Record<string, number> = {};
+    for (const s of seeded) supplies[s.pool] = (supplies[s.pool] ?? 0) + 1;
+    throw new EngineError("CONFIG_INVALID", "no ordering of the rank tiers keeps pool-mates apart in round one", {
+      reason: "pool_separation_impossible",
+      shape,
+      entrants: n,
+      supplies,
+    });
+  }
+
+  const order = placed.map((s) => s.entrantId);
+  const slotOrder = shape === "single_elim" ? seedPositions(nextPowerOfTwo(n)).map((s) => (s > n ? null : s)) : null;
+  return { order, slotOrder };
 }
 
 // ---------------------------------------------------------------------------
