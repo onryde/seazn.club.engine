@@ -126,6 +126,21 @@ describe("W5 withdrawal decision (RB5-W2..W4, RB5-W7, RB5-W8)", () => {
       expect(out.updates).toEqual(voids("p-A", "p-B", "u-C", "u-D", "u-E"));
     });
 
+    it("X-WDT-3 a voided fixture never counts, even handed in `played` with the entrant's result", () => {
+      // RB5-W4 "voided does not" count. 3 played of 6, one of the 3 already void (its result kept on the row): 2 of 5 →
+      // under half → expunge (RB5-W2). The void fixture is not re-voided: it is already void.
+      // differential: before this guard the void counted → 3 of 6 → award.
+      const base = scene(3, 6);
+      const input: Input = {
+        played: base.played.map((f) => (f.id === "p-C" ? { ...f, status: "void" as const } : f)),
+        pending: base.pending,
+      };
+      expect(input.played.find((f) => f.id === "p-C")?.result?.[0].entrantId).toBe(W);
+      const out = withdrawTableEntrant(league, W, input);
+      expect(out.events[0]).toMatchObject({ mode: "expunge", played: 2, scheduled: 5 });
+      expect(out.updates).toEqual(voids("p-A", "p-B", "u-D", "u-E", "u-F"));
+    });
+
     it("X-WDT-3 every leg and catch-up fixture counts: the decision reads no round, leg or pool", () => {
       // RB5-W4 "across every leg ..., catch-up fixtures included": 3 played (leg 1 round 1, leg 2 round 9, a catch-up in
       // round 4) + 3 pending (leg 2) = 3 of 6 = half → award. Dropping any one played fixture would read 2 of 5 → expunge.
@@ -257,10 +272,23 @@ describe("W5 withdrawal decision (RB5-W2..W4, RB5-W7, RB5-W8)", () => {
     });
 
     it("after the expunge is applied, a repeat withdrawal finds nothing: 0 of 0, no updates", () => {
-      // Every fixture the first call voided is in neither list on the next (RB5-W4), so the second decision is the empty case.
-      const first = withdrawTableEntrant(league, W, scene(2, 5));
-      expect(first.updates.every((u) => u.status === "void")).toBe(true);
-      const again = withdrawTableEntrant(league, W, { played: [], pending: [] });
+      // The second call's input is the first call's updates APPLIED: each voided played fixture stays in `played` with its
+      // result and status "void"; each voided pending fixture is no longer pending. RB5-W4: a void counts as neither, so
+      // the repeat decision is the empty case and re-voids nothing.
+      const input = scene(2, 5);
+      const first = withdrawTableEntrant(league, W, input);
+      expect(first.updates).toEqual(voids("p-A", "p-B", "u-C", "u-D", "u-E"));
+      const byId = new Map(first.updates.map((u) => [u.fixtureId, u]));
+      const applied: Input = {
+        played: input.played.map((f) => {
+          const u = byId.get(f.id);
+          return u === undefined ? f : { ...f, status: u.status };
+        }),
+        pending: input.pending.filter((p) => !byId.has(p.id)),
+      };
+      expect(applied.played.map((f) => f.status)).toEqual(["void", "void"]);
+      expect(applied.pending).toEqual([]);
+      const again = withdrawTableEntrant(league, W, applied);
       expect(again.events[0]).toMatchObject({ mode: "expunge", played: 0, scheduled: 0 });
       expect(again.updates).toEqual([]);
     });

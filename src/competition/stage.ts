@@ -1043,7 +1043,10 @@ export interface WithdrawalResult {
   updates: FixtureUpdate[];
 }
 
+// RB5-W4 (X-WDT-3): a voided fixture counts as neither played nor scheduled, even when the caller hands it in `played`
+// with its result still on the row — and it is never re-voided. A walkover is not excluded: it counts as played.
 function involvesEntrant(fixture: TableFixture, entrantId: EntrantId): boolean {
+  if (fixture.status === "void") return false;
   return (
     fixture.result?.[0].entrantId === entrantId || fixture.result?.[1].entrantId === entrantId
   );
