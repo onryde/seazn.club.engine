@@ -141,6 +141,21 @@ describe("W5 withdrawal decision (RB5-W2..W4, RB5-W7, RB5-W8)", () => {
       expect(out.updates).toEqual(voids("p-A", "p-B", "u-D", "u-E", "u-F"));
     });
 
+    it("X-WDT-3 a walkover counts as played: handed in `played` with its result, it reaches the half", () => {
+      // The positive pair of the voided case above (RB5-W4: a walkover is a result, "voided does not" count). 3 played of
+      // 6, one of the 3 a walkover (its result on the row): 3 of 6 = half → award (RB5-W3); the 3 pending walk over.
+      // Excluding the walkover would read 2 of 5 → expunge — the differential.
+      const base = scene(3, 6);
+      const input: Input = {
+        played: base.played.map((f) => (f.id === "p-C" ? { ...f, status: "walkover" as const } : f)),
+        pending: base.pending,
+      };
+      expect(input.played.find((f) => f.id === "p-C")?.result?.[0].entrantId).toBe(W);
+      const out = withdrawTableEntrant(league, W, input);
+      expect(out.events[0]).toMatchObject({ mode: "award", played: 3, scheduled: 6 });
+      expect(out.updates).toEqual(walkovers("D", "E", "F"));
+    });
+
     it("X-WDT-3 every leg and catch-up fixture counts: the decision reads no round, leg or pool", () => {
       // RB5-W4 "across every leg ..., catch-up fixtures included": 3 played (leg 1 round 1, leg 2 round 9, a catch-up in
       // round 4) + 3 pending (leg 2) = 3 of 6 = half → award. Dropping any one played fixture would read 2 of 5 → expunge.

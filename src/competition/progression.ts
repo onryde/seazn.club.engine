@@ -12,7 +12,7 @@ import type { TiebreakerKey } from "../sport/module.ts";
 import { isHeadToHeadKey } from "./cascade-rules.ts";
 import { firstLossField, type FirstLossField } from "./first-loss.ts";
 import type { FinalPlace, FixtureStatus } from "./stage.ts";
-import type { FixtureResult, StandingsRow } from "./standings.ts";
+import { foldResults, resultsAmong, type FixtureResult, type StandingsRow } from "./standings.ts";
 import {
   rankStandings,
   type MembersKey,
@@ -563,10 +563,12 @@ export interface ResolvedProgressionEntry {
 }
 
 /** W5 (RB5-U1, RB5-U3, RB5-U7): the basis a best-Nth comparison ran on, the same for every candidate of one source and
- *  nth except `levelWith`. k(pool) = the pool's effective size (rows − expunged) − the smallest effective size among the
- *  source's pools; each pool with k > 0 has its bottom k non-expunged rows by rank (lots included, RB5-U4) left out of
- *  its candidate's results — `dropped`, in pools order, each `against` in rank order. `matchesCounted` = the largest
- *  `played` among the compared rows. `levelWith` (G3): the OTHER candidates this candidate's cross-pool comparison left
+ *  nth except `levelWith`. A pool supplies a candidate when its effective size (rows − expunged) is at least nth — the nth
+ *  of its non-expunged rows by rank; an expunged entrant is never one. k(pool) = the pool's effective size − the smallest
+ *  effective size among the SUPPLYING pools; each pool with k > 0 has its bottom k non-expunged rows by rank (lots
+ *  included, RB5-U4) left out of its candidate's results — `dropped`, in pools order, each `against` in rank order.
+ *  `matchesCounted` = the largest `played` among the compared rows — `played` as the row carries it, so a carried
+ *  opening's or a sit-out award's `played` counts too (B2–B4 m3). `levelWith` (G3): the OTHER candidates this candidate's cross-pool comparison left
  *  level on every key of the source's cross-group order — its residual class, from ranking the compared rows with their
  *  pool trace stripped; [] when a key decided it. Independent of `tieUnbroken`. */
 export interface ComparisonBasis {
@@ -680,19 +682,34 @@ function rowAtPosition(table: PoolTable, rank: number): StandingsRow {
 
 /** One pool's candidate compared without the results against its bottom k (ruling 280): the candidate's FULL row as
  *  ranked minus the dropped results' deltas — every counted field (played, won, drawn, lost, points, every metric) — so a
- *  carried opening, a sit-out award or a points adjustment stays in, exactly as in a k = 0 pool's row. The pool's trace
- *  (rank, lots, shared place) is left behind: the row is compared afresh. k = 0 (`bottom` empty) is the row as ranked —
- *  its pool's results already exclude any expunged entrant's (`checkExpunged`). */
-function normalisedRow(table: PoolTable, candidateId: EntrantId, bottom: readonly EntrantId[]): StandingsRow {
-  const full = table.rows.find((row) => row.entrantId === candidateId)!; // rowAtRank found it there
+ *  carried opening, a sit-out award or a points adjustment stays in, exactly as in a k = 0 pool's row. The row keeps its
+ *  pool's tie trace (`tieUnbroken`, `tieBreak`: a within-pool lots tie is still one, B2–B4 I2) and leaves its place
+ *  behind (`rank`, `rankLocked`, `level`). A metric the pool's table materialised at rank time rather than summed from
+ *  results — `sberger` — is recomputed over the remaining results (`survivors`: the pool minus its expunged and its bottom
+ *  k), by `rankStandings` itself, in the results' table points (a PoolTable carries no game-points rule). k = 0 (`bottom`
+ *  empty) is the row as ranked — its pool's results already exclude any expunged entrant's (`checkExpunged`). */
+function normalisedRow(
+  table: PoolTable,
+  full: StandingsRow,
+  bottom: readonly EntrantId[],
+  survivors: readonly EntrantId[],
+): StandingsRow {
   if (bottom.length === 0) return full;
+  const candidateId = full.entrantId;
+  // Assertion: the minimum is taken over the pools that supply a candidate, so every candidate ranks at most nth ≤ min
+  // among its pool's non-expunged rows and its bottom k sit below min. Only a broken caller reaches this.
   if (bottom.includes(candidateId)) {
-    throw new EngineError("STAGE_NOT_READY", `candidate "${candidateId}" is among its pool's bottom ${bottom.length}`, { candidateId });
+    throw new EngineError("CONFIG_INVALID", `candidate "${candidateId}" is among pool "${table.pool}"'s bottom ${bottom.length}`, {
+      reason: "candidate_in_bottom",
+      pool: table.pool,
+      entrantId: candidateId,
+    });
   }
   const dropped = new Set(bottom);
-  const { rank: _r, rankLocked: _l, tieUnbroken: _t, tieBreak: _b, level: _v, ...kept } = full;
+  const { rank: _r, rankLocked: _l, level: _v, ...kept } = full;
   const row: StandingsRow = { ...kept, metrics: { ...full.metrics } };
-  for (const [home, away] of table.results ?? []) {
+  const results = table.results ?? [];
+  for (const [home, away] of results) {
     const mine = home.entrantId === candidateId && dropped.has(away.entrantId) ? home : away.entrantId === candidateId && dropped.has(home.entrantId) ? away : undefined;
     if (mine === undefined) continue;
     row.played -= mine.played;
@@ -701,6 +718,11 @@ function normalisedRow(table: PoolTable, candidateId: EntrantId, bottom: readonl
     row.lost -= mine.lost;
     row.points -= mine.points;
     for (const [key, value] of Object.entries(mine.metrics)) row.metrics[key] = (row.metrics[key] ?? 0) - value;
+  }
+  if (full.metrics["sberger"] !== undefined) {
+    const remaining = resultsAmong(new Set(survivors), results);
+    const reduced = rankStandings(foldResults(survivors, remaining), { cascade: ["sberger"], results: remaining }).rows;
+    row.metrics["sberger"] = reduced.find((r) => r.entrantId === candidateId)!.metrics["sberger"]!; // candidate ∈ survivors
   }
   return row;
 }
@@ -731,8 +753,8 @@ function checkExpunged(table: PoolTable): void {
 /** A best-Nth comparison: every pool's rank-`nth` row, compared on the smallest pool's matches (W5 RB5-U1, U7; always on,
  *  ruling 286), then ordered by the source's cross-group order (RB5-U2: the sport's own cascade, its seed or stored lots
  *  at the end — ruling 291). Checks, in order: rowAtRank on every pool (a pool short of `nth` rows refuses as before);
- *  each pool's expunged list; the first pool in `pools` order with k > 0 and no results → STAGE_NOT_READY
- *  `pool_results_missing`. */
+ *  each pool's expunged list; then, over the pools that supply a candidate (effective size ≥ nth), the first in `pools`
+ *  order with k > 0 and no results → STAGE_NOT_READY `pool_results_missing`. */
 interface BestNthComparison {
   /** The compared rows in cross-group order — the qualifier order (the ranking that also makes `newLotsDraws`). */
   ordered: StandingsRow[];
@@ -743,12 +765,20 @@ interface BestNthComparison {
   newLotsDraws: readonly NewLotsDraw[];
 }
 function compareBestNth(src: SourceTables, nth: number): BestNthComparison {
-  const picked = src.pools.map((table) => ({ table, row: rowAtRank(table, nth) }));
-  for (const { table } of picked) checkExpunged(table);
-  const effective = picked.map(({ table }) => table.rows.length - new Set(table.expunged ?? []).size);
-  const min = Math.min(...effective);
-  const ks = effective.map((size) => size - min);
-  const missing = picked.find(({ table }, i) => ks[i]! > 0 && (table.results ?? []).length === 0);
+  for (const table of src.pools) rowAtRank(table, nth); // a pool short of `nth` rows refuses, as before
+  for (const table of src.pools) checkExpunged(table);
+  // RB5-U5/U7 (B2–B4 I1, m4): an expunged entrant is out of the table — never a candidate, never in a size. A pool supplies
+  // the nth of its NON-expunged rows by rank, and only a pool that has one (effective size ≥ nth) supplies a candidate
+  // and enters the minimum.
+  const supplying = src.pools.flatMap((table) => {
+    const expunged = new Set(table.expunged ?? []);
+    const byRank = [...table.rows].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)).filter((r) => !expunged.has(r.entrantId));
+    const row = byRank[nth - 1];
+    return row === undefined ? [] : [{ table, byRank, row }];
+  });
+  const min = Math.min(...supplying.map(({ byRank }) => byRank.length));
+  const ks = supplying.map(({ byRank }) => byRank.length - min);
+  const missing = supplying.find(({ table }, i) => ks[i]! > 0 && (table.results ?? []).length === 0);
   if (missing !== undefined) {
     throw new EngineError(
       "STAGE_NOT_READY",
@@ -758,13 +788,12 @@ function compareBestNth(src: SourceTables, nth: number): BestNthComparison {
   }
   const dropped: { pool: string; against: EntrantId[] }[] = [];
   const poolOf = new Map<EntrantId, string>();
-  const candidates = picked.map(({ table, row }, i) => {
-    const expunged = new Set(table.expunged ?? []);
-    const byRank = [...table.rows].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)).filter((r) => !expunged.has(r.entrantId));
-    const bottom = byRank.slice(byRank.length - ks[i]!).map((r) => r.entrantId);
+  const candidates = supplying.map(({ table, byRank, row }, i) => {
+    const cut = byRank.length - ks[i]!;
+    const bottom = byRank.slice(cut).map((r) => r.entrantId);
     if (bottom.length > 0) dropped.push({ pool: table.pool, against: bottom });
     poolOf.set(row.entrantId, table.pool);
-    return normalisedRow(table, row.entrantId, bottom);
+    return normalisedRow(table, row, bottom, byRank.slice(0, cut).map((r) => r.entrantId));
   });
   const rules = src.crossGroup;
   const order = rules?.order ?? PRE_W2D_CROSS_GROUP;

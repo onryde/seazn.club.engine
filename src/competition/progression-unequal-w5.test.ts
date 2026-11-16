@@ -42,6 +42,8 @@ const moduleOf = (key: string): AnySportModule => {
 const football = moduleOf("football");
 // single-sport: icehockey's cross-group order holds seed before lots — a basis tie goes to the SEED (ruling 291).
 const icehockey = moduleOf("icehockey");
+// single-sport: boardgame's cross-group order reaches sberger, a metric the pool's table materialises (m1).
+const boardgame = moduleOf("boardgame");
 const cfgOf = (m: AnySportModule): unknown => declaredCfgs(m)[0]!.cfg;
 
 interface Match {
@@ -401,26 +403,94 @@ describe("W5 T5 fix round 1 — the reduced row is the full row minus the droppe
   });
 });
 
-describe("W5 T5 fix round 1 — a candidate inside its own pool's bottom k is refused", () => {
-  it("expunges that leave the minimum below nth put B's rank-3 finisher among B's bottom 1: refused, never compared", () => {
-    // A: a1 beat a2; a3 expunged (no results, row kept) → effective 2. B: b1 > b2 > b3, strict → effective 3. nth 3:
-    // k(B) = 3 − 2 = 1, B's bottom 1 is b3 — the candidate itself.
-    const win = (h: EntrantId, a: EntrantId): FixtureResult => [
-      { entrantId: h, played: 1, won: 1, drawn: 0, lost: 0, points: 3, metrics: {} },
-      { entrantId: a, played: 1, won: 0, drawn: 0, lost: 1, points: 0, metrics: {} },
-    ];
-    const ranked = (pool: string, members: EntrantId[], results: FixtureResult[]) => ({
-      pool, results, rows: rankStandings(foldResults(members, results), { cascade: ["points"], results }).rows,
-    });
-    const tables: SourceTables = {
-      pools: [
-        { ...ranked("A", ["a1", "a2", "a3"], [win("a1", "a2")]), expunged: ["a3"] },
-        ranked("B", ["b1", "b2", "b3"], [win("b1", "b2"), win("b1", "b3"), win("b2", "b3")]),
-      ],
+describe("W5 T5 fix round 2 — k is taken over the pools that supply a candidate (RB5-U7; B2–B4 review I1, m4)", () => {
+  it("X-UP-1 a pool whose effective size is below nth supplies no candidate and sets no minimum", () => {
+    // A (4), strict: a1 > a2 > a3 > a4 (1-0 each). B (3): b1 beat b2 1-0; b3 expunged (her fixtures voided, row kept)
+    // → effective B = 2 < 3: no rank-3 candidate in B. Supplying pools = {A}: min = 4, k(A) = 0. a3 is compared on her
+    // full row: L a1, L a2, W a4 = 3 points from 3.
+    // differential: before this ruling min = 2 over every pool → k(A) = 2, a3 inside A's bottom 2 → refused.
+    const A4: Pool = {
+      pool: "A",
+      members: ["a1", "a2", "a3", "a4"],
+      matches: [g("a1", "a2", 1, 0), g("a1", "a3", 1, 0), g("a1", "a4", 1, 0), g("a2", "a3", 1, 0), g("a2", "a4", 1, 0), g("a3", "a4", 1, 0)],
     };
-    const err = caught(() => resolve(tables, { kind: "bestNth", nth: 3, count: 1 }));
-    expect(err.code).toBe("STAGE_NOT_READY");
-    expect(err.data).toEqual({ candidateId: "b3" });
+    const B3x: Pool = { pool: "B", members: ["b1", "b2", "b3"], matches: [g("b1", "b2", 1, 0), voided(g("b1", "b3", 1, 0)), voided(g("b2", "b3", 1, 0))], expunged: ["b3"] };
+    const { qualifiers } = resolve(groupStage(football, [A4, B3x]), { kind: "bestNth", nth: 3, count: 1 });
+    expect(ids(qualifiers)).toEqual(["a3"]);
+    expect(qualifiers[0]!.pool).toBe("A");
+    expect(qualifiers[0]!.basis).toEqual({ nth: 3, matchesCounted: 3, dropped: [], levelWith: [] });
+  });
+
+  it("X-UP-5 an expunged entrant is never a candidate, even where her empty row ranks nth", () => {
+    // P (3): p1 beat p2 1-0; p3 expunged (voided v p1, v p2) but carrying 1 opening point from an earlier stage — above
+    // p2's 0, so the pool's own table ranks her 2nd. Q (3) the same with q1 beating q2 2-0. Effective 2 / 2, k = 0. The
+    // rank-2 candidates are the 2nd NON-expunged rows: p2 (0 points, −1) and q2 (0, −2) → p2, q2, each on 1 match.
+    const pool = (x: string, goals: number): Pool => ({
+      pool: x.toUpperCase(),
+      members: [`${x}1`, `${x}2`, `${x}3`],
+      matches: [g(`${x}1`, `${x}2`, goals, 0), voided(g(`${x}1`, `${x}3`, 1, 0)), voided(g(`${x}2`, `${x}3`, 1, 0))],
+      expunged: [`${x}3`],
+    });
+    const tables = groupStage(football, [pool("p", 1), pool("q", 2)], { openings: { p3: 1, q3: 1 } });
+    expect(tables.pools.map((t) => t.rows.find((r) => r.rank === 2)!.entrantId)).toEqual(["p3", "q3"]); // premise
+    const { qualifiers } = resolve(tables, { kind: "bestNth", nth: 2, count: 2 });
+    // differential: before this ruling the rank-2 rows p3 and q3 (expunged, 0 played) were the candidates.
+    expect(ids(qualifiers)).toEqual(["p2", "q2"]);
+    for (const q of qualifiers) expect(q.basis).toEqual({ nth: 2, matchesCounted: 1, dropped: [], levelWith: [] });
+  });
+});
+
+describe("W5 T5 fix round 2 — a reduced row keeps its pool's tie flag (B2–B4 review I2)", () => {
+  it("X-UP-3 a larger pool's candidate on a within-pool lots tie keeps tieUnbroken and its tie group", () => {
+    // A (4): a1 beats all 1-0; a2 drew a3 0-0; a2 and a3 each beat a4 1-0 → a2, a3 level on everything (4 points, 1-1),
+    // A's stored draw [a2, a3] → a2 second, tieUnbroken. B (3): b1 > b2 > b3 (1-0 each). k(A) = 4 − 3 = 1 (a4).
+    // a2 reduced = 4 − 3 (W v a4) = 1 point from 2; b2 = 3 from 2 → b2 first on points, a2 second.
+    const A4: Pool = {
+      pool: "A",
+      members: ["a1", "a2", "a3", "a4"],
+      matches: [g("a1", "a2", 1, 0), g("a1", "a3", 1, 0), g("a1", "a4", 1, 0), g("a2", "a3", 0, 0), g("a2", "a4", 1, 0), g("a3", "a4", 1, 0)],
+      lots: { "a2,a3": ["a2", "a3"] },
+    };
+    const B3: Pool = { pool: "B", members: ["b1", "b2", "b3"], matches: [g("b1", "b2", 1, 0), g("b1", "b3", 1, 0), g("b2", "b3", 1, 0)] };
+    const { qualifiers, ties } = resolve(groupStage(football, [A4, B3]), { kind: "bestNth", nth: 2, count: 2 });
+    expect(ids(qualifiers)).toEqual(["b2", "a2"]);
+    const a2 = qualifiers[1]!;
+    // differential: before this ruling the reduced row lost the pool's trace — tieUnbroken false, no tie group.
+    expect(a2.tieUnbroken).toBe(true);
+    expect(ties.map((t) => t.entrantIds)).toEqual([["a2", "a3"]]);
+    expect(a2.basis).toEqual({ nth: 2, matchesCounted: 2, dropped: [{ pool: "A", against: ["a4"] }], levelWith: [] });
+  });
+});
+
+describe("W5 T5 fix round 2 — a reduced row's materialised SB is recomputed (B2–B4 review m1)", () => {
+  it("X-UP-2 boardgame: the cross-group sberger reads the reduced pool's SB, not the whole pool's", () => {
+    // Boardgame (win 2 half-points; cross-group order points, wins, sberger, lots). SB = the sum of the scores (game
+    // points) of the opponents beaten.
+    // A (4): a1 beat a2, a3; a2 beat a3, a4; a3 beat a4; a4 beat a1. a1, a2: 2 wins, a1 above on direct; a3, a4: 1 win,
+    // a3 above on direct → a4 last. k(A) = 4 − 3 = 1 (a4). Whole pool: a2 SB = a3 (1) + a4 (1) = 2. Reduced to a1, a2,
+    // a3: a2 = 1 win (v a3), SB = a3's reduced score 0.
+    // B (3), a cycle: b1 beat b2, b2 beat b3, b3 beat b1 — level on everything; B's stored draw [b1, b2, b3] → b2
+    // second: 1 win, SB = b3's 1.
+    // Reduced: a2 and b2 level on points and wins; SB b2 1 > a2 0 → b2, a2.
+    // differential: before this fix a2 kept the whole pool's SB 2 > 1 → a2, b2.
+    const A4: Pool = {
+      pool: "A",
+      members: ["a1", "a2", "a3", "a4"],
+      matches: [g("a1", "a2", 1, 0), g("a1", "a3", 1, 0), g("a2", "a3", 1, 0), g("a2", "a4", 1, 0), g("a3", "a4", 1, 0), g("a4", "a1", 1, 0)],
+    };
+    const B3: Pool = {
+      pool: "B",
+      members: ["b1", "b2", "b3"],
+      matches: [g("b1", "b2", 1, 0), g("b2", "b3", 1, 0), g("b3", "b1", 1, 0)],
+      lots: { "b1,b2,b3": ["b1", "b2", "b3"] },
+    };
+    const tables = groupStage(boardgame, [A4, B3]);
+    expect(tables.crossGroup!.order).toEqual(["points", "wins", "sberger", "lots"]); // premise: boardgame's declaration
+    const rowOf = (pool: string, id: string) => tables.pools.find((p) => p.pool === pool)!.rows.find((r) => r.entrantId === id)!;
+    expect([rowOf("A", "a2").rank, rowOf("A", "a2").metrics["sberger"], rowOf("B", "b2").rank, rowOf("B", "b2").metrics["sberger"]]).toEqual([2, 2, 2, 1]); // premise
+    const { qualifiers } = resolve(tables, { kind: "bestNth", nth: 2, count: 2 });
+    expect(ids(qualifiers)).toEqual(["b2", "a2"]);
+    expect(qualifiers[0]!.basis).toMatchObject({ matchesCounted: 2, dropped: [{ pool: "A", against: ["a4"] }] });
   });
 });
 
