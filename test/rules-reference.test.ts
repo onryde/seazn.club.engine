@@ -266,9 +266,10 @@ describe("rules reference (ruling 75, spec §6)", () => {
   it("the parser refuses a row that is not 6 cells, and ID refuses a malformed id (synthetic inputs)", () => {
     expect(() => parseRuleRows(`${ROW_HEADER}\n|---|---|---|---|---|---|\n| X-ZZ-1 | rule | cite | ⬜ open | — |\n`, "bad.md")).toThrow(/5 cells, not 6/);
     let checked = 0;
-    for (const bad of ["x-br-1", "XBR-1", "X-BR-", "ABCD-BR-1"]) { expect(bad, bad).not.toMatch(ID); checked++; }
-    expect(checked).toBe(4);
-    expect("X-BR-1").toMatch(ID); // the positive pair
+    for (const bad of ["x-br-1", "XBR-1", "X-BR-", "ABCD-BR-1", "X-WDTX-1", "X-W-1"]) { expect(bad, bad).not.toMatch(ID); checked++; }
+    expect(checked).toBe(6);
+    // the positive pairs: a two-letter area, and a three-letter one (X-WDT, X-ADJ, X-CUT) since W5
+    for (const ok of ["X-BR-1", "X-WDT-10"]) expect(ok, ok).toMatch(ID);
   });
 
   it("a row's path cells split on <br>, strip backticks and read — as none, and prose after the table is not a row (synthetic input)", () => {
@@ -391,7 +392,7 @@ describe("W2b rows (spec §6, Appendix A; plan PF-6, PF-7, PF-13; rulings 108, 1
     // Appendix A's 53 are signed or deviation, X-WD-6 since ruling 113 and PF-6's CK-WO-2 since ruling 125: none is open.
     const open = Object.values(W2B_ROWS).flatMap((ids) => Object.entries(ids)).filter(([, s]) => s === OPEN).map(([id]) => id);
     expect(open.sort()).toEqual([]);
-    // Three are recorded deviations: BD-WO-2 (86), BD-RT-1 (87) and, since owner ruling 254 (W3, 2026-11-01), BG-WO-1; the other 52 are signed.
+    // Three are recorded deviations: BD-WO-2 and BD-RT-1 (both re-signed as deviations by ruling 290, W5, 2026-11-16; first 86 and 87) and, since owner ruling 254 (W3, 2026-11-01), BG-WO-1; the other 52 are signed.
     const statuses = Object.values(W2B_ROWS).flatMap((ids) => Object.values(ids));
     expect(statuses.filter((s) => s.startsWith("signed ")).length, "signed rows").toBe(52);
     expect(statuses.filter((s) => s.startsWith("deviation ")).length, "deviation rows").toBe(3);

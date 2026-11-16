@@ -18,9 +18,9 @@ import { fileURLToPath } from "node:url";
 export const RULES_DIR = fileURLToPath(new URL("../../rules", import.meta.url));
 export const RULE_ROW_HEADER = "| id | rule | citation | status | enforced at | proved by |";
 export const RULE_STATUS = /^(signed \d+ \d{4}-\d{2}-\d{2}|deviation \d+ \d{4}-\d{2}-\d{2}|⬜ open)$/;
-export const RULE_ID = /^[A-Z]{1,3}-[A-Z]{2}-\d+$/;
+export const RULE_ID = /^[A-Z]{1,3}-[A-Z]{2,3}-\d+$/;
 /** A line that looks like a rule row. The parser reads one table; a row-shaped line it did not read is a failure. */
-export const RULE_ROW_SHAPED = /^\| [A-Z]{1,3}-[A-Z]{2}-\d+ \|/;
+export const RULE_ROW_SHAPED = /^\| [A-Z]{1,3}-[A-Z]{2,3}-\d+ \|/;
 
 export interface RuleRow {
   id: string; rule: string; citation: string; status: string;
