@@ -226,6 +226,8 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
   it("X-CU-2 with no round started every member's fixture takes their bye: odd n 3..23 × legs 1..3 (33 cases)", () => {
     let cases = 0;
     let fixtures = 0;
+    let balancedLegs = 0;
+    let flips = 0;
     for (let n = 3; n <= 23; n += 2) {
       for (const legs of [1, 2, 3]) {
         const members = Array.from({ length: n }, (_, i) => `m${i}`);
@@ -239,12 +241,28 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
           expect(f.placement, `${n}/${legs} ${opponent(f)} L${f.leg}`).toEqual({ kind: "bye_slot", roundNo: bye?.roundNo });
           fixtures++;
         }
+        // RB5-G2: per leg the newcomer's |home − away| ≤ 1, and each pair's side flips between consecutive legs.
+        for (let leg = 1; leg <= legs; leg++) {
+          const home = r.fixtures.filter((f) => f.leg === leg && f.home === N).length;
+          expect(Math.abs(home - (n - home)), `${n}/${legs}/L${leg}`).toBeLessThanOrEqual(1);
+          balancedLegs++;
+          if (leg === 1) continue;
+          for (const m of members) {
+            const prev = r.fixtures.find((f) => f.leg === leg - 1 && opponent(f) === m);
+            const cur = r.fixtures.find((f) => f.leg === leg && opponent(f) === m);
+            expect(cur?.home, `${n}/${legs} ${m} L${leg}`).toBe(prev?.away);
+            flips++;
+          }
+        }
         cases++;
       }
     }
     // 11 odd values in [3, 23] × 3 leg counts = 33; fixtures Σn × (1+2+3) = 143 × 6 = 858.
     expect(cases).toBe(33);
     expect(fixtures).toBe(858);
+    // legs checked 11 × (1+2+3) = 66; flips Σn × (0+1+2) = 143 × 3 = 429.
+    expect(balancedLegs).toBe(66);
+    expect(flips).toBe(429);
   });
 
   // ── X-CU-3 ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -309,6 +327,7 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
   it("X-CU-3 home and away alternate as RB5-G2: per leg the newcomer's balance is within 1 and each pair flips by leg", () => {
     let cases = 0;
     let transitions = 0;
+    let balancedLegs = 0;
     for (let n = 2; n <= 13; n++) {
       for (const legs of [1, 2, 3]) {
         const members = Array.from({ length: n }, (_, i) => `m${i}`);
@@ -319,6 +338,7 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
           const home = inLeg.filter((f) => f.home === N).length;
           expect(inLeg.length, `${n}/${legs}/L${leg}`).toBe(n);
           expect(Math.abs(home - (n - home)), `${n}/${legs}/L${leg}`).toBeLessThanOrEqual(1);
+          balancedLegs++;
           if (leg === 1) {
             // first away: the first listed member hosts the newcomer in leg 1
             expect(inLeg.find((f) => opponent(f) === "m0")?.home, `${n}/${legs}`).toBe("m0");
@@ -334,9 +354,26 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
         cases++;
       }
     }
-    // n ∈ 2..13 (12 values) × 3 leg counts; transitions Σn × (0+1+2) = 90 × 3 = 270.
+    // n ∈ 2..13 (12 values) × 3 leg counts; legs checked 12 × (1+2+3) = 72; transitions Σn × (0+1+2) = 90 × 3 = 270.
     expect(cases).toBe(36);
+    expect(balancedLegs).toBe(72);
     expect(transitions).toBe(270);
+  });
+
+  it("X-CU-3 a..f, six owed in one leg: the newcomer is home three times and away three, alternating along the set (RB5-G2, RB5-L6)", () => {
+    // differential: before this ruling 0 home / 6 away — the reading the controller ruled out (2026-11-16): an always-away
+    // leg 1. RB5-G2's within-leg bound |home − away| ≤ 1 with 6 owed forces exactly 3 / 3; RB5-L6's alternation forces
+    // away, home, away, … along the set.
+    const s = scene(SIX, 1, 3);
+    const r = lateEntryFixtures({ members: SIX, newcomer: N, legs: 1, lines: s.lines, byes: [], lastRoundNo: 5 });
+    let checked = 0;
+    r.fixtures.forEach((f, i) => {
+      expect(f.home === N ? "home" : "away", `${i}`).toBe(i % 2 === 0 ? "away" : "home");
+      checked++;
+    });
+    expect(checked).toBe(6);
+    expect(r.fixtures.filter((f) => f.home === N)).toHaveLength(3);
+    expect(r.fixtures.filter((f) => f.away === N)).toHaveLength(3);
   });
 
   // ── X-CU-4 ──────────────────────────────────────────────────────────────────────────────────────────────────────
