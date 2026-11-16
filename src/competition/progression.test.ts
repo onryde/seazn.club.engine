@@ -12,6 +12,7 @@ import {
   expandTake,
   placeDescriptors,
   placementTable,
+  PRE_W2D_CROSS_GROUP,
   progressionSize,
   resolveProgression,
   type ProgressionSource,
@@ -699,7 +700,8 @@ describe("resolveProgression", () => {
   it("the sibling hazard, settled by RB5-U7 (whole-PR review m3): a pool SHORT of nth rows supplies no candidate; it no longer refuses the comparison", () => {
     // Pool sizes [3,3,2,2] at nth 3: C and D have no rank-3 finisher, so only A and B supply (effective 3 ≥ 3), min = 3,
     // k = 0 for both. A3 and B3 carry nothing (rank-only rows), so the cross-group order leaves them level and its seed
-    // fallback decides: the one taken is A3 or B3, level with the other.
+    // fallback decides. The default cross-group order (PRE_W2D_CROSS_GROUP: points, diff, for, wins) holds no lots step, so
+    // the residual class takes seed then id (W2d §5.8); no seeds are given, so id: "A3" < "B3" takes A3, level with B3.
     // differential: before this ruling rowAtRank refused on C (STAGE_NOT_READY "takes rank 3, but only 2 entrants").
     const pool = (key: string, size: number) => ({
       pool: key,
@@ -714,9 +716,11 @@ describe("resolveProgression", () => {
     const { qualifiers } = resolveProgression(spec, [shape], [tables]);
     expect(qualifiers).toHaveLength(1);
     const q = qualifiers[0]!;
-    expect(["A3", "B3"]).toContain(q.entrantId);
+    expect(PRE_W2D_CROSS_GROUP).not.toContain("lots"); // the premise the id fallback rests on
+    expect(q.entrantId).toBe("A3");
+    expect(q.pool).toBe("A");
     // (rank-only rows carry no `played`, so matchesCounted is not read here; the real-row case is progression-unequal-w5's)
-    expect(q.basis).toMatchObject({ nth: 3, dropped: [], levelWith: [q.entrantId === "A3" ? "B3" : "A3"] });
+    expect(q.basis).toMatchObject({ nth: 3, dropped: [], levelWith: ["B3"] });
     // count 3 asks for more suppliers than exist (2): refused by name, as before
     const three: ProgressionSpec = { ...spec, sources: [{ stage: "previous", take: [{ kind: "bestNth", nth: 3, count: 3 }] }] };
     expect(() => resolveProgression(three, [shape], [tables])).toThrow(/bestNth needs 3 pools with a rank-3 finisher, found 2/);
