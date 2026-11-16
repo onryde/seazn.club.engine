@@ -427,6 +427,16 @@ describe("validateRankLocks — a rank may be pinned once per pool (X-PO-3; RB5-
     expect(checked).toBe(2);
   });
 
+  it("X-PO-3 old path: a lock on an entrant with no result is still skipped", () => {
+    // differential: today's behaviour, unchanged — without pools, c (no result) is in no pool's membership, so its lock is
+    // filtered out (stage.ts:376-378) and the fold neither refuses nor applies it.
+    const done = completeTableStage({ ...stage, rankLocks: [lock("c", 1)] }, ONE_IN_A);
+    const rows = done.tables.pools.flatMap((p) => p.rows);
+    expect(rows.map((r) => r.entrantId)).not.toContain("c");
+    expect(rows.filter((r) => r.rankLocked === true)).toHaveLength(0);
+    expect(rowOf(done, "A", "a").rank).toBe(1);
+  });
+
   it("X-PO-3 without pools the whole body is one pool", () => {
     // Seven entrants, no seating: ranks 1..7 exist once each.
     expect(() => validateRankLocks([lock("a", 7)], ENTRANTS)).not.toThrow();

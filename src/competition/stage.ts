@@ -317,7 +317,11 @@ const MIN_POOL_SIZE = 2;
 /** W5 (X-PO-2; RB5-E4, RB5-P2): every pool of the seating holds at least `min` entrants, or CONFIG_INVALID
  *  `pool_too_small` naming the first pool under it (seating order) and `suggestedPools`: the largest count c, no more than the
  *  pools asked for, whose even split leaves every pool at least `min` (floor(entrants / c) ≥ min), or null when no c ≥ 1 does.
- *  An empty seating has no pool to refuse. */
+ *  An empty seating has no pool to refuse.
+ *  `suggestedPools` is the pool count that works for this entrant TOTAL: when it equals the seated count (`pools`), the count
+ *  is already fine and the fix is to rebalance the seating, not to change the count. `pools` counts the SEATED pools only: a
+ *  pool nobody sits in never reaches this map, so an empty pool is invisible here and the Generate gate on the requested
+ *  count is the app's (review m2/m3). */
 export function validatePoolSizes(pools: ReadonlyMap<EntrantId, string>, min: number = MIN_POOL_SIZE): void {
   const sizes = new Map<string, number>();
   for (const pool of pools.values()) sizes.set(pool, (sizes.get(pool) ?? 0) + 1);
