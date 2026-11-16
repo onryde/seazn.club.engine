@@ -531,6 +531,12 @@ export interface SourceTables {
    *  `crossGroupRulesOf(stage)` (stage.ts). Absent = the pre-W2d order, `PRE_W2D_CROSS_GROUP`, with no seeds or draws:
    *  the order every B1-migrated pin records, so a caller not yet handing the stage's own rules moves no seat. */
   crossGroup?: CrossGroupRules;
+  /** W5 (B2–B4 re-review): the source stage's game-points rule (`TableStage.gamePoints`) — what its pools' SB was scored in.
+   *  Best-Nth reads it to recompute a reduced row's `sberger` on the same scale (boardgame's 3/1/0 table points score SB in
+   *  game points). Read only for a reduced row (k > 0) that carries a materialised SB; such a row with no rule here is
+   *  refused (CONFIG_INVALID `game_points_missing`), never scored on a guessed scale. A stage with no game-points rule of
+   *  its own passes the table points, `(r) => [r[0].points, r[1].points]`. The app's SourceTables builders write it. */
+  gamePoints?: RankContext["gamePoints"];
 }
 
 /** W2d (spec §5.9): a source stage's cross-group comparison — its effective `crossGroup` order (no head-to-head key:
@@ -686,18 +692,19 @@ function rowAtPosition(table: PoolTable, rank: number): StandingsRow {
  *  pool's tie trace (`tieUnbroken`, `tieBreak`: a within-pool lots tie is still one, B2–B4 I2) and leaves its place
  *  behind (`rank`, `rankLocked`, `level`). A metric the pool's table materialised at rank time rather than summed from
  *  results — `sberger` — is recomputed over the remaining results (`survivors`: the pool minus its expunged and its bottom
- *  k), by `rankStandings` itself, in the results' table points (a PoolTable carries no game-points rule). k = 0 (`bottom`
+ *  k), by `rankStandings` itself, in the source's game points (`SourceTables.gamePoints`; refused without). k = 0 (`bottom`
  *  empty) is the row as ranked — its pool's results already exclude any expunged entrant's (`checkExpunged`). */
 function normalisedRow(
   table: PoolTable,
   full: StandingsRow,
   bottom: readonly EntrantId[],
   survivors: readonly EntrantId[],
+  gamePoints: RankContext["gamePoints"],
 ): StandingsRow {
   if (bottom.length === 0) return full;
   const candidateId = full.entrantId;
-  // Assertion: the minimum is taken over the pools that supply a candidate, so every candidate ranks at most nth ≤ min
-  // among its pool's non-expunged rows and its bottom k sit below min. Only a broken caller reaches this.
+  // Unreachable invariant, kept as an assertion: supplying pools have effective size ≥ nth, so min ≥ nth and the bottom k
+  // (positions min + 1 … size) never hold the candidate (position nth). Only a broken change to compareBestNth reaches it.
   if (bottom.includes(candidateId)) {
     throw new EngineError("CONFIG_INVALID", `candidate "${candidateId}" is among pool "${table.pool}"'s bottom ${bottom.length}`, {
       reason: "candidate_in_bottom",
@@ -720,8 +727,15 @@ function normalisedRow(
     for (const [key, value] of Object.entries(mine.metrics)) row.metrics[key] = (row.metrics[key] ?? 0) - value;
   }
   if (full.metrics["sberger"] !== undefined) {
+    if (gamePoints === undefined) {
+      throw new EngineError("CONFIG_INVALID", `pool "${table.pool}"'s SB cannot be recomputed without the stage's game-points rule`, {
+        reason: "game_points_missing",
+        pool: table.pool,
+        entrantId: candidateId,
+      });
+    }
     const remaining = resultsAmong(new Set(survivors), results);
-    const reduced = rankStandings(foldResults(survivors, remaining), { cascade: ["sberger"], results: remaining }).rows;
+    const reduced = rankStandings(foldResults(survivors, remaining), { cascade: ["sberger"], results: remaining, gamePoints }).rows;
     row.metrics["sberger"] = reduced.find((r) => r.entrantId === candidateId)!.metrics["sberger"]!; // candidate ∈ survivors
   }
   return row;
@@ -793,7 +807,7 @@ function compareBestNth(src: SourceTables, nth: number): BestNthComparison {
     const bottom = byRank.slice(cut).map((r) => r.entrantId);
     if (bottom.length > 0) dropped.push({ pool: table.pool, against: bottom });
     poolOf.set(row.entrantId, table.pool);
-    return normalisedRow(table, row, bottom, byRank.slice(0, cut).map((r) => r.entrantId));
+    return normalisedRow(table, row, bottom, byRank.slice(0, cut).map((r) => r.entrantId), src.gamePoints);
   });
   const rules = src.crossGroup;
   const order = rules?.order ?? PRE_W2D_CROSS_GROUP;

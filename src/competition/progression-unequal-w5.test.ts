@@ -98,9 +98,15 @@ function groupStage(
     crossLots?: Readonly<Record<string, readonly EntrantId[]>>;
     /** Carried opening points by entrant (`TableStage.openingDeltas`, played 0) — a row component that is no result. */
     openings?: Readonly<Record<EntrantId, number>>;
+    /** The stage's points rule in place of the sport's default (a declared `tablePresets` rule). */
+    points?: TableRulesPin["points"];
+    /** The stage's game-points rule (`TableStage.gamePoints`): what its SB scores in. Handed on as `SourceTables.gamePoints`,
+     *  as the app's builders do (app PR B). */
+    gamePoints?: (result: FixtureResult) => readonly [number, number];
+    rankLocks?: readonly { entrantId: EntrantId; rank: number }[];
   } = {},
 ): SourceTables {
-  const rules = rulesFor(module);
+  const rules = opts.points === undefined ? rulesFor(module) : { ...rulesFor(module), points: opts.points };
   const fixtures: TableFixture[] = pools.flatMap((p) =>
     p.matches.map((m, i): TableFixture => ({ id: `${p.pool}-${i}`, poolId: p.pool, status: m.status ?? "decided", result: paid(module, m, rules) })),
   );
@@ -113,6 +119,8 @@ function groupStage(
     ...(module.winsCount === undefined ? {} : { winsCount: module.winsCount }),
     ...(opts.seeds === undefined ? {} : { seeds: new Map(Object.entries(opts.seeds)) }),
     ...(lotsDraws.size === 0 ? {} : { lotsDraws }),
+    ...(opts.gamePoints === undefined ? {} : { gamePoints: opts.gamePoints }),
+    ...(opts.rankLocks === undefined ? {} : { rankLocks: opts.rankLocks }),
     ...(opts.openings === undefined
       ? {}
       : {
@@ -130,8 +138,11 @@ function groupStage(
       return expunged === undefined ? t : { ...t, expunged };
     }),
     crossGroup: crossGroupRulesOf(stage),
+    ...(opts.gamePoints === undefined ? {} : { gamePoints: opts.gamePoints }),
   };
 }
+/** Boardgame's GAME points (FIDE 1 / ½ / 0 in half-points), whatever the table pays. */
+const fideGamePoints = (r: FixtureResult): readonly [number, number] => [2 * r[0].won + r[0].drawn, 2 * r[1].won + r[1].drawn];
 
 const spec = (...take: TakeRule[]): ProgressionSpec => ({ sources: [{ stage: "previous", take }], placement: "rank_order" });
 const resolve = (tables: SourceTables, ...take: TakeRule[]) =>
@@ -484,13 +495,77 @@ describe("W5 T5 fix round 2 — a reduced row's materialised SB is recomputed (B
       matches: [g("b1", "b2", 1, 0), g("b2", "b3", 1, 0), g("b3", "b1", 1, 0)],
       lots: { "b1,b2,b3": ["b1", "b2", "b3"] },
     };
-    const tables = groupStage(boardgame, [A4, B3]);
+    const tables = groupStage(boardgame, [A4, B3], { gamePoints: fideGamePoints });
     expect(tables.crossGroup!.order).toEqual(["points", "wins", "sberger", "lots"]); // premise: boardgame's declaration
     const rowOf = (pool: string, id: string) => tables.pools.find((p) => p.pool === pool)!.rows.find((r) => r.entrantId === id)!;
     expect([rowOf("A", "a2").rank, rowOf("A", "a2").metrics["sberger"], rowOf("B", "b2").rank, rowOf("B", "b2").metrics["sberger"]]).toEqual([2, 2, 2, 1]); // premise
     const { qualifiers } = resolve(tables, { kind: "bestNth", nth: 2, count: 2 });
     expect(ids(qualifiers)).toEqual(["b2", "a2"]);
     expect(qualifiers[0]!.basis).toMatchObject({ matchesCounted: 2, dropped: [{ pool: "A", against: ["a4"] }] });
+  });
+});
+
+describe("W5 T5 fix round 3 — a reduced boardgame row scores SB in game points (B2–B4 re-review)", () => {
+  // single-sport: boardgame's `three_one_zero` preset is the one table rule whose points differ from its SB's game points.
+  const threeOneZero = boardgame.tablePresets!("group").points.find((p) => p.id === "three_one_zero")!.rule;
+  // A (5), 3/1/0: a1 beat a2 and a3, drew a4; a2 beat a3, drew a4; a4 lost to a3; a5 loses all. Table points: a1 10,
+  // a2 7, a3 6, a4 5, a5 0 → a2 second, a5 last. B (4): b1 beat b2, drew b3 and b4; b2 beat b3, drew b4; b3 drew b4.
+  // b1 5, b2 4, b4 3, b3 2 → b2 second. k(A) = 5 − 4 = 1 (a5), k(B) = 0.
+  const A5bg: Pool = {
+    pool: "A",
+    members: ["a1", "a2", "a3", "a4", "a5"],
+    matches: [
+      g("a1", "a2", 1, 0), g("a1", "a3", 1, 0), g("a1", "a4", 0, 0), g("a1", "a5", 1, 0),
+      g("a2", "a3", 1, 0), g("a2", "a4", 0, 0), g("a2", "a5", 1, 0),
+      g("a3", "a4", 1, 0), g("a3", "a5", 1, 0),
+      g("a4", "a5", 1, 0),
+    ],
+  };
+  const B4bg: Pool = {
+    pool: "B",
+    members: ["b1", "b2", "b3", "b4"],
+    matches: [g("b1", "b2", 1, 0), g("b1", "b3", 0, 0), g("b1", "b4", 0, 0), g("b2", "b3", 1, 0), g("b2", "b4", 0, 0), g("b3", "b4", 0, 0)],
+  };
+
+  it("X-UP-2 3/1/0 table points: the reduced row's SB is in game points, the scale the other pools' SB is in", () => {
+    const tables = groupStage(boardgame, [A5bg, B4bg], { points: threeOneZero, gamePoints: fideGamePoints });
+    // SB (C.07) = Σ beaten opponents' score + ½ Σ drawn opponents' score, in game points (win 1, draw ½).
+    // b2 (k = 0, the stage's own SB): beat b3 (1 game point: two draws) + ½ × drew b4 (1½: three draws) = 1¾.
+    const b2 = tables.pools[1]!.rows.find((r) => r.entrantId === "b2")!;
+    expect([b2.rank, b2.points, b2.metrics["sberger"]]).toEqual([2, 4, 1.75]); // premise
+    // a2 reduced to a1..a4 (a5 dropped): W a3, D a4, L a1 = 4 points, 1 win — level with b2 on points and wins.
+    // Reduced scores in game points: a3 = L a2, L a1, W a4 = 1; a4 = D a2, D a1, L a3 = 1. SB(a2) = 1 + ½ × 1 = 1½ < 1¾
+    // → b2, a2.
+    // differential: before this fix SB in table points — a3 3, a4 2 → SB(a2) = (2 × 3 + 2) / 4 = 2 > 1¾ → a2, b2.
+    const { qualifiers } = resolve(tables, { kind: "bestNth", nth: 2, count: 2 });
+    expect(ids(qualifiers)).toEqual(["b2", "a2"]);
+    expect(qualifiers[0]!.basis).toMatchObject({ matchesCounted: 3, dropped: [{ pool: "A", against: ["a5"] }] });
+  });
+
+  it("a reduced row with a materialised SB and no game-points rule is refused by name, never scored in table points", () => {
+    const tables = groupStage(boardgame, [A5bg, B4bg], { points: threeOneZero, gamePoints: fideGamePoints });
+    const { gamePoints: _g, ...without } = tables;
+    const err = caught(() => resolve(without, { kind: "bestNth", nth: 2, count: 1 }));
+    expect(err.code).toBe("CONFIG_INVALID");
+    expect(err.data).toEqual({ reason: "game_points_missing", pool: "A", entrantId: "a2" });
+    // k = 0 everywhere needs none: the rows' own SB is compared as the stage materialised it.
+    const equal = groupStage(boardgame, [B4bg, { ...B4bg, pool: "C", members: ["c1", "c2", "c3", "c4"], matches: B4bg.matches.map((m) => g(m.home.replace("b", "c"), m.away.replace("b", "c"), m.hg, m.ag)) }], { points: threeOneZero, gamePoints: fideGamePoints });
+    const { gamePoints: _e, ...equalWithout } = equal;
+    expect(resolve(equalWithout, { kind: "bestNth", nth: 2, count: 2 }).qualifiers).toHaveLength(2);
+  });
+});
+
+describe("W5 T5 fix round 3 — the candidate under a rank lock (T3 locks; B2–B4 re-review minor)", () => {
+  it("X-UP-1 a lock that moves an entrant to rank nth makes the locked entrant the candidate", () => {
+    // X-UP-1's scene with a3 locked at 2nd in A: a3 is A's rank-2 row (a2 slides to 3rd). k(A) = 1 drops a5 (still 5th).
+    // a3 reduced: L a1, L a2, W a4 = 3 points (6 − 3 for W v a5) from 3; b2 6 → b2, a3.
+    const tables = groupStage(football, [A5, B4], { rankLocks: [{ entrantId: "a3", rank: 2 }] });
+    const a = tables.pools[0]!;
+    expect(a.rows.map((r) => [r.entrantId, r.rank])).toEqual([["a1", 1], ["a3", 2], ["a2", 3], ["a4", 4], ["a5", 5]]); // premise
+    expect(a.rows.find((r) => r.rank === 2)!.rankLocked).toBe(true);
+    const { qualifiers } = resolve(tables, { kind: "bestNth", nth: 2, count: 2 });
+    expect(ids(qualifiers)).toEqual(["b2", "a3"]);
+    expect(qualifiers[1]!.basis).toMatchObject({ matchesCounted: 3, dropped: [{ pool: "A", against: ["a5"] }] });
   });
 });
 
