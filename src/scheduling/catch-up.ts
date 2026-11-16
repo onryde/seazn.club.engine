@@ -1,0 +1,187 @@
+// W5 late entry into a started round robin (rulebook RB5-L3, RB5-L4, RB5-L6, RB5-L16, RB5-E9; rows X-CU-1..5): the pure
+// catch-up fixture set. The caller has already chosen the case (RB5-L15: complete → refuse, nothing started → Rebuild,
+// otherwise catch-up) and the pool; this computes only which fixtures the newcomer owes and where each one goes.
+//
+//   owed = {(newcomer, m, leg) : m ∈ members, leg ∈ 1..legs} minus every line already present for that key
+//          (roundRobinLineKey: order-free, so a line in either orientation counts).
+//   An owed key whose member holds an UNSTARTED bye slot in that leg → that bye's round (`bye_slot`), and the slot is
+//   consumed (RB5-L3: a future bye holder's fixture lands in that round). A started bye (the caller's K4 predicate) is
+//   never touched: finished rounds are never changed (RB5-L4). A slot whose member or newcomer already has a line in that
+//   round (a stale slot an earlier newcomer took, or a second slot in a round this call already seated the newcomer in)
+//   is unusable: no round seats an entrant twice (design §4.1).
+//   Every other owed key → its own catch-up round, lastRoundNo + 1, + 2, … (one fixture per round), in leg-first order
+//   (review ruling G1): leg, then the member's earliest roundNo among `lines` (RB5-L6: the order the opponents already
+//   played), then the member's position in `members` (the caller lists them in seed order; F5, designer's call), a
+//   member with no line after every member with one. No adjacency guarantee: a bye-slot fixture and an appended one can
+//   put the same opponent in consecutive rounds.
+//   Home side (RB5-G2): in leg 1 the newcomer alternates along the leg's owed keys in `members` order, away first. In
+//   every later leg each pair takes the opposite of its side in the previous leg, whether that side came from an owed
+//   fixture or a line already present (review M1). When every leg owes every member the newcomer's per-leg balance is
+//   within 1. A member's own per-leg balance may move by one (plan's call: RB5-G2's bound is a whole-schedule property).
+//
+// Pure: no input is mutated; consumedByes holds the caller's own slot objects.
+import { EngineError } from "../core/errors.ts";
+import type { EntrantId } from "../core/types.ts";
+import { roundRobinLineKey } from "./roundrobin.ts";
+
+export interface ExistingLine {
+  home: EntrantId;
+  away: EntrantId;
+  roundNo: number;
+  leg: number;
+}
+
+export interface ByeSlot {
+  entrantId: EntrantId;
+  roundNo: number;
+  leg: number;
+  started: boolean; // the caller's K4 predicate: a score event, live play, a decided result, or a call to a court
+}
+
+export type CatchUpPlacement = { kind: "bye_slot"; roundNo: number } | { kind: "catch_up_round"; roundNo: number };
+
+export interface CatchUpFixture {
+  home: EntrantId;
+  away: EntrantId;
+  leg: number;
+  placement: CatchUpPlacement;
+}
+
+export interface CatchUpResult {
+  fixtures: CatchUpFixture[]; // by placement roundNo
+  consumedByes: ByeSlot[]; // by roundNo
+  appendedRounds: number;
+}
+
+// Every refusal names what it refused (whole-PR review m1): the newcomer, the offending value or the round and its line.
+function refuse(reason: string, message: string, context: Record<string, unknown>): never {
+  throw new EngineError("CONFIG_INVALID", message, { reason, ...context });
+}
+
+interface Owed {
+  member: EntrantId;
+  memberIndex: number;
+  leg: number;
+  home: EntrantId;
+  away: EntrantId;
+}
+
+export function lateEntryFixtures(input: {
+  members: readonly EntrantId[] /* in listed (seed) order */;
+  newcomer: EntrantId;
+  legs: number;
+  lines: readonly ExistingLine[];
+  byes: readonly ByeSlot[];
+  lastRoundNo: number;
+}): CatchUpResult {
+  const { members, newcomer, legs, lines, byes, lastRoundNo } = input;
+  if (members.includes(newcomer)) refuse("newcomer_is_member", `${newcomer} is already a member of this round robin`, { newcomer });
+  if (!Number.isInteger(legs) || legs < 1) refuse("legs_invalid", `a round-robin leg count is an integer of at least 1, got ${legs}`, { legs });
+  if (!Number.isInteger(lastRoundNo) || lastRoundNo < 0) {
+    refuse("last_round_invalid", `the last drawn round is an integer of at least 0, got ${lastRoundNo}`, { lastRoundNo });
+  }
+  for (const line of lines) {
+    if (line.roundNo > lastRoundNo) {
+      refuse("last_round_below_lines", `a line sits in round ${line.roundNo}, after the last drawn round ${lastRoundNo}`, {
+        lastRoundNo,
+        roundNo: line.roundNo,
+        entrantIds: [line.home, line.away],
+        leg: line.leg,
+      });
+    }
+  }
+  for (const bye of byes) {
+    if (bye.roundNo > lastRoundNo) {
+      refuse("last_round_below_lines", `a bye sits in round ${bye.roundNo}, after the last drawn round ${lastRoundNo}`, {
+        lastRoundNo,
+        roundNo: bye.roundNo,
+        entrantIds: [bye.entrantId],
+        leg: bye.leg,
+      });
+    }
+  }
+
+  const present = new Set(lines.map((l) => roundRobinLineKey(l.home, l.away, l.leg)));
+  // The newcomer's side on each line it already has, by line key (true = home): a later leg flips from it.
+  const newcomerHome = new Map<string, boolean>();
+  for (const l of lines) {
+    if (l.home === newcomer || l.away === newcomer) newcomerHome.set(roundRobinLineKey(l.home, l.away, l.leg), l.home === newcomer);
+  }
+  // Who already plays in each round: a bye slot there is unusable for anyone already seated.
+  const seated = new Map<number, Set<EntrantId>>();
+  for (const l of lines) {
+    const ids = seated.get(l.roundNo) ?? new Set<EntrantId>();
+    ids.add(l.home).add(l.away);
+    seated.set(l.roundNo, ids);
+  }
+  const earliest = new Map<EntrantId, number>();
+  for (const l of lines) {
+    for (const id of [l.home, l.away]) {
+      const seen = earliest.get(id);
+      if (seen === undefined || l.roundNo < seen) earliest.set(id, l.roundNo);
+    }
+  }
+
+  const owed: Owed[] = [];
+  for (let leg = 1; leg <= legs; leg++) {
+    const keys = new Set<string>();
+    let position = 0;
+    members.forEach((member, memberIndex) => {
+      const key = roundRobinLineKey(newcomer, member, leg);
+      if (present.has(key) || keys.has(key)) return;
+      keys.add(key);
+      // Leg 1: alternate along the owed list, away first. Later legs: the opposite of this pair's previous-leg side.
+      const previousHome = leg === 1 ? undefined : newcomerHome.get(roundRobinLineKey(newcomer, member, leg - 1));
+      const newcomerAway = previousHome === undefined ? position % 2 === 0 : previousHome;
+      position++;
+      newcomerHome.set(key, !newcomerAway);
+      owed.push({
+        member,
+        memberIndex,
+        leg,
+        home: newcomerAway ? member : newcomer,
+        away: newcomerAway ? newcomer : member,
+      });
+    });
+  }
+  // RB5-E9: a placement that adds no fixture (no members, or already seated against every one) is a named refusal, never an
+  // empty success.
+  if (owed.length === 0) refuse("nothing_to_add", `${newcomer} owes no fixture: no member, or already seated against every one`, { newcomer });
+
+  const fixtures: CatchUpFixture[] = [];
+  const consumedByes: ByeSlot[] = [];
+  const toAppend: Owed[] = [];
+  for (const o of owed) {
+    const slot = byes.find(
+      (b) =>
+        !b.started &&
+        b.entrantId === o.member &&
+        b.leg === o.leg &&
+        !(seated.get(b.roundNo)?.has(o.member) ?? false) &&
+        !(seated.get(b.roundNo)?.has(newcomer) ?? false),
+    );
+    if (slot === undefined) {
+      toAppend.push(o);
+      continue;
+    }
+    consumedByes.push(slot);
+    // The newcomer now plays in this round: a second unstarted slot here (RB5-G3 allows one) must not seat it again.
+    seated.set(slot.roundNo, (seated.get(slot.roundNo) ?? new Set<EntrantId>()).add(newcomer));
+    fixtures.push({ home: o.home, away: o.away, leg: o.leg, placement: { kind: "bye_slot", roundNo: slot.roundNo } });
+  }
+
+  const firstRound = (o: Owed): number => earliest.get(o.member) ?? Number.POSITIVE_INFINITY;
+  toAppend.sort((x, y) => x.leg - y.leg || firstRound(x) - firstRound(y) || x.memberIndex - y.memberIndex);
+  toAppend.forEach((o, k) => {
+    fixtures.push({
+      home: o.home,
+      away: o.away,
+      leg: o.leg,
+      placement: { kind: "catch_up_round", roundNo: lastRoundNo + k + 1 },
+    });
+  });
+
+  fixtures.sort((x, y) => x.placement.roundNo - y.placement.roundNo);
+  consumedByes.sort((x, y) => x.roundNo - y.roundNo);
+  return { fixtures, consumedByes, appendedRounds: toAppend.length };
+}

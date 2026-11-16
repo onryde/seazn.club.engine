@@ -67,17 +67,8 @@ export const AWAITING_PROOF: ReadonlyMap<string, string> = new Map<string, strin
   ["X-SP-6", "W4 app PR A"], ["X-SP-7", "W4 app PR A"],
   // W5's rows (design 2026-11-05-format-matrix-w5-round-robin-design.md §12, rulebook-W5-round-robin.md; signed by seazn.club `_INDEX` rulings
   // 276-291, recorded ahead of the code on ruling 285's "approve and record all rules", 274's pattern): the value names the W5 PR whose test proves
-  // the row: the engine PR (34 rows), app PR A (37) or app PR B (3). The proving commit deletes the entry, fills `proved by` and drops the row's
+  // the row: the engine PR, app PR A or app PR B. The proving commit deletes the entry, fills `proved by` and drops the row's
   // "not yet implemented" citation note; every W5 entry is to be gone by the W5 close-out.
-  ["X-RR-1", "W5 engine PR"], ["X-RR-2", "W5 engine PR"], ["X-RR-3", "W5 engine PR"], ["X-RR-4", "W5 engine PR"],
-  ["X-RR-5", "W5 engine PR"], ["X-CU-1", "W5 engine PR"], ["X-CU-2", "W5 engine PR"], ["X-CU-3", "W5 engine PR"],
-  ["X-CU-4", "W5 engine PR"], ["X-CU-5", "W5 engine PR"], ["X-PO-1", "W5 engine PR"], ["X-PO-2", "W5 engine PR"],
-  ["X-PO-3", "W5 engine PR"], ["X-WDT-1", "W5 engine PR"], ["X-WDT-2", "W5 engine PR"], ["X-WDT-3", "W5 engine PR"],
-  ["X-WDT-4", "W5 engine PR"], ["X-WDT-6", "W5 engine PR"], ["X-UP-1", "W5 engine PR"], ["X-UP-2", "W5 engine PR"],
-  ["X-UP-3", "W5 engine PR"], ["X-UP-4", "W5 engine PR"], ["X-UP-5", "W5 engine PR"], ["X-PD-1", "W5 engine PR"],
-  ["X-PD-2", "W5 engine PR"], ["X-PD-3", "W5 engine PR"], ["X-PD-4", "W5 engine PR"], ["X-PD-5", "W5 engine PR"],
-  ["X-PD-6", "W5 engine PR"], ["X-PD-7", "W5 engine PR"], ["X-QS-1", "W5 engine PR"], ["X-ADJ-1", "W5 engine PR"],
-  ["X-ADJ-2", "W5 engine PR"], ["X-ADJ-3", "W5 engine PR"],
   ["X-RR-6", "W5 app PR A"], ["X-CU-6", "W5 app PR A"], ["X-CU-7", "W5 app PR A"], ["X-CU-8", "W5 app PR A"],
   ["X-CU-9", "W5 app PR A"], ["X-CU-10", "W5 app PR A"], ["X-CU-11", "W5 app PR A"], ["X-CU-12", "W5 app PR A"],
   ["X-CU-13", "W5 app PR A"], ["X-PO-4", "W5 app PR A"], ["X-WDT-5", "W5 app PR A"], ["X-WDT-7", "W5 app PR A"],

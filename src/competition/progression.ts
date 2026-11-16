@@ -11,13 +11,9 @@ import type { BracketSlotRef } from "../scheduling/bracket.ts";
 import type { TiebreakerKey } from "../sport/module.ts";
 import { isHeadToHeadKey } from "./cascade-rules.ts";
 import { firstLossField, type FirstLossField } from "./first-loss.ts";
+import type { AdjustmentNote } from "./points.ts";
 import type { FinalPlace, FixtureStatus } from "./stage.ts";
-import {
-  foldResults,
-  resultsAmong,
-  type FixtureResult,
-  type StandingsRow,
-} from "./standings.ts";
+import { foldResults, resultsAmong, type FixtureResult, type StandingsRow } from "./standings.ts";
 import {
   rankStandings,
   type MembersKey,
@@ -35,11 +31,10 @@ export interface PoolRankPick {
 // The union table (design doc §2.1, F2 prompt): rankRange survives topN
 // (topN:n IS rankRange{from:1,to:n} — the design doc names this directly);
 // bestNth survives bestOfRank (bestNth already has the real cross-group
-// cascade + tie-flagging + unequal-pools refusal two shipped catalogue
-// templates depend on; bestOfRank's only extra field,
-// normaliseUnequalPools, is absorbed here — see this repo's F2 plan
-// Decision 2b for why it is carried forward rather than newly wired to a
-// real per-pool match ledger). picks/roundLosers are qualification's
+// cascade + tie-flagging two shipped catalogue templates depend on;
+// bestOfRank's only extra field, normaliseUnequalPools, is absorbed here and,
+// since W5 ruling 286, accepted and ignored: the unequal-pools reduction is
+// always on — `compareBestNth` below). picks/roundLosers are qualification's
 // TakePicks/RoundLosers, unchanged in meaning, given the kind-tagged shape
 // the rest of this union already uses.
 // W4 (Task 10; RB4-P1, P4; X-PL-3; owner ruling 265): `firstLosses` is the plate's take — every eligible first loss of a
@@ -49,7 +44,15 @@ export interface PoolRankPick {
 export type TakeRule =
   | { kind: "rankRange"; from: number; to: number }
   | { kind: "topNPerGroup"; n: number }
-  | { kind: "bestNth"; nth: number; count: number; normaliseUnequalPools?: boolean }
+  | {
+      kind: "bestNth";
+      nth: number;
+      count: number;
+      /** @deprecated W5 ruling 286 (RB5-U8): accepted and ignored. Best-Nth over unequal pools always compares every
+       *  candidate on the smallest pool's matches (k = effective size − min, RB5-U1/U7), and equal pools drop nothing
+       *  (RB5-U6), set or not. Kept so stored progressions parse. */
+      normaliseUnequalPools?: boolean;
+    }
   | { kind: "picks"; picks: readonly PoolRankPick[] }
   | { kind: "roundLosers"; round: number; count: number }
   | { kind: "firstLosses" };
@@ -82,7 +85,13 @@ export interface ProgressionSpec {
 export type SlotDescriptor =
   | { kind: "group_rank"; pool: string; rank: number }
   | { kind: "rank_range"; rank: number }
-  | { kind: "best_nth"; nth: number; position: number; normaliseUnequalPools?: boolean }
+  | {
+      kind: "best_nth";
+      nth: number;
+      position: number;
+      /** @deprecated W5 ruling 286 (RB5-U8): carried from the take rule, read by nothing. */
+      normaliseUnequalPools?: boolean;
+    }
   | { kind: "round_loser"; round: number; position: number }
   | {
       kind: "first_loss";
@@ -475,10 +484,18 @@ export function validateProgressionAgainstShapes(
 export interface PoolTable {
   pool: string;
   rows: readonly StandingsRow[];
-  // Only consulted when a best_nth descriptor carries
-  // normaliseUnequalPools:true (Decision 2b) — absent for every caller in
-  // this codebase today, matching production behaviour before this session.
+  /** The pool's counted results (`completeTableStage` writes them). Best-Nth reads them to compare a larger pool's
+   *  candidate without the results against its bottom k (W5 RB5-U1); a best-Nth source whose pool needs k > 0 and has
+   *  none is refused, STAGE_NOT_READY `pool_results_missing`. */
   results?: readonly FixtureResult[];
+  /** W5 (RB5-U5, RB5-U7): the pool's entrants whose results were removed under X-WDT-1 (an expunge). Each keeps its row
+   *  but counts in no effective size and is never one of the bottom k: nothing more is dropped for them. Each must be
+   *  one of `rows` and named in none of `results` (CONFIG_INVALID otherwise). Written by the app's SourceTables builders
+   *  from the withdrawal ledger's expunge mode; no engine code writes it. */
+  expunged?: readonly EntrantId[];
+  /** W5 (X-ADJ-1, RB5-T7): the pool's points adjustments as footnotes (reason and date), in ledger order; absent when it
+   *  has none. Written by `completeTableStage`; progression reads only `rows`, where the adjustments are already folded. */
+  notes?: readonly AdjustmentNote[];
 }
 /** A bracket source's fixture as progression reads it. `roundLosers` reads `round` and `loser` alone. W4 (Task 9) widens
  *  it with what `firstLossField` (first-loss.ts) reads — every new field optional, so a caller of `roundLosers` types as
@@ -518,6 +535,13 @@ export interface SourceTables {
    *  `crossGroupRulesOf(stage)` (stage.ts). Absent = the pre-W2d order, `PRE_W2D_CROSS_GROUP`, with no seeds or draws:
    *  the order every B1-migrated pin records, so a caller not yet handing the stage's own rules moves no seat. */
   crossGroup?: CrossGroupRules;
+  /** W5 (B2–B4 re-review): the source stage's game-points rule (`TableStage.gamePoints`) — what its pools' SB was scored in.
+   *  Best-Nth reads it to recompute a reduced row's `sberger` on the same scale (boardgame's 3/1/0 table points score SB in
+   *  game points). Read only for a reduced row (k > 0) that carries a materialised SB; such a row with no rule here is
+   *  refused (CONFIG_INVALID `game_points_missing`), never scored on a guessed scale. A stage with no game-points rule of
+   *  its own passes the table points, `(r) => [r[0].points, r[1].points]`. An OVERRIDE since B5–B6 review I2: absent, the
+   *  rule `crossGroupRulesOf` forwarded on `crossGroup.gamePoints` is read, so the app needs no second wire. */
+  gamePoints?: RankContext["gamePoints"];
 }
 
 /** W2d (spec §5.9): a source stage's cross-group comparison — its effective `crossGroup` order (no head-to-head key:
@@ -529,6 +553,9 @@ export interface CrossGroupRules {
   readonly seeds?: ReadonlyMap<EntrantId, number>;
   readonly rngSeed?: number;
   readonly winsCount?: RankContext["winsCount"];
+  /** W5 (B5–B6 review I2): the stage's game-points rule (`TableStage.gamePoints`), forwarded by `crossGroupRulesOf`: what
+   *  a reduced row's SB is recomputed in. `SourceTables.gamePoints`, when given, overrides it. */
+  readonly gamePoints?: RankContext["gamePoints"];
 }
 
 /** The order best-Nth used before W2d, hard-coded for every sport — and the `crossGroup` every B1-migrated pin records
@@ -540,7 +567,30 @@ export interface ResolvedProgressionEntry {
   descriptor: SlotDescriptor;
   entrantId: EntrantId;
   rank: number;
+  /** A residual tie: the within-pool residual tie of the row this entry was taken from (a shared place, or its pool's own
+   *  lots or seed fallback) OR, for a best_nth entry, left level by the cross-group order (its lots or seed fallback
+   *  decided it). `basis.levelWith` is the cross-pool part: whom the cross-group order left it level with. */
   tieUnbroken: boolean;
+  /** W5 T5: the source pool's key — group_rank and best_nth entries; absent otherwise. */
+  pool?: string;
+  /** W5 T5 (RB5-U3): how a best_nth entry was compared; best_nth entries only. */
+  basis?: ComparisonBasis;
+}
+
+/** W5 (RB5-U1, RB5-U3, RB5-U7): the basis a best-Nth comparison ran on, the same for every candidate of one source and
+ *  nth except `levelWith`. A pool supplies a candidate when its effective size (rows − expunged) is at least nth — the nth
+ *  of its non-expunged rows by rank; an expunged entrant is never one. k(pool) = the pool's effective size − the smallest
+ *  effective size among the SUPPLYING pools; each pool with k > 0 has its bottom k non-expunged rows by rank (lots
+ *  included, RB5-U4) left out of its candidate's results — `dropped`, in pools order, each `against` in rank order.
+ *  `matchesCounted` = the largest `played` among the compared rows — `played` as the row carries it, so a carried
+ *  opening's or a sit-out award's `played` counts too (B2–B4 m3). `levelWith` (G3): the OTHER candidates this candidate's cross-pool comparison left
+ *  level on every key of the source's cross-group order — its residual class, from ranking the compared rows with their
+ *  pool trace stripped; [] when a key decided it. Independent of `tieUnbroken`. */
+export interface ComparisonBasis {
+  nth: number;
+  matchesCounted: number;
+  dropped: { pool: string; against: EntrantId[] }[];
+  levelWith: EntrantId[];
 }
 export interface ProgressionTieFlag {
   // Widened from SlotDescriptor[] (F3 review item 1): a tie descriptor with
@@ -626,8 +676,8 @@ function rowAtRank(table: PoolTable, rank: number): StandingsRow {
  *  share a rank (X-FR-1: two semi-final losers both 3rd), so a take never needs a rank nobody holds (1..4 over 1, 2, 3, 3
  *  takes four). A row whose rank another row shares is returned as a clone flagged `tieUnbroken` with `tieBreak.key:
  *  "shared_place"`, naming the others: who goes first, or through, is the organiser's call. A strict table (every rank
- *  once) resolves exactly the rows `rowAtRank` did. A shortfall reads as `rowAtRank`'s, unchanged. `group_rank` and
- *  `best_nth` keep finding by rank (`rowAtRank`). */
+ *  once) resolves exactly the rows `rowAtRank` did. A shortfall reads as `rowAtRank`'s, unchanged. `group_rank` keeps
+ *  finding by rank (`rowAtRank`); `best_nth` by the supplying rule (`compareBestNth`). */
 function rowAtPosition(table: PoolTable, rank: number): StandingsRow {
   const ordered = [...table.rows].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
   const row = ordered[rank - 1];
@@ -645,28 +695,162 @@ function rowAtPosition(table: PoolTable, rank: number): StandingsRow {
   return { ...row, tieUnbroken: true, tieBreak: { key: "shared_place", with: sharing } };
 }
 
-// UEFA "drop the lowest-ranked pool member's results" normalisation
-// (Decision 2b) — unchanged from qualification.ts's normalisedRow, moved
-// verbatim. A no-op when `results` is absent or empty, which is every
-// caller in this codebase today.
-function normalisedRow(table: PoolTable, candidateId: EntrantId): StandingsRow {
-  const results = table.results ?? [];
-  const bottom = table.rows[table.rows.length - 1];
-  if (bottom === undefined || bottom.entrantId === candidateId || results.length === 0) {
-    const full = table.rows.find((row) => row.entrantId === candidateId);
-    if (full === undefined) {
-      throw new EngineError("STAGE_NOT_READY", `candidate "${candidateId}" not in its pool table`, { candidateId });
-    }
-    return full;
+/** One pool's candidate compared without the results against its bottom k (ruling 280): the candidate's FULL row as
+ *  ranked minus the dropped results' deltas — every counted field (played, won, drawn, lost, points, every metric) — so a
+ *  carried opening, a sit-out award or a points adjustment stays in, exactly as in a k = 0 pool's row. The row keeps its
+ *  pool's tie trace (`tieUnbroken`, `tieBreak`: a within-pool lots tie is still one, B2–B4 I2) and leaves its place
+ *  behind (`rank`, `rankLocked`, `level`). A metric the pool's table materialised at rank time rather than summed from
+ *  results — `sberger` — is recomputed over the remaining results (`survivors`: the pool minus its expunged and its bottom
+ *  k), by `rankStandings` itself, in the source's game points (`SourceTables.gamePoints`, else `crossGroup.gamePoints`; refused without). k = 0 (`bottom`
+ *  empty) is the row as ranked — its pool's results already exclude any expunged entrant's (`checkExpunged`). */
+function normalisedRow(
+  table: PoolTable,
+  full: StandingsRow,
+  bottom: readonly EntrantId[],
+  survivors: readonly EntrantId[],
+  gamePoints: RankContext["gamePoints"],
+): StandingsRow {
+  if (bottom.length === 0) return full;
+  const candidateId = full.entrantId;
+  // Unreachable invariant, kept as an assertion: supplying pools have effective size ≥ nth, so min ≥ nth and the bottom k
+  // (positions min + 1 … size) never hold the candidate (position nth). Only a broken change to compareBestNth reaches it.
+  if (bottom.includes(candidateId)) {
+    throw new EngineError("CONFIG_INVALID", `candidate "${candidateId}" is among pool "${table.pool}"'s bottom ${bottom.length}`, {
+      reason: "candidate_in_bottom",
+      pool: table.pool,
+      entrantId: candidateId,
+    });
   }
-  const survivors = table.rows.map((row) => row.entrantId).filter((id) => id !== bottom.entrantId);
-  const kept = resultsAmong(new Set(survivors), results);
-  const refolded = foldResults(survivors, kept);
-  const row = refolded.find((entry) => entry.entrantId === candidateId);
-  if (!row) {
-    throw new EngineError("STAGE_NOT_READY", `candidate "${candidateId}" not in its pool table`, { candidateId });
+  const dropped = new Set(bottom);
+  const { rank: _r, rankLocked: _l, level: _v, ...kept } = full;
+  const row: StandingsRow = { ...kept, metrics: { ...full.metrics } };
+  const results = table.results ?? [];
+  for (const [home, away] of results) {
+    const mine = home.entrantId === candidateId && dropped.has(away.entrantId) ? home : away.entrantId === candidateId && dropped.has(home.entrantId) ? away : undefined;
+    if (mine === undefined) continue;
+    row.played -= mine.played;
+    row.won -= mine.won;
+    row.drawn -= mine.drawn;
+    row.lost -= mine.lost;
+    row.points -= mine.points;
+    for (const [key, value] of Object.entries(mine.metrics)) row.metrics[key] = (row.metrics[key] ?? 0) - value;
+  }
+  if (full.metrics["sberger"] !== undefined) {
+    if (gamePoints === undefined) {
+      throw new EngineError("CONFIG_INVALID", `pool "${table.pool}"'s SB cannot be recomputed without the stage's game-points rule`, {
+        reason: "game_points_missing",
+        pool: table.pool,
+        entrantId: candidateId,
+      });
+    }
+    const remaining = resultsAmong(new Set(survivors), results);
+    const reduced = rankStandings(foldResults(survivors, remaining), { cascade: ["sberger"], results: remaining, gamePoints }).rows;
+    row.metrics["sberger"] = reduced.find((r) => r.entrantId === candidateId)!.metrics["sberger"]!; // candidate ∈ survivors
   }
   return row;
+}
+
+/** RB5-U5: an expunged entrant is one of the pool's rows (else the effective size is wrong) and her results are already
+ *  gone from the pool's (else they would still count for everyone). Either is a wiring bug in the caller's builder. */
+function checkExpunged(table: PoolTable): void {
+  const rows = new Set(table.rows.map((row) => row.entrantId));
+  const named = new Set((table.results ?? []).flatMap(([home, away]) => [home.entrantId, away.entrantId]));
+  for (const entrantId of table.expunged ?? []) {
+    if (!rows.has(entrantId)) {
+      throw new EngineError("CONFIG_INVALID", `expunged entrant "${entrantId}" has no row in pool "${table.pool}"`, {
+        reason: "expunged_not_in_pool",
+        pool: table.pool,
+        entrantId,
+      });
+    }
+    if (named.has(entrantId)) {
+      throw new EngineError("CONFIG_INVALID", `expunged entrant "${entrantId}" still has results in pool "${table.pool}"`, {
+        reason: "expunged_has_results",
+        pool: table.pool,
+        entrantId,
+      });
+    }
+  }
+}
+
+/** A best-Nth comparison: every pool's rank-`nth` row, compared on the smallest pool's matches (W5 RB5-U1, U7; always on,
+ *  ruling 286), then ordered by the source's cross-group order (RB5-U2: the sport's own cascade, its seed or stored lots
+ *  at the end — ruling 291). Checks, in order: each pool's expunged list; then the supplying rule (RB5-U7): a pool supplies
+ *  a candidate only when its effective size (rows − expunged) is at least nth — a pool naturally short of nth rows and one
+ *  shortened by an expunge alike supply none (whole-PR review m3), and no supplying pool at all → STAGE_NOT_READY
+ *  `best_nth_no_supplier`; then, over the supplying pools, the first in `pools` order with k > 0 and no results →
+ *  STAGE_NOT_READY `pool_results_missing`. */
+interface BestNthComparison {
+  /** The compared rows in cross-group order — the qualifier order (the ranking that also makes `newLotsDraws`). */
+  ordered: StandingsRow[];
+  poolOf: Map<EntrantId, string>;
+  levelWith: Map<EntrantId, EntrantId[]>;
+  matchesCounted: number;
+  dropped: { pool: string; against: EntrantId[] }[];
+  newLotsDraws: readonly NewLotsDraw[];
+}
+function compareBestNth(src: SourceTables, nth: number): BestNthComparison {
+  for (const table of src.pools) checkExpunged(table);
+  // RB5-U5/U7 (B2–B4 I1, m4): an expunged entrant is out of the table — never a candidate, never in a size. A pool supplies
+  // the nth of its NON-expunged rows by rank, and only a pool that has one (effective size ≥ nth) supplies a candidate
+  // and enters the minimum.
+  const supplying = src.pools.flatMap((table) => {
+    const expunged = new Set(table.expunged ?? []);
+    const byRank = [...table.rows].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)).filter((r) => !expunged.has(r.entrantId));
+    const row = byRank[nth - 1];
+    return row === undefined ? [] : [{ table, byRank, row }];
+  });
+  if (supplying.length === 0) {
+    // RB5-U7: short pools stop supplying, but a comparison nobody supplies is no comparison — refused loudly.
+    const available = Math.max(0, ...src.pools.map((t) => t.rows.filter((r) => !(t.expunged ?? []).includes(r.entrantId)).length));
+    throw new EngineError(
+      "STAGE_NOT_READY",
+      `no pool has a rank-${nth} finisher (the largest has ${available}) — lower the qualifier count or add entrants`,
+      { reason: "best_nth_no_supplier", rank: nth, available },
+    );
+  }
+  const min = Math.min(...supplying.map(({ byRank }) => byRank.length));
+  const ks = supplying.map(({ byRank }) => byRank.length - min);
+  const missing = supplying.find(({ table }, i) => ks[i]! > 0 && (table.results ?? []).length === 0);
+  if (missing !== undefined) {
+    throw new EngineError(
+      "STAGE_NOT_READY",
+      `pool "${missing.table.pool}" is larger than the smallest pool, and its results are needed to compare its rank-${nth} finisher on the same number of matches`,
+      { reason: "pool_results_missing", pool: missing.table.pool },
+    );
+  }
+  const dropped: { pool: string; against: EntrantId[] }[] = [];
+  const poolOf = new Map<EntrantId, string>();
+  const candidates = supplying.map(({ table, byRank, row }, i) => {
+    const cut = byRank.length - ks[i]!;
+    const bottom = byRank.slice(cut).map((r) => r.entrantId);
+    if (bottom.length > 0) dropped.push({ pool: table.pool, against: bottom });
+    poolOf.set(row.entrantId, table.pool);
+    return normalisedRow(table, row, bottom, byRank.slice(0, cut).map((r) => r.entrantId), src.gamePoints ?? src.crossGroup?.gamePoints);
+  });
+  const rules = src.crossGroup;
+  const order = rules?.order ?? PRE_W2D_CROSS_GROUP;
+  const ctx = {
+    ...(rules?.seeds === undefined ? {} : { seeds: rules.seeds }),
+    ...(rules?.rngSeed === undefined ? {} : { rngSeed: rules.rngSeed }),
+    ...(rules?.winsCount === undefined ? {} : { winsCount: rules.winsCount }),
+  };
+  const ranked = crossGroupOrder(candidates, order, rules?.lotsDraws, ctx);
+  // G3: the residual classes of the same comparison over rows with their pool trace stripped — a k = 0 row is its pool's
+  // own, and a row a key splits keeps the trace it came in with. Its order and draws are the ranking's above, ignored.
+  const stripped = candidates.map(({ tieUnbroken: _t, tieBreak: _b, rank: _r, rankLocked: _l, ...row }) => row);
+  const levelWith = new Map<EntrantId, EntrantId[]>();
+  for (const row of crossGroupOrder(stripped, order, rules?.lotsDraws, ctx).rows) {
+    levelWith.set(row.entrantId, row.tieUnbroken === true ? [...(row.tieBreak?.with ?? [])] : []);
+  }
+  return {
+    ordered: ranked.rows,
+    poolOf,
+    levelWith,
+    matchesCounted: Math.max(0, ...candidates.map((row) => row.played)),
+    dropped,
+    newLotsDraws: ranked.newLotsDraws,
+  };
 }
 
 /** W2d (spec §5.9, ST-G4, X-TB-7): order rows from DIFFERENT groups by the source stage's `crossGroup` order, with its
@@ -774,7 +958,7 @@ export function resolveProgression(
   const qualifiers: ResolvedProgressionEntry[] = [];
   const tieGroups = new Map<string, ProgressionTieFlag>();
   const seen = new Set<EntrantId>();
-  const bestNthCache = new Map<string, StandingsRow[]>();
+  const bestNthCache = new Map<string, BestNthComparison>();
   const firstLossCache = new Map<number, FirstLossField>();
   const newLotsDraws: (NewLotsDraw & { readonly sourceIndex: number })[] = [];
 
@@ -787,9 +971,13 @@ export function resolveProgression(
       });
     }
     let row: StandingsRow;
+    let pool: string | undefined;
+    let basis: ComparisonBasis | undefined;
     const d = slot.descriptor;
     if (d.kind === "group_rank") {
-      row = rowAtRank(findPool(src.pools, d.pool), d.rank);
+      const table = findPool(src.pools, d.pool);
+      row = rowAtRank(table, d.rank);
+      pool = table.pool;
     } else if (d.kind === "rank_range") {
       row = rowAtPosition(rankRangeSource(src.pools), d.rank);
     } else if (d.kind === "round_loser") {
@@ -805,54 +993,33 @@ export function resolveProgression(
     } else {
       // best_nth — every pool's nth-place row, compared together (once per
       // distinct nth), exactly like resolveQualification.bestOfRank used to
-      // — never one candidate at a time.
-      // The flag is part of the key, not just the nth: two bestNth take
-      // rules on one source at the same nth but a DIFFERENT
-      // normaliseUnequalPools describe two different orderings, and the
-      // unequal-pools guard below sits INSIDE the cache-miss branch — so a
-      // shared key let the second rule skip its own guard and read rows
-      // normalised under a setting it never asked for. Every such pair
-      // collides on position 1 and is refused a few lines down by the
-      // entrant-dedupe, so no wrong seat escapes today; this keeps that
-      // true if bestNth positions ever stop starting at 1.
-      const cacheKey = `${slot.sourceIndex}:${d.nth}:${d.normaliseUnequalPools === true}`;
-      let ordered = bestNthCache.get(cacheKey);
-      if (!ordered) {
-        const candidates = src.pools.map((p) => {
-          const picked = rowAtRank(p, d.nth);
-          return d.normaliseUnequalPools === true ? normalisedRow(p, picked.entrantId) : picked;
-        });
-        if (d.normaliseUnequalPools !== true) {
-          const sizes = new Set(src.pools.map((p) => p.rows.length));
-          if (sizes.size > 1) {
-            throw new EngineError(
-              "SEEDING_BESTNTH_UNEQUAL_POOLS",
-              `bestNth cannot compare rank-${d.nth} finishers across pools of different sizes (${[...sizes]
-                .sort((a, b) => a - b)
-                .join(",")}) without normaliseUnequalPools — set normaliseUnequalPools: true on this take rule to compare them via UEFA drop-the-bottom-result normalisation`,
-              { nth: d.nth, poolSizes: src.pools.map((p) => ({ pool: p.pool, size: p.rows.length })) },
-            );
-          }
-        }
-        const rules = src.crossGroup;
-        const ranked = crossGroupOrder(candidates, rules?.order ?? PRE_W2D_CROSS_GROUP, rules?.lotsDraws, {
-          ...(rules?.seeds === undefined ? {} : { seeds: rules.seeds }),
-          ...(rules?.rngSeed === undefined ? {} : { rngSeed: rules.rngSeed }),
-          ...(rules?.winsCount === undefined ? {} : { winsCount: rules.winsCount }),
-        });
-        for (const draw of ranked.newLotsDraws) newLotsDraws.push({ sourceIndex: slot.sourceIndex, ...draw });
-        ordered = ranked.rows;
-        bestNthCache.set(cacheKey, ordered);
+      // — never one candidate at a time. The flag is not in the key: since
+      // ruling 286 it selects nothing, so two rules at one nth read ONE
+      // comparison (and collide on the entrant dedupe below, as two equal
+      // rules always did).
+      const cacheKey = `${slot.sourceIndex}:${d.nth}`;
+      let compared = bestNthCache.get(cacheKey);
+      if (!compared) {
+        compared = compareBestNth(src, d.nth);
+        for (const draw of compared.newLotsDraws) newLotsDraws.push({ sourceIndex: slot.sourceIndex, ...draw });
+        bestNthCache.set(cacheKey, compared);
       }
-      const candidate = ordered[d.position - 1];
+      const candidate = compared.ordered[d.position - 1];
       if (!candidate) {
         throw new EngineError(
           "QUALIFICATION_INVALID",
-          `bestNth needs ${d.position} pools with a rank-${d.nth} finisher, found ${ordered.length}`,
+          `bestNth needs ${d.position} pools with a rank-${d.nth} finisher, found ${compared.ordered.length}`,
           { nth: d.nth, position: d.position },
         );
       }
       row = candidate;
+      pool = compared.poolOf.get(candidate.entrantId);
+      basis = {
+        nth: d.nth,
+        matchesCounted: compared.matchesCounted,
+        dropped: compared.dropped.map((x) => ({ pool: x.pool, against: [...x.against] })),
+        levelWith: [...(compared.levelWith.get(candidate.entrantId) ?? [])],
+      };
     }
 
     if (seen.has(row.entrantId)) {
@@ -871,6 +1038,8 @@ export function resolveProgression(
       entrantId: row.entrantId,
       rank: row.rank ?? 0,
       tieUnbroken: row.tieUnbroken === true,
+      ...(pool === undefined ? {} : { pool }),
+      ...(basis === undefined ? {} : { basis }),
     });
 
     if (row.tieUnbroken === true) {

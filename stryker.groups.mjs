@@ -119,8 +119,8 @@ export const STRYKER_GROUPS = {
   // sport/registry.ts 73, stats/stats.ts 337
   "modules-7": ["src/sport/registry.ts", "src/stats/stats.ts"],
   // ---- draws ----
-  // scheduling/americano.ts 68, scheduling/participants.ts 95, scheduling/roundrobin.ts 134
-  "draws-1": ["src/scheduling/americano.ts", "src/scheduling/participants.ts", "src/scheduling/roundrobin.ts"],
+  // scheduling/americano.ts 68, scheduling/participants.ts 95, scheduling/roundrobin.ts 134, scheduling/catch-up.ts (W5, not yet measured)
+  "draws-1": ["src/scheduling/americano.ts", "src/scheduling/participants.ts", "src/scheduling/roundrobin.ts", "src/scheduling/catch-up.ts"],
   // scheduling/bracket-layout.ts 359, scheduling/feedgraph.ts 22
   "draws-2": ["src/scheduling/bracket-layout.ts", "src/scheduling/feedgraph.ts"],
   // scheduling/bracket.ts 401
