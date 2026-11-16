@@ -11,7 +11,9 @@ export type QualStatus =
   | { kind: "through" }
   | { kind: "out" }
   | { kind: "win_k"; k: number }
-  | { kind: "needs_help" };
+  | { kind: "needs_help" }
+  /** W5 (X-QS-1, RB5-T2): the frozen marker of a complete stage's row that went through. Its pair is `out`. */
+  | { kind: "qualified" };
 
 export interface QualRow {
   entrantId: EntrantId;
@@ -37,6 +39,12 @@ export interface QualificationInput {
   cut: number;
   anyPlayed: boolean;
   complete: boolean;
+  /** Read only when `complete` (RB5-T14): who actually went through — the confirmed proposal or `config.qualified`.
+   *  Wins over `order`. */
+  qualified?: ReadonlySet<EntrantId>;
+  /** Read only when `complete` and `qualified` is absent: the final table in rank order; its first `cut` ACTIVE ids
+   *  are Qualified, the other active rows Out. Every active row must appear exactly once, else no markers. */
+  order?: readonly EntrantId[];
 }
 
 export interface QualRowResult {
@@ -88,11 +96,42 @@ function wellFormed(input: QualificationInput): boolean {
   });
 }
 
-/** Per-row status for one table, or null when the table shows none (§3.3). */
+/** W5 frozen markers (X-QS-1; RB5-T1, T2, T14): a complete stage stops the live computation and reads Qualified / Out
+ *  from who went through (`qualified`), else the final table's cut (`order`). No order source, or a malformed one, fails
+ *  closed (null for the table). A departed row stays null; no marker carries an if-you-lose. */
+function frozenStatus(input: QualificationInput): ReadonlyMap<EntrantId, QualRowResult | null> | null {
+  if (input.rows.length === 0) return null;
+  let through: ReadonlySet<EntrantId>;
+  if (input.qualified !== undefined) {
+    through = input.qualified;
+  } else if (input.order !== undefined) {
+    if (!Number.isInteger(input.cut) || input.cut < 1) return null;
+    const active = new Set(input.rows.filter((row) => row.active).map((row) => row.entrantId));
+    const ranked = input.order.filter((id) => active.has(id));
+    // every active row ranked exactly once, or the cut cannot be placed
+    if (ranked.length !== active.size || new Set(ranked).size !== ranked.length) return null;
+    through = new Set(ranked.slice(0, input.cut));
+  } else {
+    return null;
+  }
+  const out = new Map<EntrantId, QualRowResult | null>();
+  for (const row of input.rows) {
+    if (!row.active) {
+      out.set(row.entrantId, null);
+      continue;
+    }
+    out.set(row.entrantId, { status: through.has(row.entrantId) ? { kind: "qualified" } : { kind: "out" }, ifYouLose: null });
+  }
+  return out;
+}
+
+/** Per-row status for one table, or null when the table shows none (§3.3). A complete stage reads its frozen markers
+ *  (W5, X-QS-1); an open one with nothing played shows none. */
 export function qualificationStatus(
   input: QualificationInput,
 ): ReadonlyMap<EntrantId, QualRowResult | null> | null {
-  if (!input.anyPlayed || input.complete) return null;
+  if (input.complete) return frozenStatus(input);
+  if (!input.anyPlayed) return null;
   if (!Number.isInteger(input.cut) || input.cut < 1 || input.rows.length === 0) return null;
   if (!wellFormed(input)) return null;
   const out = new Map<EntrantId, QualRowResult | null>();

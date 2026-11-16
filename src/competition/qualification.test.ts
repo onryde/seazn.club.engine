@@ -63,6 +63,9 @@ import { generic } from "../sports/generic/index.ts";
 import { icehockey } from "../sports/icehockey/index.ts";
 import type { MatchPointsBounds } from "../sport/module.ts";
 import { legacyPointsRule, pointsRuleBounds, type OutcomeKey } from "./points.ts";
+import { forEachSport } from "../testkit/for-each-sport.ts";
+import { declaredCfgs } from "../testkit/declared-cfgs.ts";
+import { builtinModules } from "../sports/index.ts";
 import {
   bestCase,
   qualificationStatus,
@@ -534,4 +537,116 @@ describe("brute force — statuses hold over every real outcome", () => {
     expect(checkedIfLose).toBeGreaterThanOrEqual(CHECKED_IF_LOSE_FLOOR); // …and reached if-you-lose
     expect(distinct.size).toBeGreaterThanOrEqual(DISTINCT_FLOOR); // …over tables that are really different
   }, 30_000);
+});
+
+// W5 (rows X-QS-1; rulebook RB5-T1, RB5-T2, RB5-T14): at completion the live computation stops and the markers FREEZE as
+// Qualified / Out, read from who actually went through (`qualified`: the confirmed proposal or config.qualified), else the
+// final table's cut (`order`). Expected markers come from the rulebook text applied by hand to each table, never from
+// qualificationStatus. The empty cases are stated first.
+describe("X-QS-1 frozen markers on a complete stage (W5)", () => {
+  const Q: QualStatus = { kind: "qualified" };
+  const OUT: QualStatus = { kind: "out" };
+  // a..d on generic points; the markers never read points, so any table will do.
+  const four = (opts: { inactive?: string[]; anyPlayed?: boolean; perMatch?: MatchPointsBounds } = {}) =>
+    table({ a: 3 * W, b: 2 * W, c: W, d: 0 }, { cut: 2, complete: true, r: 0, ...opts });
+  const markers = (input: QualificationInput): Record<string, string | null> => {
+    const res = qualificationStatus(input);
+    if (res === null) throw new Error("expected markers, got null for the table");
+    const out: Record<string, string | null> = {};
+    for (const [id, v] of res) {
+      expect(v === null || v.ifYouLose === null, `${id}: a frozen marker has no if-you-lose`).toBe(true);
+      out[id] = v === null ? null : v.status.kind;
+    }
+    return out;
+  };
+
+  it("X-QS-1 empty first: nothing played on an open stage → null; complete with no order source → null", () => {
+    expect(qualificationStatus(table({ a: 0, b: 0 }, { cut: 1, anyPlayed: false }))).toBeNull();
+    // order given but the stage is open and unplayed: still null (the new fields are read only when complete).
+    expect(qualificationStatus({ ...table({ a: 0, b: 0 }, { cut: 1, anyPlayed: false }), order: ["a", "b"] })).toBeNull();
+    // complete, neither `qualified` nor `order`: no order source → fail closed.
+    expect(qualificationStatus(four())).toBeNull();
+    // complete with no rows → null, whatever the order source.
+    expect(qualificationStatus({ ...table({}, { cut: 1, complete: true }), order: [] })).toBeNull();
+  });
+
+  it("X-QS-1 a complete stage reads qualified or out: cut 2 over order a, b, c, d", () => {
+    // differential: today null (qualification.ts:95, `!anyPlayed || complete` → null)
+    // RB5-T1/T2: the first cut (2) of the final table go through → Qualified; the rest → Out.
+    expect(markers({ ...four(), order: ["a", "b", "c", "d"] })).toEqual({ a: "qualified", b: "qualified", c: "out", d: "out" });
+    // the order decides, not points: c above b on a tie-break the table settled.
+    expect(markers({ ...four(), order: ["a", "c", "b", "d"] })).toEqual({ a: "qualified", c: "qualified", b: "out", d: "out" });
+    const res = qualificationStatus({ ...four(), order: ["a", "b", "c", "d"] });
+    expect(res?.get("a")).toEqual({ status: Q, ifYouLose: null });
+    expect(res?.get("d")).toEqual({ status: OUT, ifYouLose: null });
+  });
+
+  it("X-QS-1 who actually went through wins over the cut", () => {
+    // RB5-T14: the confirmed proposal / config.qualified is read first; the order (whose cut would be a, b) is not.
+    expect(markers({ ...four(), qualified: new Set(["a", "c"]), order: ["a", "b", "c", "d"] })).toEqual({
+      a: "qualified", b: "out", c: "qualified", d: "out",
+    });
+    // without an order at all, `qualified` alone freezes the table.
+    expect(markers({ ...four(), qualified: new Set(["d"]) })).toEqual({ a: "out", b: "out", c: "out", d: "qualified" });
+  });
+
+  it("X-QS-1 a departed row stays null", () => {
+    // b departed: the cut counts ACTIVE rows of the order, so a and c take the two places; b has no marker.
+    expect(markers({ ...four({ inactive: ["b"] }), order: ["a", "b", "c", "d"] })).toEqual({
+      a: "qualified", b: null, c: "qualified", d: "out",
+    });
+    // named in `qualified` or not, a departed row stays null.
+    expect(markers({ ...four({ inactive: ["b"] }), qualified: new Set(["a", "b"]) })).toEqual({
+      a: "qualified", b: null, c: "out", d: "out",
+    });
+  });
+
+  it("X-QS-1 an incomplete stage is unchanged: an open table ignores qualified and order", () => {
+    const open = table({ A: 3 * W, B: 0 }, { cut: 1 });
+    const base = qualificationStatus(open);
+    expect(base).not.toBeNull();
+    expect(qualificationStatus({ ...open, order: ["B", "A"], qualified: new Set(["B"]) })).toEqual(base);
+    expect(base?.get("A")?.status.kind).not.toBe("qualified");
+  });
+
+  it("X-QS-1 a malformed order source fails closed (plan's call: every active row ranked once, a whole cut)", () => {
+    // an active row missing from the order: who it outranks is unknown, so no marker is printed for the table.
+    expect(qualificationStatus({ ...four(), order: ["a", "b", "c"] })).toBeNull();
+    // an id listed twice would take two places of the cut.
+    expect(qualificationStatus({ ...four(), order: ["a", "a", "b", "c", "d"] })).toBeNull();
+    // a cut that is not a whole number ≥ 1.
+    expect(qualificationStatus({ ...four(), cut: 1.5, order: ["a", "b", "c", "d"] })).toBeNull();
+    expect(qualificationStatus({ ...four(), cut: 0, order: ["a", "b", "c", "d"] })).toBeNull();
+    // positive pair: a departed row missing from the order is fine (it has no marker to place).
+    expect(markers({ ...four({ inactive: ["d"] }), order: ["a", "b", "c"] })).toEqual({
+      a: "qualified", b: "qualified", c: "out", d: null,
+    });
+  });
+
+  it("X-QS-1 sequence: complete with nothing played, a second call, and every sport's perMatch freeze the same way", () => {
+    // complete with anyPlayed false (a table settled by awards only) still freezes from the order.
+    expect(markers({ ...four({ anyPlayed: false }), order: ["a", "b", "c", "d"] })).toEqual({
+      a: "qualified", b: "qualified", c: "out", d: "out",
+    });
+    // a second call on the same input reads the same.
+    const input = { ...four(), order: ["d", "c", "b", "a"] };
+    expect(markers(input)).toEqual(markers(input));
+    // perMatch is the live forecast's; frozen markers never read it — swept over every sport's own declared bounds.
+    let winsOnly = 0;
+    let cfgs = 0;
+    const visited = forEachSport(({ module }) => {
+      for (const { name, cfg } of declaredCfgs(module)) {
+        const perMatch = module.matchPointsBounds(cfg);
+        if (perMatch.winsOnly) winsOnly++;
+        expect(markers({ ...four({ perMatch }), order: ["a", "c", "b", "d"] }), `${module.key} ${name}`).toEqual({
+          a: "qualified", c: "qualified", b: "out", d: "out",
+        });
+        cfgs++;
+      }
+    });
+    expect(visited).toBe(builtinModules.length);
+    expect(visited).toBeGreaterThan(0);
+    expect(cfgs, "every sport declares at least one cfg").toBeGreaterThanOrEqual(visited);
+    expect(winsOnly, "a wins-based perMatch was among them").toBeGreaterThan(0);
+  });
 });
