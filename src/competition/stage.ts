@@ -136,6 +136,11 @@ interface TableStageFields {
   /** W2d (IH-TB-2): the sport's partial-schedule order (`SportModule.partialScheduleOrder`). Absent = the block does not
    *  split a class whose mini-schedule is incomplete. */
   partialScheduleOrder?: RankContext["partialScheduleOrder"];
+  /** W5 (X-PO-1, RB5-P1, ruling 279): the stage's SEATING — entrant → pool key (a fixture's `poolId`, "" for none). With it,
+   *  every seated entrant is a row of its pool from the first fold, zero played; a declared entrant missing from it (a late
+   *  arrival still waiting) is not a row and is not refused. Absent or EMPTY = today's membership (the entrants of each pool's
+   *  results and awards). */
+  pools?: ReadonlyMap<EntrantId, string>;
 }
 
 /** W2d (spec §5.9, ST-G4, X-TB-7): how this stage compares entrants from DIFFERENT groups (best-Nth) — its effective
@@ -306,6 +311,112 @@ function entrantsOfPool(
   return allEntrants.filter((id) => ids.has(id));
 }
 
+/** W5 (X-PO-2; RB5-E4, RB5-P2; rulings 279, 285): the product floor of a pool — 2, below the federation norm of 3 (deviation). */
+const MIN_POOL_SIZE = 2;
+
+/** W5 (X-PO-2; RB5-E4, RB5-P2): every pool of the seating holds at least `min` entrants, or CONFIG_INVALID
+ *  `pool_too_small` naming the first pool under it (seating order) and `suggestedPools`: the largest count c, no more than the
+ *  pools asked for, whose even split leaves every pool at least `min` (floor(entrants / c) ≥ min), or null when no c ≥ 1 does.
+ *  An empty seating has no pool to refuse. */
+export function validatePoolSizes(pools: ReadonlyMap<EntrantId, string>, min: number = MIN_POOL_SIZE): void {
+  const sizes = new Map<string, number>();
+  for (const pool of pools.values()) sizes.set(pool, (sizes.get(pool) ?? 0) + 1);
+  for (const [pool, size] of sizes) {
+    if (size >= min) continue;
+    const entrants = pools.size;
+    let suggestedPools: number | null = null;
+    for (let count = sizes.size; count >= 1; count--) {
+      if (Math.floor(entrants / count) >= min) {
+        suggestedPools = count;
+        break;
+      }
+    }
+    throw new EngineError(
+      "CONFIG_INVALID",
+      `pool "${pool}" seats ${size}, under the minimum of ${min}: ${entrants} entrants into ${sizes.size} pools` +
+        (suggestedPools === null ? "" : `; ${suggestedPools} pools would work`),
+      { reason: "pool_too_small", pool, size, entrants, pools: sizes.size, suggestedPools },
+    );
+  }
+}
+
+/** W5 (X-PO-3; RB5-P5; ruling 285): rank locks checked at write, so `applyRankLocks` is never reached with an invalid one.
+ *  Each lock's scope is its entrant's pool in `pools`, or the whole of `entrants` when `pools` is absent or empty. CONFIG_INVALID:
+ *  `rank_lock_unknown_entrant` — not declared, or not seated when `pools` is given; `rank_lock_out_of_range` — the rank is not
+ *  an integer in 1..the scope's size; `rank_lock_duplicate_in_pool` — the rank is already pinned in the scope, or the entrant is
+ *  already pinned. Context { entrantId, rank, pool } (`pool` only when `pools` scopes the lock). */
+export function validateRankLocks(locks: readonly RankLock[], entrants: readonly EntrantId[], pools?: ReadonlyMap<EntrantId, string>): void {
+  const seating = pools !== undefined && pools.size > 0 ? pools : undefined;
+  const declared = new Set(entrants);
+  const sizes = new Map<string | undefined, number>();
+  if (seating === undefined) sizes.set(undefined, declared.size);
+  else for (const pool of seating.values()) sizes.set(pool, (sizes.get(pool) ?? 0) + 1);
+  const pinned = new Map<string | undefined, Set<number>>();
+  const lockedEntrants = new Set<EntrantId>();
+  for (const { entrantId, rank } of locks) {
+    const pool = seating?.get(entrantId);
+    if (!declared.has(entrantId) || (seating !== undefined && pool === undefined)) {
+      throw new EngineError("CONFIG_INVALID", `rank lock names "${entrantId}", whom the stage does not seat`, { reason: "rank_lock_unknown_entrant", entrantId, rank });
+    }
+    const context = { entrantId, rank, ...(seating === undefined ? {} : { pool }) };
+    const size = sizes.get(pool) as number;
+    if (!Number.isInteger(rank) || rank < 1 || rank > size) {
+      throw new EngineError("CONFIG_INVALID", `rank lock ${rank} for "${entrantId}" is outside 1..${size}`, { reason: "rank_lock_out_of_range", ...context });
+    }
+    const taken = pinned.get(pool) ?? new Set<number>();
+    if (lockedEntrants.has(entrantId) || taken.has(rank)) {
+      throw new EngineError("CONFIG_INVALID", `rank lock ${rank} for "${entrantId}" pins a rank or an entrant twice`, { reason: "rank_lock_duplicate_in_pool", ...context });
+    }
+    taken.add(rank);
+    pinned.set(pool, taken);
+    lockedEntrants.add(entrantId);
+  }
+}
+
+/** W5 (X-PO-1): the seating's own refusals, before any fold — the pool floor, a seated entrant the stage does not declare,
+ *  a result or award naming an entrant nobody seated (`entrant_unseated`) or one seated in another pool than the fixture's
+ *  (`fixture_pool_mismatch`, naming the entrant's own pool), whatever the fixture's status — and the rank locks, per pool. */
+function assertSeating(stage: TableStage, pools: ReadonlyMap<EntrantId, string>, fixtures: readonly TableFixture[]): void {
+  validatePoolSizes(pools);
+  const declared = new Set(stage.entrants);
+  for (const [entrantId, pool] of pools) {
+    if (!declared.has(entrantId)) {
+      throw new EngineError("CONFIG_INVALID", `"${entrantId}" is seated in pool "${pool}" but the stage does not declare it`, { reason: "entrant_undeclared", entrantId, pool });
+    }
+  }
+  for (const fixture of fixtures) {
+    const named = [...(fixture.result?.map((delta) => delta.entrantId) ?? []), ...(fixture.awardDelta === undefined ? [] : [fixture.awardDelta.entrantId])];
+    for (const entrantId of named) {
+      const pool = pools.get(entrantId);
+      if (pool === undefined) {
+        throw new EngineError("CONFIG_INVALID", `fixture "${fixture.id}" names "${entrantId}", whom no pool seats`, { reason: "entrant_unseated", entrantId, fixtureId: fixture.id });
+      }
+      if (pool !== poolOf(fixture)) {
+        throw new EngineError("CONFIG_INVALID", `fixture "${fixture.id}" of pool "${poolOf(fixture)}" names "${entrantId}", seated in pool "${pool}"`, {
+          reason: "fixture_pool_mismatch",
+          entrantId,
+          fixtureId: fixture.id,
+          pool,
+        });
+      }
+    }
+  }
+  validateRankLocks(stage.rankLocks ?? [], stage.entrants, pools);
+}
+
+// W5 (X-PO-1): a seated stage's pools — first appearance among its fixtures (today's rule), then the seated pools with no
+// fixture, in stage.entrants order. A fixture's pool that seats nobody is no table.
+function seatedPoolNames(pools: ReadonlyMap<EntrantId, string>, fixtures: readonly TableFixture[], entrants: readonly EntrantId[]): string[] {
+  const seatedPools = new Set(pools.values());
+  const names = new Set<string>();
+  for (const fixture of fixtures) if (seatedPools.has(poolOf(fixture))) names.add(poolOf(fixture));
+  for (const id of entrants) {
+    const pool = pools.get(id);
+    if (pool !== undefined) names.add(pool);
+  }
+  return [...names];
+}
+
 export interface CompletedTableStage {
   events: DivisionEvent[];
   tables: StageTables;
@@ -323,15 +434,28 @@ export function completeTableStage(
   stage: TableStage,
   fixtures: readonly TableFixture[],
 ): CompletedTableStage {
-  const pools = poolNames(fixtures);
+  // W5 (X-PO-1): with a seating, membership is the seating, checked before any fold; absent or empty, today's membership.
+  const seating = stage.pools !== undefined && stage.pools.size > 0 ? stage.pools : undefined;
+  if (seating !== undefined) assertSeating(stage, seating, fixtures);
+  const pools = seating === undefined ? poolNames(fixtures) : seatedPoolNames(seating, fixtures, stage.entrants);
   const single = pools.length === 1;
+  const members = new Map(
+    pools.map((pool) => [pool, seating === undefined ? entrantsOfPool(pool, fixtures, stage.entrants, single) : stage.entrants.filter((id) => seating.get(id) === pool)]),
+  );
+  // X-PO-3: without a seating, each pool's locks are checked against the pool its results make (the locks it applies, below).
+  if (seating === undefined && stage.rankLocks !== undefined) {
+    for (const ids of members.values()) {
+      const inPool = new Set(ids);
+      validateRankLocks(stage.rankLocks.filter((l) => inPool.has(l.entrantId)), ids);
+    }
+  }
   const events: DivisionEvent[] = [];
   const poolTables: PoolTable[] = [];
   const newLotsDraws: (NewLotsDraw & { readonly pool: string })[] = [];
 
   for (const pool of pools) {
     const poolFixtures = single ? fixtures : fixtures.filter((fixture) => poolOf(fixture) === pool);
-    const entrants = entrantsOfPool(pool, fixtures, stage.entrants, single);
+    const entrants = members.get(pool) as EntrantId[];
     const counted = poolFixtures.filter((fixture) => COUNTS_FOR_STANDINGS.has(fixture.status) && fixture.result !== undefined);
     const results = counted.map((fixture) => fixture.result as FixtureResult);
     // W3 (X-SW-9): the counted results nothing was played in — the same tuples — for a Swiss stage's head-to-head steps.
