@@ -27,6 +27,8 @@
 // `package.json`.
 
 export * from "./roundrobin.ts";
+// W5 late entry: the catch-up fixture set for an entrant who joins a started round robin.
+export * from "./catch-up.ts";
 export * from "./swiss.ts";
 export * from "./bracket.ts";
 export * from "./calendar.ts";

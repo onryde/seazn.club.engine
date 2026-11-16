@@ -152,20 +152,21 @@ describe("every engine source file has exactly one Stryker home (rulings 66, 67)
     }
   });
 
-  it("the scheduling files ruling 67 names as excluded are each excluded by name, and nothing else under scheduling/ is (the seven draw generators stay in)", () => {
+  it("the scheduling files ruling 67 names as excluded are each excluded by name, and nothing else under scheduling/ is (the seven draw generators and W5's catch-up stay in)", () => {
     for (const n of ["index", "solver-test-bounds", "payload-fixtures"]) {
       expect(Object.keys(STRYKER_EXCLUDED), n).toContain(`src/scheduling/${n}.ts`);
     }
     const scheduling = Object.keys(STRYKER_EXCLUDED).filter((k) => k.startsWith("src/scheduling/"));
     expect(scheduling).toHaveLength(3);
-    // the seven draw generators are not excluded and not placement, and the draws legs hold exactly those seven
+    // the seven draw generators, plus W5's late-entry catch-up (catch-up.ts, homed in draws-1 beside roundrobin.ts), are not excluded and
+    // not placement, and the draws legs hold exactly those eight
     const draws = STRYKER_FAMILIES.draws.flatMap((g) => STRYKER_GROUPS[g as keyof typeof STRYKER_GROUPS]);
-    for (const n of ["bracket", "bracket-layout", "roundrobin", "swiss", "americano", "participants", "feedgraph"]) {
+    for (const n of ["bracket", "bracket-layout", "roundrobin", "swiss", "americano", "participants", "feedgraph", "catch-up"]) {
       expect(inMap(STRYKER_EXCLUDED, `src/scheduling/${n}.ts`), `${n} excluded`).toBe(false);
       expect(inMap(STRYKER_PLACEMENT_OUT_OF_SCOPE, `src/scheduling/${n}.ts`), `${n} placement`).toBe(false);
       expect(draws.filter((e) => e === `src/scheduling/${n}.ts`), `${n} in exactly one draws leg`).toHaveLength(1);
     }
-    expect(draws).toHaveLength(7);
+    expect(draws).toHaveLength(8);
   });
 
   it("no in-scope production file imports payload-fixtures.ts, the file excluded because it feeds only the placement tests (review 4, R4-m4)", () => {
