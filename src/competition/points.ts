@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { EntrantId, ForfeitAward, MatchOutcome, MetricSpec, StageKind, StandingsDelta } from "../core/types.ts";
 import { EngineError } from "../core/errors.ts";
 import { awardReasonOf } from "../sport/forfeit-credit.ts";
-import type { AnySportModule, AwardScoreKeys, DecidedIn, MatchPointsBounds } from "../sport/module.ts";
+import type { AnySportModule, AwardScoreKeys, DecidedIn, MatchPointsBounds, TiebreakerKey } from "../sport/module.ts";
 import { DECIDED_IN } from "./decided-in.ts";
 import { DEFAULT_BALLS_PER_OVER, overLengthOf, type TableLayout } from "./display.ts";
 import type { FixtureResult, StandingsRow } from "./standings.ts";
@@ -677,8 +677,9 @@ export interface RankLock {
 // before the cascade (completeTableStage) and noted on its pool's table (PoolTable.notes).
 // ---------------------------------------------------------------------------
 
-/** One "adjust points" ledger row. `delta` is in the stage PointsRule's stored unit ("half" stores half-points) and adds
- *  to `StandingsRow.points` only; `at` is the ledger row's date (ISO), shown with the reason. */
+/** One "adjust points" ledger row. `delta` is in the sport's RANKING UNIT (`adjustmentUnitOf`, RB5-T15): table points in
+ *  the stage PointsRule's stored unit ("half" stores half-points) where points rank first, else matches won (a match's
+ *  worth where points are matches won). `at` is the ledger row's date (ISO), shown with the reason. */
 export interface PointsAdjustment {
   entrantId: EntrantId;
   delta: number;
@@ -686,13 +687,29 @@ export interface PointsAdjustment {
   at: string;
 }
 
-/** A pool table's footnote for one adjustment (`PoolTable.notes`), in ledger order. */
+/** A pool table's footnote for one adjustment (`PoolTable.notes`), in ledger order; `unit` is what `delta` moved. */
 export interface AdjustmentNote {
   kind: "adjustment";
   entrantId: EntrantId;
   delta: number;
+  unit: AdjustmentUnit;
   reason: string;
   at: string;
+}
+
+/** What an adjustment moves (RB5-T15; B5–B6 review I1): the row field the sport ranks by. */
+export type AdjustmentUnit = "points" | "wins";
+
+/** RB5-T15: an adjustment moves whatever the sport counts as points — the first of `points` and `wins` in the pool's
+ *  cascade (the stage's own `rules.tiebreakers`, the sport's declaration or the organiser's order). A wins-led cascade
+ *  (badminton, tennis, volleyball's defaults) ranks by matches won, so its adjustment is N matches' worth on `wins`; a
+ *  cascade naming neither ranks nothing by either, and the adjustment stays on `points`, which every table folds. */
+export function adjustmentUnitOf(cascade: readonly TiebreakerKey[]): AdjustmentUnit {
+  for (const key of cascade) {
+    if (key === "points") return "points";
+    if (key === "wins") return "wins";
+  }
+  return "points";
 }
 
 /** RB5-E8 (X-ADJ-3): every adjustment is finite, non-zero, reasoned and for an entrant the stage declares, else
@@ -705,7 +722,7 @@ export function validatePointsAdjustments(adjustments: readonly PointsAdjustment
     };
     if (!Number.isFinite(a.delta)) refuse("adjustment_not_finite", `adjustment ${index} for "${a.entrantId}" is not a finite number`);
     if (a.delta === 0) refuse("adjustment_zero", `adjustment ${index} for "${a.entrantId}" adjusts by 0`);
-    if (a.reason.trim() === "") refuse("adjustment_reason_missing", `adjustment ${index} for "${a.entrantId}" gives no reason`);
+    if (typeof a.reason !== "string" || a.reason.trim() === "") refuse("adjustment_reason_missing", `adjustment ${index} for "${a.entrantId}" gives no reason`);
     if (!declared.has(a.entrantId)) refuse("adjustment_unknown_entrant", `adjustment ${index} names "${a.entrantId}", whom the stage does not declare`);
   });
 }

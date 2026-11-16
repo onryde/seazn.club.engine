@@ -62,8 +62,6 @@ const reasonOf = (fn: () => unknown): unknown => {
   throw new Error("expected a refusal, got a result");
 };
 
-const rowsOf = (stage: TableStage, fixtures: readonly TableFixture[]): StandingsRow[] =>
-  completeTableStage(stage, fixtures).tables.pools[0]!.rows as StandingsRow[];
 const order = (rows: readonly StandingsRow[]): EntrantId[] => rows.map((r) => r.entrantId);
 const row = (rows: readonly StandingsRow[], id: EntrantId): StandingsRow => rows.find((r) => r.entrantId === id)!;
 
@@ -131,7 +129,7 @@ describe("X-ADJ-1 an adjustment folds before the cascade and is noted", () => {
     const pool = tables.pools[0]!;
     expect(row(pool.rows, "A")).toMatchObject({ points: 0, played: 1, won: 1, drawn: 0, lost: 0 });
     expect(order(pool.rows)[2]).toBe("A");
-    expect(pool.notes).toEqual([{ kind: "adjustment", entrantId: "A", delta: -3, reason: "fielded an ineligible player", at: "2026-11-10" }]);
+    expect(pool.notes).toEqual([{ kind: "adjustment", entrantId: "A", delta: -3, unit: "points", reason: "fielded an ineligible player", at: "2026-11-10" }]);
   });
 
   it("X-ADJ-1 an adjustment folds before the cascade and is noted: nothing played, C −3 ranks last (Review Focus 5)", () => {
@@ -165,7 +163,7 @@ describe("X-ADJ-1 an adjustment folds before the cascade and is noted", () => {
     const P = tables.pools.find((t) => t.pool === "P")!;
     const Q = tables.pools.find((t) => t.pool === "Q")!;
     expect("notes" in P).toBe(false);
-    expect(Q.notes).toEqual([{ kind: "adjustment", entrantId: "D", delta: 2, reason: "bonus", at: "2026-11-12" }]);
+    expect(Q.notes).toEqual([{ kind: "adjustment", entrantId: "D", delta: 2, unit: "points", reason: "bonus", at: "2026-11-12" }]);
     // D lost 0-1 (0 points) + 2 = 2, still below C's 3: the order stands and D moved by exactly 2.
     expect(row(Q.rows, "D").points).toBe(2);
     expect(order(Q.rows)).toEqual(["C", "D"]);
@@ -173,25 +171,49 @@ describe("X-ADJ-1 an adjustment folds before the cascade and is noted", () => {
 });
 
 describe("X-ADJ-2 N is a match's worth where points are matches won", () => {
-  it("X-ADJ-2 N is a match's worth where points are matches won: every sport, N = its declared regulation win", () => {
-    let cfgs = 0;
+  it("X-ADJ-2 N is a match's worth where points are matches won: every sport, +N ranks first and −N last", () => {
+    // RB5-T15 (B5–B6 review I1): N moves whatever the sport ranks by — the first of points and wins in its own league
+    // cascade (read off the declaration here, not from the code under test). Nothing played, so only the adjustment
+    // separates: z (−N) is listed first and y (+N) last, so a fold that did not reach the ranking leaves them in place.
+    const units = { points: 0, wins: 0 };
     const visited = forEachSport(({ module }) => {
       const cfg = cfgOf(module);
-      // RB5-T15: N is in the sport's own points unit — one regulation win as the sport's table pays it.
       const N = module.tablePointsRule(cfg, "league").win.regulation;
       expect(N, `${module.key}: a win pays something`).not.toBe(0);
       const rules = rulesFor(module);
-      const base: TableStage = { id: `x-${module.key}`, kind: "league", entrants: ["x", "y"], rules, rngSeed: 1 };
-      const without = rowsOf(base, []);
-      const withAdj = rowsOf({ ...base, adjustments: [adj("y", N)] }, []);
-      expect(row(withAdj, "y").points - row(without, "y").points, module.key).toBe(N);
-      expect(row(withAdj, "x").points, module.key).toBe(row(without, "x").points);
-      expect(row(withAdj, "y").played, module.key).toBe(0);
-      cfgs++;
+      const unit = rules.tiebreakers.find((k) => k === "points" || k === "wins") ?? "points";
+      units[unit]++;
+      const base: TableStage = {
+        id: `x-${module.key}`, kind: "league", entrants: ["z", "x", "y"], rules, rngSeed: 1,
+        ...(module.winsCount === undefined ? {} : { winsCount: module.winsCount }),
+      };
+      const { tables } = completeTableStage({ ...base, adjustments: [adj("y", N), adj("z", -N)] }, []);
+      const rows = tables.pools[0]!.rows;
+      // soft: a broken fold reds every sport it breaks, not only the first in registry order
+      expect.soft(order(rows)[0], `${module.key} (${rules.tiebreakers.join(",")}) +N first`).toBe("y");
+      expect.soft(order(rows)[2], `${module.key} (${rules.tiebreakers.join(",")}) −N last`).toBe("z");
+      // the row value moves on the unit, and only there; nothing is played
+      const y = row(rows, "y");
+      expect.soft([y.points, y.won, y.played], `${module.key} row`).toEqual(unit === "points" ? [N, 0, 0] : [0, N, 0]);
+      expect(tables.pools[0]!.notes?.map((n) => n.unit), module.key).toEqual([unit, unit]);
     });
     expect(visited).toBe(builtinModules.length);
     expect(visited).toBeGreaterThan(0);
-    expect(cfgs).toBe(visited);
+    // both units are exercised by the registry (badminton, tennis, volleyball lead on wins; football on points)
+    expect(units.points).toBeGreaterThan(0);
+    expect(units.wins).toBeGreaterThan(0);
+    expect(units.points + units.wins).toBe(visited);
+  });
+
+  it("X-ADJ-2 N is a match's worth where points are matches won: a wins-led −1 drops a match's worth on wins", () => {
+    // single-sport: badminton's league cascade leads on wins (its declaration), the case the review found ranking first.
+    const badminton = moduleOf("badminton");
+    const rules = rulesFor(badminton);
+    expect(rules.tiebreakers[0]).toBe("wins"); // premise
+    // Nothing played: x, y, z level; z −1 must rank last (before the fix it stayed second, the fold moved only points).
+    const { tables } = completeTableStage({ id: "bd", kind: "league", entrants: ["x", "z", "y"], rules, rngSeed: 1, adjustments: [adj("z", -1)] }, []);
+    expect(order(tables.pools[0]!.rows)[2]).toBe("z");
+    expect(row(tables.pools[0]!.rows, "z")).toMatchObject({ won: -1, points: 0, played: 0 });
   });
 });
 
@@ -229,7 +251,7 @@ describe("W5 points adjustments — sequence", () => {
     const pool = tables.pools[0]!;
     expect(row(pool.rows, "D")).toMatchObject({ played: 0, points: -1 });
     expect(row(pool.rows, "A")).toMatchObject({ played: 1, points: 3 }); // the A v D win is gone
-    expect(pool.notes).toEqual([{ kind: "adjustment", entrantId: "D", delta: -1, reason: "unpaid fee", at: "2026-11-03" }]);
+    expect(pool.notes).toEqual([{ kind: "adjustment", entrantId: "D", delta: -1, unit: "points", reason: "unpaid fee", at: "2026-11-03" }]);
   });
 
   it("a Swiss ledger stage folds the adjustment into its points (RB5-T8: the adjusted score drives the next pairing)", () => {
@@ -246,6 +268,38 @@ describe("W5 points adjustments — sequence", () => {
     expect(row(rows, "B")).toMatchObject({ points: 3, played: 1, lost: 1 });
     expect(row(rows, "A").points).toBe(3);
     expect(tables.pools[0]!.notes).toHaveLength(1);
+  });
+});
+
+describe("W5 points adjustments — an entrant no table holds (B5–B6 review m1, m6)", () => {
+  it("seated: an adjustment for a declared entrant no pool seats is refused, adjustment_unseated", () => {
+    const rules = rulesFor(football, "group");
+    const stage: TableStage = {
+      id: "g", kind: "group", entrants: ["a", "b", "c", "d", "late"], rules, rngSeed: 1,
+      pools: new Map([["a", "P"], ["b", "P"], ["c", "Q"], ["d", "Q"]]),
+      adjustments: [adj("d", -1), adj("late", -3)],
+    };
+    expect(reasonOf(() => completeTableStage(stage, []))).toEqual({ code: "CONFIG_INVALID", reason: "adjustment_unseated", entrantId: "late", index: 1 });
+    // positive pair: the same stage without the unseated row folds
+    expect(() => completeTableStage({ ...stage, adjustments: [adj("d", -1)] }, [])).not.toThrow();
+  });
+
+  it("unseated multi-pool: an adjustment for an entrant who is a row of no pool is held nowhere and not refused (documented)", () => {
+    // Today's membership (no seating): pools P and Q have only scheduled fixtures, so no entrant is a row yet; d's −3
+    // has no table to sit in. Pinned as the documented behaviour: no refusal, no row, no note.
+    const rules = rulesFor(football, "group");
+    const { tables } = completeTableStage(
+      { id: "g", kind: "group", entrants: ["a", "b", "c", "d"], rules, rngSeed: 1, adjustments: [adj("d", -3)] },
+      [{ id: "1", poolId: "P", status: "scheduled" }, { id: "2", poolId: "Q", status: "scheduled" }],
+    );
+    expect(tables.pools.map((p) => [p.pool, p.rows.length, p.notes ?? null])).toEqual([["P", 0, null], ["Q", 0, null]]);
+  });
+
+  it("a reason that is not a string is refused by name, not a TypeError", () => {
+    for (const bad of [undefined, 42, null]) {
+      const a = { ...adj("A", -1), reason: bad as unknown as string };
+      expect(reasonOf(() => validatePointsAdjustments([a], ["A"]))).toEqual({ code: "CONFIG_INVALID", reason: "adjustment_reason_missing", entrantId: "A", index: 0 });
+    }
   });
 });
 

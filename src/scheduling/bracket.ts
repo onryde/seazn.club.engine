@@ -320,6 +320,21 @@ export function crossPoolDraw(
 ): CrossPoolDraw {
   const n = seeded.length;
   if (n === 0) throw new EngineError("CONFIG_INVALID", "a cross-pool draw needs qualifiers", { reason: "no_qualifiers" });
+  // B5–B6 review m4: a tier is a rank or an nth (a whole number ≥ 1), and each qualifier is placed once.
+  const seen = new Set<EntrantId>();
+  for (const s of seeded) {
+    if (!Number.isInteger(s.tier) || s.tier < 1) {
+      throw new EngineError("CONFIG_INVALID", `"${s.entrantId}" has tier ${s.tier}; a tier is a whole number ≥ 1`, {
+        reason: "tier_invalid",
+        entrantId: s.entrantId,
+        tier: s.tier,
+      });
+    }
+    if (seen.has(s.entrantId)) {
+      throw new EngineError("CONFIG_INVALID", `"${s.entrantId}" is listed twice`, { reason: "duplicate_entrant", entrantId: s.entrantId });
+    }
+    seen.add(s.entrantId);
+  }
   for (let i = 1; i < n; i++) {
     if ((seeded[i] as PooledSeed).tier < (seeded[i - 1] as PooledSeed).tier) {
       throw new EngineError("CONFIG_INVALID", "seed tiers must not go down along the draw", {

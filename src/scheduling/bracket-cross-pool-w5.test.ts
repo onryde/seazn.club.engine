@@ -147,6 +147,23 @@ describe("crossPoolDraw refusals (stated first — the empty and malformed input
     expect(() => crossPoolDraw(inside, "single_elim", 1)).not.toThrow();
   });
 
+  it("a tier that is not a whole number ≥ 1 → tier_invalid; a qualifier listed twice → duplicate_entrant (B5–B6 m4)", () => {
+    let checked = 0;
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      expect(refusalOf(() => crossPoolDraw([ps("A1"), ps("B1", { tier: bad })], "single_elim", 1)).data, String(bad)).toEqual({
+        reason: "tier_invalid",
+        entrantId: "B1",
+        tier: bad,
+      });
+      checked++;
+    }
+    expect(checked).toBe(4);
+    expect(refusalOf(() => crossPoolDraw([ps("A1"), ps("B1"), ps("A1")], "single_elim", 1)).data).toEqual({
+      reason: "duplicate_entrant",
+      entrantId: "A1",
+    });
+  });
+
   it("a page playoff needs exactly four (plan's call: generatePagePlayoff's own count, refused by name)", () => {
     expect(refusalOf(() => crossPoolDraw(seeds("A1", "B1", "C1"), "page_playoff", 1)).data).toEqual({
       reason: "page_playoff_needs_four",
@@ -223,6 +240,53 @@ describe("X-PD-1 no pool-mates in round one", () => {
     expect(tally.separated).toBeGreaterThan(0);
     expect(tally.refused).toBeGreaterThan(0);
     expect(tally.separated + tally.refused).toBe(tally.checked);
+  });
+});
+
+describe("X-PD-3 property: tied tier-2 runs over the X-PD-1 sweep (B5–B6 m5)", () => {
+  it("X-PD-3 property: every pooled shape with its runners-up level separates from shuffle(seed, run) or refuses", () => {
+    // The X-PD-1 sweep's masks with two or more runners-up, every runner-up after the first `tied` (one level run,
+    // a best-Nth tier). Step 1 per RB5-D3 is shuffle(seed, run) from core/rng.ts; the brute force then searches from it.
+    const POOLS = "ABCDEF";
+    const SEEDS = [1, 2, 7];
+    let checked = 0;
+    let refused = 0;
+    let varied = 0; // (mask, shape) cases whose three seeds gave at least two different draws: the seed is live
+    for (let p = 2; p <= 6; p++) {
+      for (let mask = 0; mask < 1 << p; mask++) {
+        const pools = POOLS.slice(0, p).split("");
+        const runners = pools.filter((_, i) => (mask >> i) & 1).map((x) => `${x}2`);
+        if (runners.length < 2) continue;
+        const winners = pools.map((x) => `${x}1`);
+        const input = [...seeds(...winners), ...runners.map((id, i) => ps(id, { tied: i > 0 }))];
+        const n = input.length;
+        const shapes: FirstRoundShape[] = n === 4 ? ["single_elim", "stepladder", "page_playoff"] : ["single_elim", "stepladder"];
+        for (const shape of shapes) {
+          const draws = new Set<string>();
+          for (const drawSeed of SEEDS) {
+            const base = [...seeds(...winners), ...shuffle(drawSeed, runners).map((id) => ps(id))];
+            const expected = bruteForce(base, shape);
+            if (expected === null) {
+              refused++;
+              expect(reasonOf(() => crossPoolDraw(input, shape, drawSeed))).toBe("pool_separation_impossible");
+            } else {
+              const got = crossPoolDraw(input, shape, drawSeed).order;
+              expect(got, `${shape} ${runners.join(",")} seed ${drawSeed}`).toEqual(expected);
+              draws.add(got.join(","));
+            }
+            checked++;
+          }
+          if (draws.size >= 2) varied++;
+        }
+      }
+    }
+    // masks with ≥ 2 runners-up: Σ (2^p − 1 − p) for p = 2..6 = 1 + 4 + 11 + 26 + 57 = 99; × 2 shapes, + 1 page playoff
+    // (p = 2, both doubled → n = 4) = 199; × 3 seeds = 597.
+    expect(checked).toBe(597);
+    // Refusals are counted, not required: with two or more runners-up a separating permutation usually exists, and the
+    // refusal half is the X-PD-1 sweep's. The seed must move the draw somewhere.
+    expect(refused).toBeLessThan(checked);
+    expect(varied).toBeGreaterThan(0);
   });
 });
 
@@ -343,6 +407,16 @@ describe("X-PD-6 byes stay on the top seeds and never force a pair", () => {
     expect(b.fixtures.filter((f) => f.award !== undefined).map((f) => f.award).sort()).toEqual(["A1", "B1"]);
     // A bye line never constrains: A1 (bye) and A2 share a pool and both stay in the draw unrefused.
     expect(d.order.slice(0, 2)).toEqual(["A1", "B1"]);
+  });
+
+  it("X-PD-6 byes stay on the top seeds and never force a pair: an all-tier-2 draw whose search moves the bye", () => {
+    // Three runners-up, no pool winner (tier 2 permutes in full, plan's call): B2, A2, A9 (A9 a second A entrant of tier 2)
+    // into 4. seedPositions(4) = [1,4,3,2]: seed 1 has the bye, 3v2 is real. Identity: A9 v A2 ✗. Lexicographic search:
+    // seed 1 = B2 → seed 2 = A2 → A9 v A2 ✗; seed 2 = A9 → A2 v A9 ✗; seed 1 = A2 → seed 2 = B2 → A9 v B2 ✓.
+    // The bye moves from B2 to A2: it still goes to seed 1, and it never forces a pair.
+    const d = crossPoolDraw([ps("B2"), ps("A2"), ps("A9", { tier: 2 })], "single_elim", 1);
+    expect(d.order).toEqual(["A2", "B2", "A9"]);
+    expect(roundOne(d.order, d.slotOrder as (number | null)[])).toEqual(["A2 bye", "A9 v B2"]);
   });
 
   it("X-PD-6 byes stay on the top seeds and never force a pair: A1, B1, A2 into 4 is not refused", () => {

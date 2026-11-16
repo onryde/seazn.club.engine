@@ -9,6 +9,7 @@ import type { EntrantId, StageKind } from "../core/types.ts";
 import type { BracketSlotRef } from "../scheduling/bracket.ts";
 import { foldResults, foldStandings, type FixtureResult } from "./standings.ts";
 import {
+  adjustmentUnitOf,
   applyRankLocks,
   swissDrawPoints,
   validatePointsAdjustments,
@@ -150,9 +151,13 @@ interface TableStageFields {
    *  results and awards). */
   pools?: ReadonlyMap<EntrantId, string>;
   /** W5 (X-ADJ-1..3; RB5-T7, RB5-T15, RB5-E8; ruling 284): reasoned points adjustments, in ledger order. Each folds as an
-   *  opening delta (played 0, points = delta) before the cascade, counts toward the pool's counted fixtures like a carried
-   *  opening with points, and is noted on its pool's table (`PoolTable.notes`). Refused before any fold when zero,
-   *  reasonless, non-finite or for an undeclared entrant (`validatePointsAdjustments`). `openingDeltas` stays carry-over's. */
+   *  opening delta that plays nothing (played 0) before the cascade, on the sport's ranking unit (`adjustmentUnitOf` over
+   *  `rules.tiebreakers`: `points`, or `won` where wins rank first), counts toward the pool's counted fixtures like a
+   *  carried opening with points, and is noted on its pool's table (`PoolTable.notes`). Refused before any fold when zero,
+   *  reasonless, non-finite or for an undeclared entrant (`validatePointsAdjustments`), and, with a seating, for a declared
+   *  entrant no pool seats (`adjustment_unseated`). Without a seating, an adjustment for an entrant who is a row of no pool
+   *  (no result or award yet in a pooled stage) is folded nowhere and noted nowhere — not refused: today's membership has
+   *  no row to hold it until the entrant appears. `openingDeltas` stays carry-over's. */
   adjustments?: readonly PointsAdjustment[];
 }
 
@@ -169,6 +174,9 @@ export function crossGroupRulesOf(stage: TableStage): CrossGroupRules {
     ...(stage.seeds === undefined ? {} : { seeds: stage.seeds }),
     ...(stage.rngSeed === undefined ? {} : { rngSeed: stage.rngSeed }),
     ...(stage.winsCount === undefined ? {} : { winsCount: stage.winsCount }),
+    // B5–B6 review I2: the stage's game-points rule rides with its cross-group rules, so a best-Nth that recomputes SB on a
+    // reduced row reads it without a second wire (SourceTables.gamePoints stays an override).
+    ...(stage.gamePoints === undefined ? {} : { gamePoints: stage.gamePoints }),
   };
 }
 
@@ -460,6 +468,19 @@ export function completeTableStage(
   const seating = stage.pools !== undefined && stage.pools.size > 0 ? stage.pools : undefined;
   if (seating !== undefined) assertSeating(stage, seating, fixtures);
   validatePointsAdjustments(stage.adjustments ?? [], stage.entrants);
+  if (seating !== undefined) {
+    (stage.adjustments ?? []).forEach((a, index) => {
+      if (!seating.has(a.entrantId)) {
+        throw new EngineError("CONFIG_INVALID", `adjustment ${index} names "${a.entrantId}", whom no pool seats`, {
+          reason: "adjustment_unseated",
+          entrantId: a.entrantId,
+          index,
+        });
+      }
+    });
+  }
+  // RB5-T15 (B5–B6 review I1): an adjustment moves the unit the pool's cascade ranks by.
+  const adjustmentUnit = adjustmentUnitOf(stage.rules.tiebreakers);
   const pools = seating === undefined ? poolNames(fixtures) : seatedPoolNames(seating, fixtures, stage.entrants);
   const single = pools.length === 1;
   const members = new Map(
@@ -489,9 +510,19 @@ export function completeTableStage(
 
     const entrantSet = new Set(entrants);
     const openings = (stage.openingDeltas ?? []).filter((d) => entrantSet.has(d.entrantId));
-    // W5 (X-ADJ-1): the pool's adjustments, each an opening that plays nothing and moves points by its delta.
+    // W5 (X-ADJ-1): the pool's adjustments, each an opening that plays nothing and moves the ranking unit by its delta.
     const poolAdjustments = (stage.adjustments ?? []).filter((a) => entrantSet.has(a.entrantId));
-    const adjusted = poolAdjustments.map((a): StandingsDelta => ({ entrantId: a.entrantId, played: 0, won: 0, drawn: 0, lost: 0, points: a.delta, metrics: {} }));
+    const adjusted = poolAdjustments.map(
+      (a): StandingsDelta => ({
+        entrantId: a.entrantId,
+        played: 0,
+        won: adjustmentUnit === "wins" ? a.delta : 0,
+        drawn: 0,
+        lost: 0,
+        points: adjustmentUnit === "points" ? a.delta : 0,
+        metrics: {},
+      }),
+    );
     const rows =
       openings.length > 0 || adjusted.length > 0 || awardDeltas.length > 0
         ? foldStandings(entrants, [...openings, ...adjusted, ...results.flat(), ...awardDeltas])
@@ -539,7 +570,7 @@ export function completeTableStage(
       }
     }
     for (const draw of ranked.newLotsDraws) newLotsDraws.push({ pool, ...draw });
-    const notes = poolAdjustments.map((a): AdjustmentNote => ({ kind: "adjustment", entrantId: a.entrantId, delta: a.delta, reason: a.reason, at: a.at }));
+    const notes = poolAdjustments.map((a): AdjustmentNote => ({ kind: "adjustment", entrantId: a.entrantId, delta: a.delta, unit: adjustmentUnit, reason: a.reason, at: a.at }));
     poolTables.push({ pool, rows: ranked.rows, results, ...(notes.length === 0 ? {} : { notes }) });
   }
 

@@ -29,6 +29,7 @@ import {
   type TakeRule,
 } from "./progression.ts";
 import { completeTableStage, crossGroupRulesOf, type TableFixture, type TableStage } from "./stage.ts";
+import { crossPoolDraw, type PooledSeed } from "../scheduling/bracket.ts";
 import { foldResults, type FixtureResult } from "./standings.ts";
 import { resolveTableRules, type TableRulesPin } from "./table-rules.ts";
 import { rankStandings, type StoredLotsDraw } from "./tiebreakers.ts";
@@ -544,14 +545,83 @@ describe("W5 T5 fix round 3 — a reduced boardgame row scores SB in game points
 
   it("a reduced row with a materialised SB and no game-points rule is refused by name, never scored in table points", () => {
     const tables = groupStage(boardgame, [A5bg, B4bg], { points: threeOneZero, gamePoints: fideGamePoints });
-    const { gamePoints: _g, ...without } = tables;
+    // no rule anywhere: neither the override nor the one crossGroupRulesOf forwards (B5–B6 review I2)
+    const { gamePoints: _g, ...rest } = tables;
+    const { gamePoints: _c, ...crossGroup } = rest.crossGroup!;
+    const without: SourceTables = { ...rest, crossGroup };
     const err = caught(() => resolve(without, { kind: "bestNth", nth: 2, count: 1 }));
     expect(err.code).toBe("CONFIG_INVALID");
     expect(err.data).toEqual({ reason: "game_points_missing", pool: "A", entrantId: "a2" });
     // k = 0 everywhere needs none: the rows' own SB is compared as the stage materialised it.
     const equal = groupStage(boardgame, [B4bg, { ...B4bg, pool: "C", members: ["c1", "c2", "c3", "c4"], matches: B4bg.matches.map((m) => g(m.home.replace("b", "c"), m.away.replace("b", "c"), m.hg, m.ag)) }], { points: threeOneZero, gamePoints: fideGamePoints });
-    const { gamePoints: _e, ...equalWithout } = equal;
+    const { gamePoints: _e, ...equalRest } = equal;
+    const { gamePoints: _ec, ...equalCross } = equalRest.crossGroup!;
+    const equalWithout: SourceTables = { ...equalRest, crossGroup: equalCross };
     expect(resolve(equalWithout, { kind: "bestNth", nth: 2, count: 2 }).qualifiers).toHaveLength(2);
+  });
+});
+
+describe("W5 B5–B6 review I2 — the engine forwards the stage's game points into best-Nth", () => {
+  // single-sport: boardgame's `three_one_zero` preset is the one table rule whose points differ from its SB's game points.
+  const threeOneZero = boardgame.tablePresets!("group").points.find((p) => p.id === "three_one_zero")!.rule;
+  // The fix-round-3 scene (A 5, B 4; k(A) = 1 drops a5), 3/1/0 table points, SB in FIDE game points.
+  const A5bg: Pool = {
+    pool: "A",
+    members: ["a1", "a2", "a3", "a4", "a5"],
+    matches: [
+      g("a1", "a2", 1, 0), g("a1", "a3", 1, 0), g("a1", "a4", 0, 0), g("a1", "a5", 1, 0),
+      g("a2", "a3", 1, 0), g("a2", "a4", 0, 0), g("a2", "a5", 1, 0),
+      g("a3", "a4", 1, 0), g("a3", "a5", 1, 0),
+      g("a4", "a5", 1, 0),
+    ],
+  };
+  const B4bg: Pool = {
+    pool: "B",
+    members: ["b1", "b2", "b3", "b4"],
+    matches: [g("b1", "b2", 1, 0), g("b1", "b3", 0, 0), g("b1", "b4", 0, 0), g("b2", "b3", 1, 0), g("b2", "b4", 0, 0), g("b3", "b4", 0, 0)],
+  };
+
+  it("completeTableStage → crossGroupRulesOf → resolveProgression with no SourceTables.gamePoints: not refused, SB in game points", () => {
+    const built = groupStage(boardgame, [A5bg, B4bg], { points: threeOneZero, gamePoints: fideGamePoints });
+    // What the engine's own writers produce: the completed tables plus crossGroupRulesOf(stage) — no hand-passed rule.
+    const { gamePoints: _g, ...tables } = built;
+    expect(tables.crossGroup!.gamePoints).toBe(fideGamePoints); // forwarded from TableStage.gamePoints
+    // SB in game points (fix round 3's derivation): reduced a2 = 1½ < b2's 1¾ → b2, a2.
+    const { qualifiers } = resolve(tables, { kind: "bestNth", nth: 2, count: 2 });
+    expect(ids(qualifiers)).toEqual(["b2", "a2"]);
+  });
+
+  it("SourceTables.gamePoints still overrides the forwarded rule", () => {
+    const built = groupStage(boardgame, [A5bg, B4bg], { points: threeOneZero, gamePoints: fideGamePoints });
+    // Override with the TABLE points: SB(a2) = (2 × 3 + 2) / 4 = 2 > 1¾ (fix round 3's differential) → a2, b2.
+    const tablePoints = (r: FixtureResult): readonly [number, number] => [r[0].points, r[1].points];
+    const { qualifiers } = resolve({ ...built, gamePoints: tablePoints }, { kind: "bestNth", nth: 2, count: 2 });
+    expect(ids(qualifiers)).toEqual(["a2", "b2"]);
+  });
+});
+
+describe("W5 B5–B6 review m7 — best-Nth output feeds the cross-pool draw", () => {
+  it("resolveProgression's pool and basis build the PooledSeeds crossPoolDraw separates", () => {
+    // Football, two pools of 3 (k = 0). A: a1 beat a2 and a3 1-0, a2 beat a3 1-0 → a2 3 points, GD 0.
+    // B: b1 beat b2 and b3 1-0, b2 beat b3 3-0 → b2 3 points, GD +2. Take the winners, then the best two runners-up:
+    // b2 (GD +2) above a2 (GD 0), level with nobody.
+    const A3: Pool = { pool: "A", members: ["a1", "a2", "a3"], matches: [g("a1", "a2", 1, 0), g("a1", "a3", 1, 0), g("a2", "a3", 1, 0)] };
+    const B3: Pool = { pool: "B", members: ["b1", "b2", "b3"], matches: [g("b1", "b2", 1, 0), g("b1", "b3", 1, 0), g("b2", "b3", 3, 0)] };
+    const { qualifiers } = resolve(groupStage(football, [A3, B3]), { kind: "topNPerGroup", n: 1 }, { kind: "bestNth", nth: 2, count: 2 });
+    expect(qualifiers.map((q) => [q.entrantId, q.pool])).toEqual([["a1", "A"], ["b1", "B"], ["b2", "B"], ["a2", "A"]]); // premise
+    // The app's build (interfaces.md G3): tier = rank or nth; tied iff the previous seed is in this one's basis.levelWith.
+    const seeded: PooledSeed[] = qualifiers.map((q, i) => {
+      const d = q.descriptor;
+      const tier = d.kind === "group_rank" ? d.rank : d.kind === "best_nth" ? d.nth : Number.NaN;
+      const prev = qualifiers[i - 1];
+      const tied = prev !== undefined && prev.descriptor.kind === d.kind && (q.basis?.levelWith ?? []).includes(prev.entrantId);
+      return { entrantId: q.entrantId, pool: q.pool!, tier, ...(tied ? { tied } : {}) };
+    });
+    expect(seeded.map((x) => x.tier)).toEqual([1, 1, 2, 2]);
+    // seedPositions(4) = [1,4,3,2]: as resolved, 1v4 = a1 v a2 (pool-mates). The search keeps a1, b1 and swaps tier 2:
+    // seed 3 = a2, seed 4 = b2 → a1 v b2, a2 v b1.
+    const draw = crossPoolDraw(seeded, "single_elim", 1);
+    expect(draw.order).toEqual(["a1", "b1", "a2", "b2"]);
   });
 });
 

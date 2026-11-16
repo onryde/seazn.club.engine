@@ -103,7 +103,11 @@ function frozenStatus(input: QualificationInput): ReadonlyMap<EntrantId, QualRow
   if (input.rows.length === 0) return null;
   let through: ReadonlySet<EntrantId>;
   if (input.qualified !== undefined) {
-    through = input.qualified;
+    // B5–B6 review m3: a `qualified` that names no active row (stale ids, or the empty set) is no order source — fail
+    // closed rather than mark every active row Out.
+    const qualified = input.qualified;
+    if (!input.rows.some((row) => row.active && qualified.has(row.entrantId))) return null;
+    through = qualified;
   } else if (input.order !== undefined) {
     if (!Number.isInteger(input.cut) || input.cut < 1) return null;
     const active = new Set(input.rows.filter((row) => row.active).map((row) => row.entrantId));

@@ -601,6 +601,18 @@ describe("X-QS-1 frozen markers on a complete stage (W5)", () => {
     });
   });
 
+  it("X-QS-1 who actually went through: a qualified set that names no active row fails closed (B5–B6 review m3)", () => {
+    // stale ids (nobody in this table), the empty set, and a set naming only a departed row: no order source → null,
+    // never every active row Out.
+    expect(qualificationStatus({ ...four(), qualified: new Set(["zz"]) })).toBeNull();
+    expect(qualificationStatus({ ...four(), qualified: new Set<string>() })).toBeNull();
+    expect(qualificationStatus({ ...four({ inactive: ["b"] }), qualified: new Set(["b"]) })).toBeNull();
+    // even with an order to fall back on: a given `qualified` is the authority, and a stale one shows nothing.
+    expect(qualificationStatus({ ...four(), qualified: new Set(["zz"]), order: ["a", "b", "c", "d"] })).toBeNull();
+    // positive pair: one live id among stale ones is a source.
+    expect(markers({ ...four(), qualified: new Set(["zz", "c"]) })).toEqual({ a: "out", b: "out", c: "qualified", d: "out" });
+  });
+
   it("X-QS-1 an incomplete stage is unchanged: an open table ignores qualified and order", () => {
     const open = table({ A: 3 * W, B: 0 }, { cut: 1 });
     const base = qualificationStatus(open);

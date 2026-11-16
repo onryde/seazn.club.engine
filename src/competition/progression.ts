@@ -539,7 +539,8 @@ export interface SourceTables {
    *  Best-Nth reads it to recompute a reduced row's `sberger` on the same scale (boardgame's 3/1/0 table points score SB in
    *  game points). Read only for a reduced row (k > 0) that carries a materialised SB; such a row with no rule here is
    *  refused (CONFIG_INVALID `game_points_missing`), never scored on a guessed scale. A stage with no game-points rule of
-   *  its own passes the table points, `(r) => [r[0].points, r[1].points]`. The app's SourceTables builders write it. */
+   *  its own passes the table points, `(r) => [r[0].points, r[1].points]`. An OVERRIDE since B5–B6 review I2: absent, the
+   *  rule `crossGroupRulesOf` forwarded on `crossGroup.gamePoints` is read, so the app needs no second wire. */
   gamePoints?: RankContext["gamePoints"];
 }
 
@@ -552,6 +553,9 @@ export interface CrossGroupRules {
   readonly seeds?: ReadonlyMap<EntrantId, number>;
   readonly rngSeed?: number;
   readonly winsCount?: RankContext["winsCount"];
+  /** W5 (B5–B6 review I2): the stage's game-points rule (`TableStage.gamePoints`), forwarded by `crossGroupRulesOf`: what
+   *  a reduced row's SB is recomputed in. `SourceTables.gamePoints`, when given, overrides it. */
+  readonly gamePoints?: RankContext["gamePoints"];
 }
 
 /** The order best-Nth used before W2d, hard-coded for every sport — and the `crossGroup` every B1-migrated pin records
@@ -696,7 +700,7 @@ function rowAtPosition(table: PoolTable, rank: number): StandingsRow {
  *  pool's tie trace (`tieUnbroken`, `tieBreak`: a within-pool lots tie is still one, B2–B4 I2) and leaves its place
  *  behind (`rank`, `rankLocked`, `level`). A metric the pool's table materialised at rank time rather than summed from
  *  results — `sberger` — is recomputed over the remaining results (`survivors`: the pool minus its expunged and its bottom
- *  k), by `rankStandings` itself, in the source's game points (`SourceTables.gamePoints`; refused without). k = 0 (`bottom`
+ *  k), by `rankStandings` itself, in the source's game points (`SourceTables.gamePoints`, else `crossGroup.gamePoints`; refused without). k = 0 (`bottom`
  *  empty) is the row as ranked — its pool's results already exclude any expunged entrant's (`checkExpunged`). */
 function normalisedRow(
   table: PoolTable,
@@ -811,7 +815,7 @@ function compareBestNth(src: SourceTables, nth: number): BestNthComparison {
     const bottom = byRank.slice(cut).map((r) => r.entrantId);
     if (bottom.length > 0) dropped.push({ pool: table.pool, against: bottom });
     poolOf.set(row.entrantId, table.pool);
-    return normalisedRow(table, row, bottom, byRank.slice(0, cut).map((r) => r.entrantId), src.gamePoints);
+    return normalisedRow(table, row, bottom, byRank.slice(0, cut).map((r) => r.entrantId), src.gamePoints ?? src.crossGroup?.gamePoints);
   });
   const rules = src.crossGroup;
   const order = rules?.order ?? PRE_W2D_CROSS_GROUP;
