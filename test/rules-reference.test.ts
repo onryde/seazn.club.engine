@@ -266,9 +266,10 @@ describe("rules reference (ruling 75, spec §6)", () => {
   it("the parser refuses a row that is not 6 cells, and ID refuses a malformed id (synthetic inputs)", () => {
     expect(() => parseRuleRows(`${ROW_HEADER}\n|---|---|---|---|---|---|\n| X-ZZ-1 | rule | cite | ⬜ open | — |\n`, "bad.md")).toThrow(/5 cells, not 6/);
     let checked = 0;
-    for (const bad of ["x-br-1", "XBR-1", "X-BR-", "ABCD-BR-1"]) { expect(bad, bad).not.toMatch(ID); checked++; }
-    expect(checked).toBe(4);
-    expect("X-BR-1").toMatch(ID); // the positive pair
+    for (const bad of ["x-br-1", "XBR-1", "X-BR-", "ABCD-BR-1", "X-WDTX-1", "X-W-1"]) { expect(bad, bad).not.toMatch(ID); checked++; }
+    expect(checked).toBe(6);
+    // the positive pairs: a two-letter area, and a three-letter one (X-WDT, X-ADJ, X-CUT) since W5
+    for (const ok of ["X-BR-1", "X-WDT-10"]) expect(ok, ok).toMatch(ID);
   });
 
   it("a row's path cells split on <br>, strip backticks and read — as none, and prose after the table is not a row (synthetic input)", () => {
