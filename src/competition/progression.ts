@@ -12,12 +12,7 @@ import type { TiebreakerKey } from "../sport/module.ts";
 import { isHeadToHeadKey } from "./cascade-rules.ts";
 import { firstLossField, type FirstLossField } from "./first-loss.ts";
 import type { FinalPlace, FixtureStatus } from "./stage.ts";
-import {
-  foldResults,
-  resultsAmong,
-  type FixtureResult,
-  type StandingsRow,
-} from "./standings.ts";
+import type { FixtureResult, StandingsRow } from "./standings.ts";
 import {
   rankStandings,
   type MembersKey,
@@ -683,17 +678,29 @@ function rowAtPosition(table: PoolTable, rank: number): StandingsRow {
   return { ...row, tieUnbroken: true, tieBreak: { key: "shared_place", with: sharing } };
 }
 
-/** One pool's candidate compared without the results against its bottom k: the pool's rows minus its expunged entrants
- *  and minus `bottom`, refolded from the results among them. k = 0 (`bottom` empty) is the candidate's own row, as ranked
- *  — its pool's results already exclude any expunged entrant's (`checkExpunged`). */
+/** One pool's candidate compared without the results against its bottom k (ruling 280): the candidate's FULL row as
+ *  ranked minus the dropped results' deltas — every counted field (played, won, drawn, lost, points, every metric) — so a
+ *  carried opening, a sit-out award or a points adjustment stays in, exactly as in a k = 0 pool's row. The pool's trace
+ *  (rank, lots, shared place) is left behind: the row is compared afresh. k = 0 (`bottom` empty) is the row as ranked —
+ *  its pool's results already exclude any expunged entrant's (`checkExpunged`). */
 function normalisedRow(table: PoolTable, candidateId: EntrantId, bottom: readonly EntrantId[]): StandingsRow {
-  if (bottom.length === 0) return table.rows.find((row) => row.entrantId === candidateId)!; // rowAtRank found it there
-  const left = new Set([...(table.expunged ?? []), ...bottom]);
-  const survivors = table.rows.map((row) => row.entrantId).filter((id) => !left.has(id));
-  const refolded = foldResults(survivors, resultsAmong(new Set(survivors), table.results ?? []));
-  const row = refolded.find((entry) => entry.entrantId === candidateId);
-  if (!row) {
-    throw new EngineError("STAGE_NOT_READY", `candidate "${candidateId}" not in its pool table`, { candidateId });
+  const full = table.rows.find((row) => row.entrantId === candidateId)!; // rowAtRank found it there
+  if (bottom.length === 0) return full;
+  if (bottom.includes(candidateId)) {
+    throw new EngineError("STAGE_NOT_READY", `candidate "${candidateId}" is among its pool's bottom ${bottom.length}`, { candidateId });
+  }
+  const dropped = new Set(bottom);
+  const { rank: _r, rankLocked: _l, tieUnbroken: _t, tieBreak: _b, level: _v, ...kept } = full;
+  const row: StandingsRow = { ...kept, metrics: { ...full.metrics } };
+  for (const [home, away] of table.results ?? []) {
+    const mine = home.entrantId === candidateId && dropped.has(away.entrantId) ? home : away.entrantId === candidateId && dropped.has(home.entrantId) ? away : undefined;
+    if (mine === undefined) continue;
+    row.played -= mine.played;
+    row.won -= mine.won;
+    row.drawn -= mine.drawn;
+    row.lost -= mine.lost;
+    row.points -= mine.points;
+    for (const [key, value] of Object.entries(mine.metrics)) row.metrics[key] = (row.metrics[key] ?? 0) - value;
   }
   return row;
 }

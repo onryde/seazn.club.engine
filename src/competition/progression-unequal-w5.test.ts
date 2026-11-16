@@ -91,7 +91,12 @@ const draws = (lots: Readonly<Record<string, readonly EntrantId[]>>): Map<string
 function groupStage(
   module: AnySportModule,
   pools: readonly Pool[],
-  opts: { seeds?: Readonly<Record<EntrantId, number>>; crossLots?: Readonly<Record<string, readonly EntrantId[]>> } = {},
+  opts: {
+    seeds?: Readonly<Record<EntrantId, number>>;
+    crossLots?: Readonly<Record<string, readonly EntrantId[]>>;
+    /** Carried opening points by entrant (`TableStage.openingDeltas`, played 0) — a row component that is no result. */
+    openings?: Readonly<Record<EntrantId, number>>;
+  } = {},
 ): SourceTables {
   const rules = rulesFor(module);
   const fixtures: TableFixture[] = pools.flatMap((p) =>
@@ -106,6 +111,13 @@ function groupStage(
     ...(module.winsCount === undefined ? {} : { winsCount: module.winsCount }),
     ...(opts.seeds === undefined ? {} : { seeds: new Map(Object.entries(opts.seeds)) }),
     ...(lotsDraws.size === 0 ? {} : { lotsDraws }),
+    ...(opts.openings === undefined
+      ? {}
+      : {
+          openingDeltas: Object.entries(opts.openings).map(
+            ([entrantId, points]): StandingsDelta => ({ entrantId, played: 0, won: 0, drawn: 0, lost: 0, points, metrics: {} }),
+          ),
+        }),
   };
   const done = completeTableStage(stage, fixtures);
   const expungedOf = new Map(pools.map((p) => [p.pool, p.expunged]));
@@ -360,6 +372,55 @@ describe("W5 T5 — refusals (Review Focus 4)", () => {
     // k = 0 everywhere needs no results: equal pools without results compare their rows as they are.
     const noResults: SourceTables = { ...tables, pools: tables.pools.map(({ results: _r, ...p }) => (p.pool === "A" ? { ...p, rows: p.rows.slice(0, 4) } : p)) };
     expect(resolve(noResults, { kind: "bestNth", nth: 2, count: 1 }).qualifiers).toHaveLength(1);
+  });
+});
+
+describe("W5 T5 fix round 1 — the reduced row is the full row minus the dropped results (ruling 280)", () => {
+  it("X-UP-1 a carried component on a larger pool's candidate survives the reduction", () => {
+    // X-UP-1's scene with 3 carried opening points on a2 (played 0). Full a2 = 7 + 3 = 10 points from 4; ruling 280
+    // drops only the result v a5 (a W 1-0, 3 points): reduced a2 = 10 − 3 = 7 points from 3, goals 1-1 → above b2's 6
+    // → a2, b2.
+    // differential: before this ruling the carry was lost — the refold from results gave a2 4 points, b2 first.
+    const { qualifiers } = resolve(groupStage(football, [A5, B4], { openings: { a2: 3 } }), { kind: "bestNth", nth: 2, count: 2 });
+    expect(ids(qualifiers)).toEqual(["a2", "b2"]);
+    for (const q of qualifiers) expect(q.basis).toEqual({ nth: 2, matchesCounted: 3, dropped: [{ pool: "A", against: ["a5"] }], levelWith: [] });
+  });
+
+  it("control: over equal pools (k = 0) the compared row is the pool's row as ranked, carry included", () => {
+    // 4/4, nothing dropped. A4: a2 = L a1, W a3, D a4 = 4 points, + 3 carried = 7 > b2's 6 → a2, b2; without the carry
+    // b2 (6) is above a2 (4).
+    const A4: Pool = {
+      pool: "A",
+      members: ["a1", "a2", "a3", "a4"],
+      matches: [g("a1", "a2", 1, 0), g("a1", "a3", 1, 0), g("a1", "a4", 1, 0), g("a2", "a3", 1, 0), g("a2", "a4", 0, 0), g("a3", "a4", 1, 0)],
+    };
+    const carried = resolve(groupStage(football, [A4, B4], { openings: { a2: 3 } }), { kind: "bestNth", nth: 2, count: 2 });
+    expect(ids(carried.qualifiers)).toEqual(["a2", "b2"]);
+    expect(ids(resolve(groupStage(football, [A4, B4]), { kind: "bestNth", nth: 2, count: 2 }).qualifiers)).toEqual(["b2", "a2"]);
+    for (const q of carried.qualifiers) expect(q.basis).toMatchObject({ dropped: [], matchesCounted: 3 });
+  });
+});
+
+describe("W5 T5 fix round 1 — a candidate inside its own pool's bottom k is refused", () => {
+  it("expunges that leave the minimum below nth put B's rank-3 finisher among B's bottom 1: refused, never compared", () => {
+    // A: a1 beat a2; a3 expunged (no results, row kept) → effective 2. B: b1 > b2 > b3, strict → effective 3. nth 3:
+    // k(B) = 3 − 2 = 1, B's bottom 1 is b3 — the candidate itself.
+    const win = (h: EntrantId, a: EntrantId): FixtureResult => [
+      { entrantId: h, played: 1, won: 1, drawn: 0, lost: 0, points: 3, metrics: {} },
+      { entrantId: a, played: 1, won: 0, drawn: 0, lost: 1, points: 0, metrics: {} },
+    ];
+    const ranked = (pool: string, members: EntrantId[], results: FixtureResult[]) => ({
+      pool, results, rows: rankStandings(foldResults(members, results), { cascade: ["points"], results }).rows,
+    });
+    const tables: SourceTables = {
+      pools: [
+        { ...ranked("A", ["a1", "a2", "a3"], [win("a1", "a2")]), expunged: ["a3"] },
+        ranked("B", ["b1", "b2", "b3"], [win("b1", "b2"), win("b1", "b3"), win("b2", "b3")]),
+      ],
+    };
+    const err = caught(() => resolve(tables, { kind: "bestNth", nth: 3, count: 1 }));
+    expect(err.code).toBe("STAGE_NOT_READY");
+    expect(err.data).toEqual({ candidateId: "b3" });
   });
 });
 
