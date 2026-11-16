@@ -39,6 +39,8 @@ export const OPEN = "⬜ open";
  *  - X-PS-1 carries owner ruling 127 (2026-10-13), which amends it after 115: a withdrawal counts as a match in players'
  *    stats if and only if play was recorded before it, still with no personal W/L. Appendix A carries the same text, so
  *    it is not in AMENDED_TEXT;
+ *  - BD-WO-2 and BD-RT-1 carry owner ruling 290 (W5, 2026-11-16), which re-worded both as a permanent recorded deviation from BWF GCR 16.2.5
+ *    ("until W5" dropped; badminton follows ruling 277). Their text is no longer Appendix A's, so they join AMENDED_TEXT in the monorepo checker;
  *  - BG-WO-1 carries owner ruling 254 (W3, 2026-11-01) as a recorded deviation: a chess forfeit after play began (a
  *    retirement) takes no colour, where FIDE C.07 counts that game in colour history. Its text is Appendix A's, so it is
  *    not in AMENDED_TEXT; the ruling-86 signing moved to its citation. */
@@ -58,7 +60,7 @@ export const W2B_ROWS: Readonly<Record<string, Readonly<Record<string, string>>>
   "volleyball.md": { "VB-WO-1": signed(86), "VB-RT-1": signed(108, "2026-10-11") },
   "tabletennis.md": { "TT-WO-1": signed(86), "TT-RT-1": signed(87) },
   "tennis.md": { "TN-WO-1": signed(86), "TN-RT-1": signed(87) },
-  "badminton.md": { "BD-WO-1": signed(86), "BD-WO-2": deviation(86), "BD-RT-1": deviation(87) },
+  "badminton.md": { "BD-WO-1": signed(86), "BD-WO-2": deviation(290, "2026-11-16"), "BD-RT-1": deviation(290, "2026-11-16") },
   "cricket.md": { "CK-WO-1": signed(86), "CK-AB-1": signed(88), "CK-AB-2": signed(88), "CK-WO-2": signed(125, "2026-10-13") },
   "boardgame.md": { "BG-WO-1": deviation(254, "2026-11-01"), "BG-DW-1": signed(84), "BG-WO-2": signed(90), "BG-WO-3": signed(99, "2026-10-09") },
   "carrom.md": { "CA-WO-1": signed(86), "CA-RT-1": signed(87), "CA-AB-1": signed(88) },
