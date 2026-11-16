@@ -1,5 +1,13 @@
 # @onryde/seazn-engine
 
+## 9.1.0
+
+### Minor Changes
+
+- d96daec: W5 round-robin rule rows (rulings 276-291) recorded, awaiting proof; no engine behaviour change.
+  
+  The testkit rule-id grammar accepts a three-letter area (X-WDT, X-ADJ, X-CUT); every id that parsed before still parses.
+
 ## 9.0.0
 
 ### Major Changes
