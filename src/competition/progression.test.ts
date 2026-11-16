@@ -575,7 +575,7 @@ describe("resolveProgression", () => {
     expect(() => resolveProgression(spec, [shape], [tables])).not.toThrow();
   });
 
-  it("bestNth refuses unequal pool sizes by default (carried from stage-seeding.ts, never silently ranks raw stats)", () => {
+  it("bestNth over unequal pools without results refuses pool_results_missing (ruling 286)", () => {
     const tables: SourceTables = {
       pools: [
         { pool: "A", rows: [{ entrantId: "a1", rank: 1 }, { entrantId: "a2", rank: 2 }] as StandingsRow[] },
@@ -586,29 +586,31 @@ describe("resolveProgression", () => {
       sources: [{ stage: "previous", take: [{ kind: "bestNth", nth: 2, count: 2 }] }],
       placement: "rank_order",
     };
+    // RB5-U1/U7/U8: always on — k(A) = 2 − 2 = 0, k(B) = 3 − 2 = 1, and B (the first pool with k > 0) has no results to
+    // drop b3's from, so the comparison cannot be made yet.
+    // differential: before ruling 286 SEEDING_BESTNTH_UNEQUAL_POOLS ("cannot compare rank-2 finishers across pools of different sizes").
     expect(() => resolveProgression(spec, [{ poolKeys: ["A", "B"] }], [tables])).toThrow(
-      /cannot compare rank-2 finishers across pools of different sizes/,
+      expect.objectContaining({ code: "STAGE_NOT_READY", data: { reason: "pool_results_missing", pool: "B" } }),
     );
     // A1 (round-4 review): the message used to claim "UEFA normalisation for
-    // unequal pools isn't implemented" — false, normalisedRow implements it a
-    // few lines above (Decision 2b) and the test right above this one proves
-    // it works. Only the message was wrong; guard against it drifting back.
+    // unequal pools isn't implemented" — false then and false now (the
+    // normalisation runs whenever results are present). Guard against it
+    // drifting back.
     try {
       resolveProgression(spec, [{ poolKeys: ["A", "B"] }], [tables]);
       expect.fail("expected resolveProgression to throw");
     } catch (err) {
       expect((err as Error).message).not.toMatch(/isn't implemented/);
-      expect((err as Error).message).toMatch(/normaliseUnequalPools/);
     }
   });
 
-  // F3 ultrareview finding 1 — the per-resolution bestNth cache was keyed
-  // `${sourceIndex}:${nth}` alone, dropping normaliseUnequalPools. Two rules
-  // on one source at the same nth but a different flag then SHARED an
-  // ordering, and because the unequal-pools guard lives inside the
-  // cache-miss branch, the second rule skipped its own refusal entirely and
-  // silently read rows normalised under a setting it never asked for.
-  it("two bestNth rules at the same nth do NOT share a cached ordering across different normaliseUnequalPools", () => {
+  // F3 ultrareview finding 1 keyed the bestNth cache by the flag too, because
+  // the flag once chose between two orderings (a refusal or a normalisation).
+  // Ruling 286 (RB5-U8): the flag selects no path any more — every rule at one
+  // nth reads the same comparison, so the cache key drops it. With results
+  // present the pair collides on the entrant dedupe, which
+  // progression-unequal-w5.test.ts's sequence test pins.
+  it("the flag no longer splits the bestNth cache: both rules meet the same refusal", () => {
     const tables: SourceTables = {
       pools: [
         { pool: "A", rows: [{ entrantId: "a1", rank: 1 }, { entrantId: "a2", rank: 2 }] as StandingsRow[] },
@@ -627,33 +629,31 @@ describe("resolveProgression", () => {
       ],
       placement: "rank_order",
     };
-    try {
-      resolveProgression(spec, [{ poolKeys: ["A", "B"] }], [tables]);
-      expect.fail("expected resolveProgression to throw");
-    } catch (err) {
-      // Its OWN guard, reached because it missed the cache. With the shared
-      // key it read the first rule's normalised ordering and fell through to
-      // the entrant-dedupe refusal instead — a different error, for a
-      // different reason, hiding a real misconfiguration.
-      expect((err as Error).message).toMatch(/normaliseUnequalPools/);
-    }
+    // RB5-U7: k(B) = 3 − 2 = 1 and B has no results — the first rule's comparison refuses before either rule seats.
+    // differential: before ruling 286 the second rule's own SEEDING_BESTNTH_UNEQUAL_POOLS (/normaliseUnequalPools/).
+    expect(() => resolveProgression(spec, [{ poolKeys: ["A", "B"] }], [tables])).toThrow(
+      expect.objectContaining({ code: "STAGE_NOT_READY", data: { reason: "pool_results_missing", pool: "B" } }),
+    );
   });
 
-  it("bestNth with normaliseUnequalPools:true silences the refusal — Decision 2b, absorbed not newly wired", () => {
+  it("normaliseUnequalPools is accepted and ignored", () => {
     const tables: SourceTables = {
       pools: [
         { pool: "A", rows: [{ entrantId: "a1", rank: 1 }, { entrantId: "a2", rank: 2 }] as StandingsRow[] },
         { pool: "B", rows: [{ entrantId: "b1", rank: 1 }, { entrantId: "b2", rank: 2 }, { entrantId: "b3", rank: 3 }] as StandingsRow[] },
       ],
     };
-    const spec: ProgressionSpec = {
-      sources: [
-        { stage: "previous", take: [{ kind: "bestNth", nth: 2, count: 2, normaliseUnequalPools: true }] },
-      ],
-      placement: "rank_order",
-    };
-    const { qualifiers } = resolveProgression(spec, [{ poolKeys: ["A", "B"] }], [tables]);
-    expect(qualifiers).toHaveLength(2);
+    // RB5-U8 (ruling 286): set or absent, the same comparison — k(B) = 3 − 2 = 1 with no results → the same refusal.
+    // differential: before ruling 286 the flag silenced the refusal and seated 2 qualifiers off the raw rows.
+    for (const take of [
+      { kind: "bestNth", nth: 2, count: 2, normaliseUnequalPools: true },
+      { kind: "bestNth", nth: 2, count: 2 },
+    ] as const) {
+      const spec: ProgressionSpec = { sources: [{ stage: "previous", take: [take] }], placement: "rank_order" };
+      expect(() => resolveProgression(spec, [{ poolKeys: ["A", "B"] }], [tables]), JSON.stringify(take)).toThrow(
+        expect.objectContaining({ code: "STAGE_NOT_READY", data: { reason: "pool_results_missing", pool: "B" } }),
+      );
+    }
   });
 
   // A1 (round-4 review, MAJOR): groups_ko (format-templates.ts) emits a
@@ -664,7 +664,7 @@ describe("resolveProgression", () => {
   // hits bestNth's cross-pool compare, so the format looks healthy right up
   // until real seeding, where it throws SEEDING_BESTNTH_UNEQUAL_POOLS. These
   // two tests separate the two hazards the round-4 review raised.
-  it("groups_ko's real bestNth remainder resolves against unequal pools once normaliseUnequalPools is set", () => {
+  it("groups_ko's real bestNth remainder against unequal pools without results refuses pool_results_missing on the first pool with k > 0", () => {
     // Mirrors qualified:7, poolCount:4 against pool sizes [3,3,2,2] — exactly
     // what snakeDistribute produces for e.g. 10 entrants in 4 pools. Every
     // pool DOES have a rank-2 row (min size is 2), so this isolates the
@@ -688,15 +688,12 @@ describe("resolveProgression", () => {
       placement: "rank_order",
     };
     const shape: SourceShape = { poolKeys: ["A", "B", "C", "D"] };
-    expect(() => resolveProgression(spec, [shape], [tables])).not.toThrow();
-    const { qualifiers } = resolveProgression(spec, [shape], [tables]);
-    expect(qualifiers).toHaveLength(7);
-    // Wave 1 (topNPerGroup) took every pool's own winner — always present
-    // regardless of which 3 of the 4 rank-2 finishers the cross-pool
-    // bestNth remainder's tie order happens to pick (crossGroupOrder has no
-    // seeds context — don't assert which one wins a tie, see this repo's
-    // implementer memory on bestNth's tiebreak).
-    expect(qualifiers.map((q) => q.entrantId)).toEqual(expect.arrayContaining(["A1", "B1", "C1", "D1"]));
+    // RB5-U7: min = 2, k(A) = 3 − 2 = 1 — A is the first pool in pools order with k > 0, and these rows carry no results
+    // (the app passes them with its bump to 10.0.0, G4; format-templates.test.ts "A1 fix" moves then).
+    // differential: before ruling 286 7 qualifiers off the raw rows (the flag silenced the refusal; no results, no drop).
+    expect(() => resolveProgression(spec, [shape], [tables])).toThrow(
+      expect.objectContaining({ code: "STAGE_NOT_READY", data: { reason: "pool_results_missing", pool: "A" } }),
+    );
   });
 
   it("the sibling hazard: nth exceeding a SHORT pool's row count still throws even with normaliseUnequalPools:true — normalisation compares already-existing rows, it does not invent a missing one", () => {
@@ -1015,16 +1012,12 @@ describe("resolveProgression", () => {
   });
 
   // Mirrors qualification.test.ts's "UEFA normalisation flips the pick" —
-  // the given normaliseUnequalPools:true test above only proves the refusal
-  // is silenced (its tables carry no `.results`, so normalisedRow's real
-  // branch never runs — its first branch, `results.length === 0`, always
-  // wins, matching Decision 2b's own "same practical effect as comparing raw
-  // rows" description of production today). THIS test populates `.results`
-  // so the refold branch actually executes, proving normalisedRow is wired
-  // for real, not merely present — a future session that breaks the refold
-  // logic itself (as opposed to the not-yet-written caller Decision 2b
-  // describes) gets a red test here, not just a passing "length is 2".
-  describe("bestNth normaliseUnequalPools actually normalises when results are populated", () => {
+  // with `.results` populated, so the reduction really runs. Before ruling 286
+  // the flag dropped each pool's bottom side even over these EQUAL pools and
+  // flipped the pick to B3; since ruling 286 (RB5-U6/U8) k = size − min = 0
+  // here, so the flag moves nothing and the raw pick stands. Unequal pools,
+  // where the reduction does run, are progression-unequal-w5.test.ts's.
+  describe("bestNth over equal pools with results populated: the flag moves nothing (ruling 286)", () => {
     function fb(home: string, away: string, hg: number, ag: number): FixtureResult {
       const draw = hg === ag;
       const homeWon = hg > ag;
@@ -1060,11 +1053,9 @@ describe("resolveProgression", () => {
     }
     // Both third-placed teams take 3 pts off their pool's bottom side, with
     // equal overall GD (−1) but A3 has the flashier goals-for (beat A4 5-0).
-    // RAW comparison → A3. Normalised (drop the bottom side, UEFA) → A3
-    // collapses to GD −6 while B3 only falls to −2, so B3 wins. Pool sizes
-    // are EQUAL (4 and 4) so the unequal-pools refusal never engages either
-    // way — this isolates "does normalisation change the pick" from "is the
-    // refusal silenced".
+    // RAW comparison → A3. Before ruling 286 the flag dropped the bottom side
+    // (A3 collapsed to GD −6, B3 only to −2, so B3 won); pool sizes are EQUAL
+    // (4 and 4), so since ruling 286 nothing is dropped and A3 stands.
     const poolA = rankedPool("A", ["A1", "A2", "A3", "A4"], [
       fb("A1", "A2", 1, 0),
       fb("A1", "A3", 3, 0),
@@ -1092,7 +1083,7 @@ describe("resolveProgression", () => {
       expect(qualifiers.map((q) => q.entrantId)).toEqual(["A3"]);
     });
 
-    it("normaliseUnequalPools:true (drop the bottom side, refold) flips the pick", () => {
+    it("normaliseUnequalPools:true over equal pools drops nothing (RB5-U6, ruling 286)", () => {
       const spec: ProgressionSpec = {
         sources: [
           { stage: "previous", take: [{ kind: "bestNth", nth: 3, count: 1, normaliseUnequalPools: true }] },
@@ -1100,7 +1091,10 @@ describe("resolveProgression", () => {
         placement: "rank_order",
       };
       const { qualifiers } = resolveProgression(spec, [{ poolKeys: ["A", "B"] }], [tables]);
-      expect(qualifiers.map((q) => q.entrantId)).toEqual(["B3"]);
+      // RB5-U6: k = 4 − 4 = 0 in both pools, so the raw pick of the test above stands.
+      // differential: before ruling 286 ["B3"] (the flag dropped the bottom side even over equal pools).
+      expect(qualifiers.map((q) => q.entrantId)).toEqual(["A3"]);
+      expect(qualifiers[0]!.basis).toMatchObject({ dropped: [], matchesCounted: 3 });
     });
   });
 });
