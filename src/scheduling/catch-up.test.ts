@@ -491,6 +491,22 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
     expect(roundsSeatedOnce(lines, r, "newcomer-seated")).toBe(8);
   });
 
+  it("X-CU-5 two unstarted bye slots in one round seat the newcomer once: the second falls to an appended round", () => {
+    // Malformed input (RB5-G3 allows one bye per round): c and a both hold round 2's bye. Owed in listed order a, b, c;
+    // sides from away: a hosts, n hosts b, c hosts. a takes round 2's slot first, which seats n in round 2, so c's slot in
+    // the same round is unusable. Appended after lastRoundNo 2 by first played round: b (round 1) @3, then c (no line) @4.
+    const lines: ExistingLine[] = [{ home: "a", away: "b", roundNo: 1, leg: 1 }];
+    const byes: ByeSlot[] = [
+      { entrantId: "c", roundNo: 2, leg: 1, started: false },
+      { entrantId: "a", roundNo: 2, leg: 1, started: false },
+    ];
+    const r = lateEntryFixtures({ members: ["a", "b", "c"], newcomer: N, legs: 1, lines, byes, lastRoundNo: 2 });
+    expect(view(r)).toEqual(["a v n L1 @2 bye_slot", "n v b L1 @3 catch_up_round", "c v n L1 @4 catch_up_round"]);
+    expect(r.consumedByes).toEqual([{ entrantId: "a", roundNo: 2, leg: 1, started: false }]);
+    // rounds 1–4 each seat every entrant at most once
+    expect(roundsSeatedOnce(lines, r, "two-byes")).toBe(4);
+  });
+
   // ── X-CU-4 ──────────────────────────────────────────────────────────────────────────────────────────────────────
   it("X-CU-4 nothing lands in a started round, a started bye is never consumed, and the drawn rounds are left as they are", () => {
     const s = deepFreeze(scene(FIVE, 1, 2));

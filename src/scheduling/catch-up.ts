@@ -7,12 +7,13 @@
 //   An owed key whose member holds an UNSTARTED bye slot in that leg → that bye's round (`bye_slot`), and the slot is
 //   consumed (RB5-L3: a future bye holder's fixture lands in that round). A started bye (the caller's K4 predicate) is
 //   never touched: finished rounds are never changed (RB5-L4). A slot whose member or newcomer already has a line in that
-//   round (a stale slot an earlier newcomer took) is unusable: no round seats an entrant twice (design §4.1).
-//   Every other owed key → its own catch-up round, lastRoundNo + 1, + 2, … (one fixture per round), ordered by leg
-//   (review ruling G1: the history reads in schedule order, so a member is never met in back-to-back legs), then by the
-//   member's earliest roundNo among `lines` (RB5-L6: the order the opponents already played), ties by the member's
-//   position in `members` (the caller lists them in seed order; F5, designer's call), a member with no line after
-//   every member with one.
+//   round (a stale slot an earlier newcomer took, or a second slot in a round this call already seated the newcomer in)
+//   is unusable: no round seats an entrant twice (design §4.1).
+//   Every other owed key → its own catch-up round, lastRoundNo + 1, + 2, … (one fixture per round), in leg-first order
+//   (review ruling G1): leg, then the member's earliest roundNo among `lines` (RB5-L6: the order the opponents already
+//   played), then the member's position in `members` (the caller lists them in seed order; F5, designer's call), a
+//   member with no line after every member with one. No adjacency guarantee: a bye-slot fixture and an appended one can
+//   put the same opponent in consecutive rounds.
 //   Home side (RB5-G2): in leg 1 the newcomer alternates along the leg's owed keys in `members` order, away first. In
 //   every later leg each pair takes the opposite of its side in the previous leg, whether that side came from an owed
 //   fixture or a line already present (review M1). When every leg owes every member the newcomer's per-leg balance is
@@ -153,6 +154,8 @@ export function lateEntryFixtures(input: {
       continue;
     }
     consumedByes.push(slot);
+    // The newcomer now plays in this round: a second unstarted slot here (RB5-G3 allows one) must not seat it again.
+    seated.set(slot.roundNo, (seated.get(slot.roundNo) ?? new Set<EntrantId>()).add(newcomer));
     fixtures.push({ home: o.home, away: o.away, leg: o.leg, placement: { kind: "bye_slot", roundNo: slot.roundNo } });
   }
 
