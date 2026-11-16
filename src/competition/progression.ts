@@ -11,6 +11,7 @@ import type { BracketSlotRef } from "../scheduling/bracket.ts";
 import type { TiebreakerKey } from "../sport/module.ts";
 import { isHeadToHeadKey } from "./cascade-rules.ts";
 import { firstLossField, type FirstLossField } from "./first-loss.ts";
+import type { AdjustmentNote } from "./points.ts";
 import type { FinalPlace, FixtureStatus } from "./stage.ts";
 import { foldResults, resultsAmong, type FixtureResult, type StandingsRow } from "./standings.ts";
 import {
@@ -492,6 +493,9 @@ export interface PoolTable {
    *  one of `rows` and named in none of `results` (CONFIG_INVALID otherwise). Written by the app's SourceTables builders
    *  from the withdrawal ledger's expunge mode; no engine code writes it. */
   expunged?: readonly EntrantId[];
+  /** W5 (X-ADJ-1, RB5-T7): the pool's points adjustments as footnotes (reason and date), in ledger order; absent when it
+   *  has none. Written by `completeTableStage`; progression reads only `rows`, where the adjustments are already folded. */
+  notes?: readonly AdjustmentNote[];
 }
 /** A bracket source's fixture as progression reads it. `roundLosers` reads `round` and `loser` alone. W4 (Task 9) widens
  *  it with what `firstLossField` (first-loss.ts) reads — every new field optional, so a caller of `roundLosers` types as

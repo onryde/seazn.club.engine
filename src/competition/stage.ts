@@ -8,7 +8,15 @@ import { EngineError } from "../core/errors.ts";
 import type { EntrantId, StageKind } from "../core/types.ts";
 import type { BracketSlotRef } from "../scheduling/bracket.ts";
 import { foldResults, foldStandings, type FixtureResult } from "./standings.ts";
-import { applyRankLocks, swissDrawPoints, type RankLock, type SwissDrawFacts } from "./points.ts";
+import {
+  applyRankLocks,
+  swissDrawPoints,
+  validatePointsAdjustments,
+  type AdjustmentNote,
+  type PointsAdjustment,
+  type RankLock,
+  type SwissDrawFacts,
+} from "./points.ts";
 import type { StandingsDelta } from "../core/types.ts";
 import type { CrossGroupRules, PoolTable, SourceTables as StageTables } from "./progression.ts";
 import type { TableRules } from "./table-rules.ts";
@@ -141,6 +149,11 @@ interface TableStageFields {
    *  arrival still waiting) is not a row and is not refused. Absent or EMPTY = today's membership (the entrants of each pool's
    *  results and awards). */
   pools?: ReadonlyMap<EntrantId, string>;
+  /** W5 (X-ADJ-1..3; RB5-T7, RB5-T15, RB5-E8; ruling 284): reasoned points adjustments, in ledger order. Each folds as an
+   *  opening delta (played 0, points = delta) before the cascade, counts toward the pool's counted fixtures like a carried
+   *  opening with points, and is noted on its pool's table (`PoolTable.notes`). Refused before any fold when zero,
+   *  reasonless, non-finite or for an undeclared entrant (`validatePointsAdjustments`). `openingDeltas` stays carry-over's. */
+  adjustments?: readonly PointsAdjustment[];
 }
 
 /** W2d (spec §5.9, ST-G4, X-TB-7): how this stage compares entrants from DIFFERENT groups (best-Nth) — its effective
@@ -446,6 +459,7 @@ export function completeTableStage(
   // W5 (X-PO-1): with a seating, membership is the seating, checked before any fold; absent or empty, today's membership.
   const seating = stage.pools !== undefined && stage.pools.size > 0 ? stage.pools : undefined;
   if (seating !== undefined) assertSeating(stage, seating, fixtures);
+  validatePointsAdjustments(stage.adjustments ?? [], stage.entrants);
   const pools = seating === undefined ? poolNames(fixtures) : seatedPoolNames(seating, fixtures, stage.entrants);
   const single = pools.length === 1;
   const members = new Map(
@@ -475,9 +489,12 @@ export function completeTableStage(
 
     const entrantSet = new Set(entrants);
     const openings = (stage.openingDeltas ?? []).filter((d) => entrantSet.has(d.entrantId));
+    // W5 (X-ADJ-1): the pool's adjustments, each an opening that plays nothing and moves points by its delta.
+    const poolAdjustments = (stage.adjustments ?? []).filter((a) => entrantSet.has(a.entrantId));
+    const adjusted = poolAdjustments.map((a): StandingsDelta => ({ entrantId: a.entrantId, played: 0, won: 0, drawn: 0, lost: 0, points: a.delta, metrics: {} }));
     const rows =
-      openings.length > 0 || awardDeltas.length > 0
-        ? foldStandings(entrants, [...openings, ...results.flat(), ...awardDeltas])
+      openings.length > 0 || adjusted.length > 0 || awardDeltas.length > 0
+        ? foldStandings(entrants, [...openings, ...adjusted, ...results.flat(), ...awardDeltas])
         : foldResults(entrants, results);
     // W2d §5.8 step 1: the pool's table is empty when nothing in it counts — no
     // counted result, no sit-out award, and no carried opening that holds
@@ -485,7 +502,8 @@ export function completeTableStage(
     // one with nothing played and no points carries no table — a points-mode
     // carry plays 0 by construction, so its points are what it carries).
     const carried = openings.filter((d) => d.played > 0 || d.points !== 0);
-    const countedFixtures = results.length + awardDeltas.length + carried.length;
+    // An adjustment is never zero (validated), so each one holds something, like a carried opening with points (plan's call).
+    const countedFixtures = results.length + awardDeltas.length + carried.length + adjusted.length;
     const poolDraws = stage.lotsDraws?.get(pool);
     const ranked = rankStandings(rows, {
       cascade: stage.rules.tiebreakers,
@@ -521,7 +539,8 @@ export function completeTableStage(
       }
     }
     for (const draw of ranked.newLotsDraws) newLotsDraws.push({ pool, ...draw });
-    poolTables.push({ pool, rows: ranked.rows, results });
+    const notes = poolAdjustments.map((a): AdjustmentNote => ({ kind: "adjustment", entrantId: a.entrantId, delta: a.delta, reason: a.reason, at: a.at }));
+    poolTables.push({ pool, rows: ranked.rows, results, ...(notes.length === 0 ? {} : { notes }) });
   }
 
   // W4 (X-FR-1): a table stage's places are its positions — rank = index + 1, a level row included.

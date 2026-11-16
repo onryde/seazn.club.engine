@@ -672,6 +672,44 @@ export interface RankLock {
   rank: number;
 }
 
+// ---------------------------------------------------------------------------
+// Points adjustments (W5; RB5-T7, RB5-T15, RB5-E8; rows X-ADJ-1..3): a reasoned ledger row folded as an opening delta
+// before the cascade (completeTableStage) and noted on its pool's table (PoolTable.notes).
+// ---------------------------------------------------------------------------
+
+/** One "adjust points" ledger row. `delta` is in the stage PointsRule's stored unit ("half" stores half-points) and adds
+ *  to `StandingsRow.points` only; `at` is the ledger row's date (ISO), shown with the reason. */
+export interface PointsAdjustment {
+  entrantId: EntrantId;
+  delta: number;
+  reason: string;
+  at: string;
+}
+
+/** A pool table's footnote for one adjustment (`PoolTable.notes`), in ledger order. */
+export interface AdjustmentNote {
+  kind: "adjustment";
+  entrantId: EntrantId;
+  delta: number;
+  reason: string;
+  at: string;
+}
+
+/** RB5-E8 (X-ADJ-3): every adjustment is finite, non-zero, reasoned and for an entrant the stage declares, else
+ *  CONFIG_INVALID naming the first offending ledger row: { reason, entrantId, index }. */
+export function validatePointsAdjustments(adjustments: readonly PointsAdjustment[], entrants: readonly EntrantId[]): void {
+  const declared = new Set(entrants);
+  adjustments.forEach((a, index) => {
+    const refuse = (reason: string, message: string): never => {
+      throw new EngineError("CONFIG_INVALID", message, { reason, entrantId: a.entrantId, index });
+    };
+    if (!Number.isFinite(a.delta)) refuse("adjustment_not_finite", `adjustment ${index} for "${a.entrantId}" is not a finite number`);
+    if (a.delta === 0) refuse("adjustment_zero", `adjustment ${index} for "${a.entrantId}" adjusts by 0`);
+    if (a.reason.trim() === "") refuse("adjustment_reason_missing", `adjustment ${index} for "${a.entrantId}" gives no reason`);
+    if (!declared.has(a.entrantId)) refuse("adjustment_unknown_entrant", `adjustment ${index} names "${a.entrantId}", whom the stage does not declare`);
+  });
+}
+
 export function applyRankLocks(
   ranked: readonly StandingsRow[],
   locks: readonly RankLock[],
