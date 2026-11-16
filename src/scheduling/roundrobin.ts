@@ -167,10 +167,18 @@ export function roundRobinFixtureCount(n: number, legs = 1): number {
 // W5 (X-RR-5, rulebook RB5-G7): the identity of a round-robin line, the (unordered pair, leg) that Generate before Start
 // reconciles by. A fixture's `id` (`rr-r{roundNo}-c{court}`) names a slot, not a line: after a roster change the same id
 // holds a different pair. The key is order-free (lo/hi in code-unit order, never locale order) and independent of roundNo
-// and court. A self-pair, or a leg that is not an integer ≥ 1, is no line: CONFIG_INVALID line_key_invalid.
+// and court. A self-pair, an empty id or one holding ':', or a leg that is not an integer ≥ 1, is no line: CONFIG_INVALID
+// line_key_invalid.
 export function roundRobinLineKey(a: EntrantId, b: EntrantId, leg: number): string {
   if (a === b) {
     throw new EngineError("CONFIG_INVALID", `a round-robin line needs two different entrants, got ${a} twice`, {
+      reason: "line_key_invalid",
+    });
+  }
+  // The key joins ids with ':'; an id holding it (or empty) would let two lines share a key — ("a:b","c") and ("a","b:c")
+  // both give rr:a:b:c — so it is refused rather than escaped, keeping the shape the app's rrKey pins.
+  if (a === "" || b === "" || a.includes(":") || b.includes(":")) {
+    throw new EngineError("CONFIG_INVALID", "a round-robin line key needs non-empty entrant ids without ':'", {
       reason: "line_key_invalid",
     });
   }

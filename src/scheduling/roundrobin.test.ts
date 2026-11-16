@@ -348,12 +348,12 @@ describe("W5 round-robin generation (R25)", () => {
     expect(checked).toBe(64);
   });
 
-  it("X-RR-4 legs 3 holds legs {1, 2, 3} and 3 × (n − 1 + n % 2) rounds (n ∈ [2, 24], counted 23)", () => {
-    // RB5-G1: legs is the engine's input; 3 is the largest swept by the X-RR-1..3 sweep.
+  it("X-RR-1 three legs schedule 3 × (n − 1 + n % 2) rounds (n ∈ [2, 24], counted 23)", () => {
+    // RB5-G1: legs is the engine's input; 3 is the largest swept by the X-RR-1..3 sweep. Circle method: m − 1 rounds per leg,
+    // m = n + n % 2. (The leg set itself is asserted by the X-RR-1 pair sweep and the X-RR-4 1–8 sweep.)
     let checked = 0;
     for (const n of W5_FIELDS) {
       const schedule = generateRoundRobin({ entrants: field(n), config: { legs: 3 } });
-      expect(new Set(schedule.fixtures.map((f) => f.leg)), `n=${n}`).toEqual(new Set([1, 2, 3]));
       expect(schedule.rounds, `n=${n}`).toHaveLength(3 * (n - 1 + (n % 2)));
       checked++;
     }
@@ -392,6 +392,28 @@ describe("W5 round-robin generation (R25)", () => {
     expect(checked).toBe(6);
     // The positive pair: the smallest valid leg is accepted.
     expect(roundRobinLineKey("a", "b", 1)).toBe("rr:a:b:L1");
+  });
+
+  it("X-RR-5 the line key refuses an empty id or an id holding its ':' separator, so (a:b, c) and (a, b:c) never collide", () => {
+    // Today's join would give both "rr:a:b:c:L1": two different lines, one key. The separator is refused, not escaped,
+    // so the key shape the app's rrKey pins stays rr:<lo>:<hi>:L<leg>.
+    let checked = 0;
+    const cases: [string, string][] = [
+      ["a:b", "c"],
+      ["a", "b:c"],
+      ["c", "a:b"],
+      ["", "a"],
+      ["a", ""],
+    ];
+    for (const [a, b] of cases) {
+      const err = refusalOf(() => roundRobinLineKey(a, b, 1));
+      expect(err.code, `${a} ${b}`).toBe("CONFIG_INVALID");
+      expect(err.data, `${a} ${b}`).toEqual({ reason: "line_key_invalid" });
+      checked++;
+    }
+    expect(checked).toBe(5);
+    // The positive pair: ids with other punctuation (a UUID's '-') are accepted unchanged.
+    expect(roundRobinLineKey("e-2", "e-1", 1)).toBe("rr:e-1:e-2:L1");
   });
 
   it("X-RR-5 the line key survives a roster change, where the fixture id does not (a..e then a..f, and back after a withdrawal)", () => {
