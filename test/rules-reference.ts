@@ -69,8 +69,7 @@ export const AWAITING_PROOF: ReadonlyMap<string, string> = new Map<string, strin
   // 276-291, recorded ahead of the code on ruling 285's "approve and record all rules", 274's pattern): the value names the W5 PR whose test proves
   // the row: the engine PR (34 rows), app PR A (37) or app PR B (3). The proving commit deletes the entry, fills `proved by` and drops the row's
   // "not yet implemented" citation note; every W5 entry is to be gone by the W5 close-out.
-  ["X-RR-1", "W5 engine PR"], ["X-RR-2", "W5 engine PR"], ["X-RR-3", "W5 engine PR"], ["X-RR-4", "W5 engine PR"],
-  ["X-RR-5", "W5 engine PR"], ["X-CU-1", "W5 engine PR"], ["X-CU-2", "W5 engine PR"], ["X-CU-3", "W5 engine PR"],
+  ["X-CU-1", "W5 engine PR"], ["X-CU-2", "W5 engine PR"], ["X-CU-3", "W5 engine PR"],
   ["X-CU-4", "W5 engine PR"], ["X-CU-5", "W5 engine PR"], ["X-PO-1", "W5 engine PR"], ["X-PO-2", "W5 engine PR"],
   ["X-PO-3", "W5 engine PR"], ["X-WDT-1", "W5 engine PR"], ["X-WDT-2", "W5 engine PR"], ["X-WDT-3", "W5 engine PR"],
   ["X-WDT-4", "W5 engine PR"], ["X-WDT-6", "W5 engine PR"], ["X-UP-1", "W5 engine PR"], ["X-UP-2", "W5 engine PR"],
