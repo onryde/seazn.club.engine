@@ -426,17 +426,20 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
   });
 
   it("X-CU-3 a pair's side flips from a PRESENT previous-leg line, not only from an owed one", () => {
-    // a v b over 2 legs (rounds 1, 2), and the newcomer already played a in leg 1 at home (round 2). Owed: (n, b) leg 1,
-    // (n, a) leg 2, (n, b) leg 2. Leg 1 alternates over its owed list from away: b hosts. Leg 2 takes the opposite of each
-    // pair's leg-1 side: n was home v a (the present line) → away; n was away v b → home. Placement (leg first, then the
-    // first played round, a and b both 1, then listed order): b L1 @3, a L2 @4, b L2 @5.
+    // a v b over 2 legs (rounds 1, 2), and the newcomer already played a in leg 1 at home in round 3 (a legal schedule:
+    // nobody plays twice in a round). Owed: (n, b) leg 1, (n, a) leg 2, (n, b) leg 2. Leg 1 alternates over its owed list
+    // from away: b hosts. Leg 2 takes the opposite of each pair's leg-1 side: n was home v a (the present line) → away;
+    // n was away v b → home. Placement after lastRoundNo 3 (leg first, then the first played round, a and b both 1, then
+    // listed order a, b): b L1 @4, a L2 @5, b L2 @6.
     const lines: ExistingLine[] = [
       { home: "a", away: "b", roundNo: 1, leg: 1 },
       { home: "b", away: "a", roundNo: 2, leg: 2 },
-      { home: N, away: "a", roundNo: 2, leg: 1 },
+      { home: N, away: "a", roundNo: 3, leg: 1 },
     ];
-    const r = lateEntryFixtures({ members: ["a", "b"], newcomer: N, legs: 2, lines, byes: [], lastRoundNo: 2 });
-    expect(view(r)).toEqual(["b v n L1 @3 catch_up_round", "a v n L2 @4 catch_up_round", "n v b L2 @5 catch_up_round"]);
+    const r = lateEntryFixtures({ members: ["a", "b"], newcomer: N, legs: 2, lines, byes: [], lastRoundNo: 3 });
+    expect(view(r)).toEqual(["b v n L1 @4 catch_up_round", "a v n L2 @5 catch_up_round", "n v b L2 @6 catch_up_round"]);
+    // rounds 1–6 each seat every entrant at most once
+    expect(roundsSeatedOnce(lines, r, "present-flip")).toBe(6);
   });
 
   it("X-CU-5 stale byes: a bye an earlier newcomer already took is never double-booked (no round seats an entrant twice)", () => {
