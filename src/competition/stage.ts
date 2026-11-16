@@ -202,6 +202,11 @@ export type DivisionEvent =
       entrantId: EntrantId;
       policy: "void_remaining" | "bracket_walkover";
       mode?: "expunge" | "award";
+      /** W5 (X-WDT-4, RB5-W7) — `void_remaining` only: the counts the decision used. `played` is the entrant's fixtures
+       *  whose result names it; `scheduled` is `played` plus its pending fixtures (RB5-W4; a voided fixture is in
+       *  neither). The footnote's "left after 2 of 5" reads these, never a second count. */
+      played?: number;
+      scheduled?: number;
     };
 
 // spec 05 §5 — a stage's instruction to re-status fixtures after a withdrawal
@@ -1101,6 +1106,8 @@ export function withdrawTableEntrant(
         entrantId,
         policy: "void_remaining",
         mode: expunge ? "expunge" : "award",
+        played: playedCount,
+        scheduled: total,
       },
     ],
     updates,
