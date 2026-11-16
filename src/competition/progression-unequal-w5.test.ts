@@ -561,6 +561,70 @@ describe("W5 T5 fix round 3 — a reduced boardgame row scores SB in game points
   });
 });
 
+describe("W5 whole-PR review — tieUnbroken covers a level cross-pool comparison (I1)", () => {
+  // Football (crossGroup = fifa2026 minus its h2h steps: points, diff, for, fair_play, lots). Two pools of 3, each strict
+  // inside: x1 beat x2 and x3 1-0, x2 beat x3 by `margin`. The runners-up a2 / b2 have 3 points from 2 matches.
+  const pool = (x: string, margin: number): Pool => ({
+    pool: x.toUpperCase(),
+    members: [`${x}1`, `${x}2`, `${x}3`],
+    matches: [g(`${x}1`, `${x}2`, 1, 0), g(`${x}1`, `${x}3`, 1, 0), g(`${x}2`, `${x}3`, margin, 0)],
+  });
+
+  it("only the cross-pool comparison is level: both best-Nth entries tieUnbroken, their pool rows not, basis names the other", () => {
+    // a2 and b2: 3 points, diff 0 (L 0-1, W 1-0), for 1, no fair-play: level on the whole cross-group order → lots.
+    const tables = groupStage(football, [pool("a", 1), pool("b", 1)]);
+    for (const t of tables.pools) expect(t.rows.find((r) => r.entrantId.endsWith("2"))!.tieUnbroken ?? false, t.pool).toBe(false);
+    const res = resolve(tables, { kind: "bestNth", nth: 2, count: 2 });
+    expect(ids(res.qualifiers).sort()).toEqual(["a2", "b2"]);
+    const by = new Map(res.qualifiers.map((q) => [q.entrantId, q]));
+    expect([by.get("a2")!.tieUnbroken, by.get("b2")!.tieUnbroken]).toEqual([true, true]);
+    expect(by.get("a2")!.basis!.levelWith).toEqual(["b2"]);
+    expect(by.get("b2")!.basis!.levelWith).toEqual(["a2"]);
+    expect(res.newLotsDraws.map((d) => [...d.members].sort())).toEqual([["a2", "b2"]]);
+  });
+
+  it("positive pair: the cross-group order separates them (b2 diff +1) — neither entry is tieUnbroken, nobody level", () => {
+    // b2 beat b3 2-0: diff +1 > a2's 0 at equal points → b2, a2, no lots.
+    const res = resolve(groupStage(football, [pool("a", 1), pool("b", 2)]), { kind: "bestNth", nth: 2, count: 2 });
+    expect(res.qualifiers.map((q) => [q.entrantId, q.tieUnbroken, q.basis!.levelWith])).toEqual([
+      ["b2", false, []],
+      ["a2", false, []],
+    ]);
+    expect(res.newLotsDraws).toEqual([]);
+  });
+});
+
+describe("W5 whole-PR review m3 — a pool naturally short of nth supplies nothing (RB5-U7)", () => {
+  // Football, strict pools: x_i beat x_j (i < j) by `margin`-0.
+  const strict = (x: string, size: number, margin: number): Pool => {
+    const members = Array.from({ length: size }, (_, i) => `${x}${i + 1}`);
+    const matches = members.flatMap((h, i) => members.slice(i + 1).map((a) => g(h, a, margin, 0)));
+    return { pool: x.toUpperCase(), members, matches };
+  };
+
+  it("pools of 5, 5 and 4 at nth 5: C supplies no candidate; a5, b5 are compared on 4 matches", () => {
+    // A: a5 lost all four 0-1 → 0 points, diff −4. B: b5 lost all four 0-2 → 0 points, diff −8. C (4) has no 5th.
+    // Supplying = {A, B}, min 5, k 0. points level, diff −4 > −8 → a5, b5.
+    // differential: before this ruling rowAtRank refused on C (STAGE_NOT_READY, rank 5, available 4).
+    const { qualifiers } = resolve(groupStage(football, [strict("a", 5, 1), strict("b", 5, 2), strict("c", 4, 1)]), {
+      kind: "bestNth",
+      nth: 5,
+      count: 2,
+    });
+    expect(qualifiers.map((q) => [q.entrantId, q.pool, q.tieUnbroken])).toEqual([["a5", "A", false], ["b5", "B", false]]);
+    expect(qualifiers[0]!.basis).toEqual({ nth: 5, matchesCounted: 4, dropped: [], levelWith: [] });
+  });
+
+  it("no pool supplies a rank-nth finisher: refused loudly by name (best_nth_no_supplier), naturally short or expunged", () => {
+    const short = caught(() => resolve(groupStage(football, [strict("a", 2, 1), strict("b", 2, 1)]), { kind: "bestNth", nth: 3, count: 1 }));
+    expect([short.code, short.data]).toEqual(["STAGE_NOT_READY", { reason: "best_nth_no_supplier", rank: 3, available: 2 }]);
+    // A (3) with a3 expunged (her fixtures voided) and B (2): effective 2 / 2 at nth 3 — the expunge path refuses alike.
+    const A3x: Pool = { pool: "A", members: ["a1", "a2", "a3"], matches: [g("a1", "a2", 1, 0), voided(g("a1", "a3", 1, 0)), voided(g("a2", "a3", 1, 0))], expunged: ["a3"] };
+    const gone = caught(() => resolve(groupStage(football, [A3x, strict("b", 2, 1)]), { kind: "bestNth", nth: 3, count: 1 }));
+    expect([gone.code, gone.data]).toEqual(["STAGE_NOT_READY", { reason: "best_nth_no_supplier", rank: 3, available: 2 }]);
+  });
+});
+
 describe("W5 B5–B6 review I2 — the engine forwards the stage's game points into best-Nth", () => {
   // single-sport: boardgame's `three_one_zero` preset is the one table rule whose points differ from its SB's game points.
   const threeOneZero = boardgame.tablePresets!("group").points.find((p) => p.id === "three_one_zero")!.rule;

@@ -85,7 +85,7 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
   it("X-CU-1 an empty member list is a named refusal (nothing_to_add), never an empty success", () => {
     const err = refusalOf(() => lateEntryFixtures({ members: [], newcomer: N, legs: 1, lines: [], byes: [], lastRoundNo: 0 }));
     expect(err.code).toBe("CONFIG_INVALID");
-    expect(err.data).toEqual({ reason: "nothing_to_add" });
+    expect(err.data).toEqual({ reason: "nothing_to_add", newcomer: N });
   });
 
   it("X-CU-1 a newcomer already seated against everyone is a named refusal (nothing_to_add): the second call adds nothing (sequence)", () => {
@@ -106,7 +106,7 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
         lateEntryFixtures({ members: entrants, newcomer: N, legs, lines, byes, lastRoundNo: s.lastRoundNo + first.appendedRounds }),
       );
       expect(err.code).toBe("CONFIG_INVALID");
-      expect(err.data, `${entrants.length}/${legs}`).toEqual({ reason: "nothing_to_add" });
+      expect(err.data, `${entrants.length}/${legs}`).toEqual({ reason: "nothing_to_add", newcomer: N });
       checked++;
     }
     expect(checked).toBe(4);
@@ -116,7 +116,7 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
     const s = scene(FIVE, 1, 2);
     const err = refusalOf(() => lateEntryFixtures({ members: [...FIVE, N], newcomer: N, legs: 1, ...s }));
     expect(err.code).toBe("CONFIG_INVALID");
-    expect(err.data).toEqual({ reason: "newcomer_is_member" });
+    expect(err.data).toEqual({ reason: "newcomer_is_member", newcomer: N });
   });
 
   it("legs that are not an integer ≥ 1 are refused: legs_invalid", () => {
@@ -125,7 +125,7 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
     for (const legs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       const err = refusalOf(() => lateEntryFixtures({ members: FIVE, newcomer: N, legs, ...s }));
       expect(err.code, `${legs}`).toBe("CONFIG_INVALID");
-      expect(err.data, `${legs}`).toEqual({ reason: "legs_invalid" });
+      expect(err.data, `${legs}`).toEqual({ reason: "legs_invalid", legs });
       checked++;
     }
     expect(checked).toBe(5);
@@ -139,12 +139,12 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
       lateEntryFixtures({ ...base, lines: [{ home: "a", away: "b", roundNo: 9, leg: 1 }], byes: [], lastRoundNo: 5 }),
     );
     expect(line.code).toBe("CONFIG_INVALID");
-    expect(line.data).toEqual({ reason: "last_round_below_lines" });
+    expect(line.data).toEqual({ reason: "last_round_below_lines", lastRoundNo: 5, roundNo: 9, entrantIds: ["a", "b"], leg: 1 });
     const bye = refusalOf(() =>
       lateEntryFixtures({ ...base, lines: [], byes: [{ entrantId: "a", roundNo: 6, leg: 1, started: false }], lastRoundNo: 5 }),
     );
     expect(bye.code).toBe("CONFIG_INVALID");
-    expect(bye.data).toEqual({ reason: "last_round_below_lines" });
+    expect(bye.data).toEqual({ reason: "last_round_below_lines", lastRoundNo: 5, roundNo: 6, entrantIds: ["a"], leg: 1 });
     // boundary: a line and a bye AT lastRoundNo are fine (b plays c in round 5 while a holds round 5's bye)
     const ok = lateEntryFixtures({
       ...base,
@@ -160,7 +160,7 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
     for (const lastRoundNo of [Number.NaN, -1, 1.5]) {
       const err = refusalOf(() => lateEntryFixtures({ members: ["a"], newcomer: N, legs: 1, lines: [], byes: [], lastRoundNo }));
       expect(err.code, `${lastRoundNo}`).toBe("CONFIG_INVALID");
-      expect(err.data, `${lastRoundNo}`).toEqual({ reason: "last_round_invalid" });
+      expect(err.data, `${lastRoundNo}`).toEqual({ reason: "last_round_invalid", lastRoundNo });
       checked++;
     }
     expect(checked).toBe(3);

@@ -567,8 +567,9 @@ export interface ResolvedProgressionEntry {
   descriptor: SlotDescriptor;
   entrantId: EntrantId;
   rank: number;
-  /** The WITHIN-pool flag: the row this entry was taken from is a residual tie (a shared place, or its pool's own lots
-   *  or seed fallback, carried through the cross-group ranking). Never the cross-pool comparison: that is `basis.levelWith`. */
+  /** A residual tie: the within-pool residual tie of the row this entry was taken from (a shared place, or its pool's own
+   *  lots or seed fallback) OR, for a best_nth entry, left level by the cross-group order (its lots or seed fallback
+   *  decided it). `basis.levelWith` is the cross-pool part: whom the cross-group order left it level with. */
   tieUnbroken: boolean;
   /** W5 T5: the source pool's key — group_rank and best_nth entries; absent otherwise. */
   pool?: string;
@@ -675,8 +676,8 @@ function rowAtRank(table: PoolTable, rank: number): StandingsRow {
  *  share a rank (X-FR-1: two semi-final losers both 3rd), so a take never needs a rank nobody holds (1..4 over 1, 2, 3, 3
  *  takes four). A row whose rank another row shares is returned as a clone flagged `tieUnbroken` with `tieBreak.key:
  *  "shared_place"`, naming the others: who goes first, or through, is the organiser's call. A strict table (every rank
- *  once) resolves exactly the rows `rowAtRank` did. A shortfall reads as `rowAtRank`'s, unchanged. `group_rank` and
- *  `best_nth` keep finding by rank (`rowAtRank`). */
+ *  once) resolves exactly the rows `rowAtRank` did. A shortfall reads as `rowAtRank`'s, unchanged. `group_rank` keeps
+ *  finding by rank (`rowAtRank`); `best_nth` by the supplying rule (`compareBestNth`). */
 function rowAtPosition(table: PoolTable, rank: number): StandingsRow {
   const ordered = [...table.rows].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
   const row = ordered[rank - 1];
@@ -774,9 +775,11 @@ function checkExpunged(table: PoolTable): void {
 
 /** A best-Nth comparison: every pool's rank-`nth` row, compared on the smallest pool's matches (W5 RB5-U1, U7; always on,
  *  ruling 286), then ordered by the source's cross-group order (RB5-U2: the sport's own cascade, its seed or stored lots
- *  at the end — ruling 291). Checks, in order: rowAtRank on every pool (a pool short of `nth` rows refuses as before);
- *  each pool's expunged list; then, over the pools that supply a candidate (effective size ≥ nth), the first in `pools`
- *  order with k > 0 and no results → STAGE_NOT_READY `pool_results_missing`. */
+ *  at the end — ruling 291). Checks, in order: each pool's expunged list; then the supplying rule (RB5-U7): a pool supplies
+ *  a candidate only when its effective size (rows − expunged) is at least nth — a pool naturally short of nth rows and one
+ *  shortened by an expunge alike supply none (whole-PR review m3), and no supplying pool at all → STAGE_NOT_READY
+ *  `best_nth_no_supplier`; then, over the supplying pools, the first in `pools` order with k > 0 and no results →
+ *  STAGE_NOT_READY `pool_results_missing`. */
 interface BestNthComparison {
   /** The compared rows in cross-group order — the qualifier order (the ranking that also makes `newLotsDraws`). */
   ordered: StandingsRow[];
@@ -787,7 +790,6 @@ interface BestNthComparison {
   newLotsDraws: readonly NewLotsDraw[];
 }
 function compareBestNth(src: SourceTables, nth: number): BestNthComparison {
-  for (const table of src.pools) rowAtRank(table, nth); // a pool short of `nth` rows refuses, as before
   for (const table of src.pools) checkExpunged(table);
   // RB5-U5/U7 (B2–B4 I1, m4): an expunged entrant is out of the table — never a candidate, never in a size. A pool supplies
   // the nth of its NON-expunged rows by rank, and only a pool that has one (effective size ≥ nth) supplies a candidate
@@ -798,6 +800,15 @@ function compareBestNth(src: SourceTables, nth: number): BestNthComparison {
     const row = byRank[nth - 1];
     return row === undefined ? [] : [{ table, byRank, row }];
   });
+  if (supplying.length === 0) {
+    // RB5-U7: short pools stop supplying, but a comparison nobody supplies is no comparison — refused loudly.
+    const available = Math.max(0, ...src.pools.map((t) => t.rows.filter((r) => !(t.expunged ?? []).includes(r.entrantId)).length));
+    throw new EngineError(
+      "STAGE_NOT_READY",
+      `no pool has a rank-${nth} finisher (the largest has ${available}) — lower the qualifier count or add entrants`,
+      { reason: "best_nth_no_supplier", rank: nth, available },
+    );
+  }
   const min = Math.min(...supplying.map(({ byRank }) => byRank.length));
   const ks = supplying.map(({ byRank }) => byRank.length - min);
   const missing = supplying.find(({ table }, i) => ks[i]! > 0 && (table.results ?? []).length === 0);

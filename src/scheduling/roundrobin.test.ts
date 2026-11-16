@@ -386,7 +386,7 @@ describe("W5 round-robin generation (R25)", () => {
     for (const [a, b, leg] of cases) {
       const err = refusalOf(() => roundRobinLineKey(a, b, leg));
       expect(err.code, `${a} ${b} ${leg}`).toBe("CONFIG_INVALID");
-      expect(err.data, `${a} ${b} ${leg}`).toEqual({ reason: "line_key_invalid" });
+      expect(err.data, `${a} ${b} ${leg}`).toEqual({ reason: "line_key_invalid", entrantIds: [a, b], leg });
       checked++;
     }
     expect(checked).toBe(6);
@@ -408,7 +408,7 @@ describe("W5 round-robin generation (R25)", () => {
     for (const [a, b] of cases) {
       const err = refusalOf(() => roundRobinLineKey(a, b, 1));
       expect(err.code, `${a} ${b}`).toBe("CONFIG_INVALID");
-      expect(err.data, `${a} ${b}`).toEqual({ reason: "line_key_invalid" });
+      expect(err.data, `${a} ${b}`).toEqual({ reason: "line_key_invalid", entrantIds: [a, b], leg: 1 });
       checked++;
     }
     expect(checked).toBe(5);

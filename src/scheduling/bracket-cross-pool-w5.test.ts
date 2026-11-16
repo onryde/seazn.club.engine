@@ -126,7 +126,7 @@ describe("crossPoolDraw refusals (stated first — the empty and malformed input
   it("a draw seed that is not a finite integer → draw_seed_invalid", () => {
     const input = seeds("A1", "B1", "A2", "B2");
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
-      expect(reasonOf(() => crossPoolDraw(input, "single_elim", bad))).toBe("draw_seed_invalid");
+      expect(refusalOf(() => crossPoolDraw(input, "single_elim", bad)).data).toEqual({ reason: "draw_seed_invalid", drawSeed: bad });
     }
   });
 

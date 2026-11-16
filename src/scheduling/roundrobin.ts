@@ -173,6 +173,8 @@ export function roundRobinLineKey(a: EntrantId, b: EntrantId, leg: number): stri
   if (a === b) {
     throw new EngineError("CONFIG_INVALID", `a round-robin line needs two different entrants, got ${a} twice`, {
       reason: "line_key_invalid",
+      entrantIds: [a, b],
+      leg,
     });
   }
   // The key joins ids with ':'; an id holding it (or empty) would let two lines share a key — ("a:b","c") and ("a","b:c")
@@ -180,11 +182,15 @@ export function roundRobinLineKey(a: EntrantId, b: EntrantId, leg: number): stri
   if (a === "" || b === "" || a.includes(":") || b.includes(":")) {
     throw new EngineError("CONFIG_INVALID", "a round-robin line key needs non-empty entrant ids without ':'", {
       reason: "line_key_invalid",
+      entrantIds: [a, b],
+      leg,
     });
   }
   if (!Number.isInteger(leg) || leg < 1) {
     throw new EngineError("CONFIG_INVALID", `a round-robin leg is an integer of at least 1, got ${leg}`, {
       reason: "line_key_invalid",
+      entrantIds: [a, b],
+      leg,
     });
   }
   const lo = a < b ? a : b;

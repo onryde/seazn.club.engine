@@ -53,8 +53,9 @@ export interface CatchUpResult {
   appendedRounds: number;
 }
 
-function refuse(reason: string, message: string): never {
-  throw new EngineError("CONFIG_INVALID", message, { reason });
+// Every refusal names what it refused (whole-PR review m1): the newcomer, the offending value or the round and its line.
+function refuse(reason: string, message: string, context: Record<string, unknown>): never {
+  throw new EngineError("CONFIG_INVALID", message, { reason, ...context });
 }
 
 interface Owed {
@@ -74,19 +75,29 @@ export function lateEntryFixtures(input: {
   lastRoundNo: number;
 }): CatchUpResult {
   const { members, newcomer, legs, lines, byes, lastRoundNo } = input;
-  if (members.includes(newcomer)) refuse("newcomer_is_member", `${newcomer} is already a member of this round robin`);
-  if (!Number.isInteger(legs) || legs < 1) refuse("legs_invalid", `a round-robin leg count is an integer of at least 1, got ${legs}`);
+  if (members.includes(newcomer)) refuse("newcomer_is_member", `${newcomer} is already a member of this round robin`, { newcomer });
+  if (!Number.isInteger(legs) || legs < 1) refuse("legs_invalid", `a round-robin leg count is an integer of at least 1, got ${legs}`, { legs });
   if (!Number.isInteger(lastRoundNo) || lastRoundNo < 0) {
-    refuse("last_round_invalid", `the last drawn round is an integer of at least 0, got ${lastRoundNo}`);
+    refuse("last_round_invalid", `the last drawn round is an integer of at least 0, got ${lastRoundNo}`, { lastRoundNo });
   }
   for (const line of lines) {
     if (line.roundNo > lastRoundNo) {
-      refuse("last_round_below_lines", `a line sits in round ${line.roundNo}, after the last drawn round ${lastRoundNo}`);
+      refuse("last_round_below_lines", `a line sits in round ${line.roundNo}, after the last drawn round ${lastRoundNo}`, {
+        lastRoundNo,
+        roundNo: line.roundNo,
+        entrantIds: [line.home, line.away],
+        leg: line.leg,
+      });
     }
   }
   for (const bye of byes) {
     if (bye.roundNo > lastRoundNo) {
-      refuse("last_round_below_lines", `a bye sits in round ${bye.roundNo}, after the last drawn round ${lastRoundNo}`);
+      refuse("last_round_below_lines", `a bye sits in round ${bye.roundNo}, after the last drawn round ${lastRoundNo}`, {
+        lastRoundNo,
+        roundNo: bye.roundNo,
+        entrantIds: [bye.entrantId],
+        leg: bye.leg,
+      });
     }
   }
 
@@ -135,7 +146,7 @@ export function lateEntryFixtures(input: {
   }
   // RB5-E9: a placement that adds no fixture (no members, or already seated against every one) is a named refusal, never an
   // empty success.
-  if (owed.length === 0) refuse("nothing_to_add", `${newcomer} owes no fixture: no member, or already seated against every one`);
+  if (owed.length === 0) refuse("nothing_to_add", `${newcomer} owes no fixture: no member, or already seated against every one`, { newcomer });
 
   const fixtures: CatchUpFixture[] = [];
   const consumedByes: ByeSlot[] = [];

@@ -354,7 +354,7 @@ export function crossPoolDraw(
     }
   }
   if (!Number.isInteger(drawSeed)) {
-    throw new EngineError("CONFIG_INVALID", "the draw seed must be a finite integer", { reason: "draw_seed_invalid" });
+    throw new EngineError("CONFIG_INVALID", "the draw seed must be a finite integer", { reason: "draw_seed_invalid", drawSeed });
   }
   if (shape === "page_playoff" && n !== 4) {
     throw new EngineError("CONFIG_INVALID", `page playoffs need exactly 4 entrants, got ${n}`, {

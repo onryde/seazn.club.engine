@@ -679,7 +679,9 @@ export interface RankLock {
 
 /** One "adjust points" ledger row. `delta` is in the sport's RANKING UNIT (`adjustmentUnitOf`, RB5-T15): table points in
  *  the stage PointsRule's stored unit ("half" stores half-points) where points rank first, else matches won (a match's
- *  worth where points are matches won). `at` is the ledger row's date (ISO), shown with the reason. */
+ *  worth where points are matches won). The unit is DERIVED AT FOLD (`completeTableStage`) from the stage's pinned
+ *  cascade (`rules.tiebreakers`), never stored on the row; rules are pinned at Start, so it cannot move under a stored
+ *  adjustment mid-stage. `at` is the ledger row's date (ISO), shown with the reason. */
 export interface PointsAdjustment {
   entrantId: EntrantId;
   delta: number;

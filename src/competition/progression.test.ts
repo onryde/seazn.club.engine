@@ -696,20 +696,11 @@ describe("resolveProgression", () => {
     );
   });
 
-  it("the sibling hazard: nth exceeding a SHORT pool's row count still throws even with normaliseUnequalPools:true — normalisation compares already-existing rows, it does not invent a missing one", () => {
-    // The round-4 review explicitly asked whether normaliseUnequalPools
-    // covers this. It does not: rowAtRank (progression.ts) looks up rank
-    // `nth` on EVERY pool, including the short one, BEFORE normalisedRow
-    // ever runs — so a pool with fewer than `nth` rows throws
-    // STAGE_NOT_READY unconditionally, regardless of the flag. Concretely:
-    // qualified:9, poolCount:4 against pool sizes [3,3,2,2] ->
-    // topNPerGroup(2) + bestNth(nth:3,...) — the two 2-row pools have no
-    // rank-3 finisher at all. Deliberately NOT fixed this session (a real
-    // fix means teaching bestNth to treat a pool with no row at `nth` as
-    // simply not contributing a candidate, rather than refusing outright —
-    // an engine semantics change wider than this session's brief).
-    // Documented here so a future reader doesn't re-derive it as a fresh
-    // bug, per this repo's own "say so rather than paper over it" norm.
+  it("the sibling hazard, settled by RB5-U7 (whole-PR review m3): a pool SHORT of nth rows supplies no candidate; it no longer refuses the comparison", () => {
+    // Pool sizes [3,3,2,2] at nth 3: C and D have no rank-3 finisher, so only A and B supply (effective 3 ≥ 3), min = 3,
+    // k = 0 for both. A3 and B3 carry nothing (rank-only rows), so the cross-group order leaves them level and its seed
+    // fallback decides: the one taken is A3 or B3, level with the other.
+    // differential: before this ruling rowAtRank refused on C (STAGE_NOT_READY "takes rank 3, but only 2 entrants").
     const pool = (key: string, size: number) => ({
       pool: key,
       rows: Array.from({ length: size }, (_, i) => ({ entrantId: `${key}${i + 1}`, rank: i + 1 }) as StandingsRow),
@@ -720,12 +711,15 @@ describe("resolveProgression", () => {
       placement: "rank_order",
     };
     const shape: SourceShape = { poolKeys: ["A", "B", "C", "D"] };
-    expect(() => resolveProgression(spec, [shape], [tables])).toThrow(/takes rank 3, but only 2 entrant/);
-    try {
-      resolveProgression(spec, [shape], [tables]);
-    } catch (err) {
-      expect(EngineError.is(err, "STAGE_NOT_READY")).toBe(true);
-    }
+    const { qualifiers } = resolveProgression(spec, [shape], [tables]);
+    expect(qualifiers).toHaveLength(1);
+    const q = qualifiers[0]!;
+    expect(["A3", "B3"]).toContain(q.entrantId);
+    // (rank-only rows carry no `played`, so matchesCounted is not read here; the real-row case is progression-unequal-w5's)
+    expect(q.basis).toMatchObject({ nth: 3, dropped: [], levelWith: [q.entrantId === "A3" ? "B3" : "A3"] });
+    // count 3 asks for more suppliers than exist (2): refused by name, as before
+    const three: ProgressionSpec = { ...spec, sources: [{ stage: "previous", take: [{ kind: "bestNth", nth: 3, count: 3 }] }] };
+    expect(() => resolveProgression(three, [shape], [tables])).toThrow(/bestNth needs 3 pools with a rank-3 finisher, found 2/);
   });
 
   it("roundLosers reads the source's bracket, equality-filters by round, never sorts by it (sparse round numbering)", () => {

@@ -59,6 +59,8 @@ export const EngineErrorCode = z.enum([
   "SEEDING_RULES_MISSING",
   "SEEDING_MAP_SLOT_INVALID",
   "SEEDING_MAP_SOURCE_INVALID",
+  /** @deprecated not thrown since 10.0.0 (ruling 286): best-Nth over unequal pools always normalises. Kept in the union
+   *  so a client switching on the code still compiles. */
   "SEEDING_BESTNTH_UNEQUAL_POOLS",
   // F3 Task 3 (P6) — a seeded_map `source` string matched descriptors from
   // more than one progression source (two sources sharing a pool key, e.g.
