@@ -55,6 +55,20 @@ const sameSlot = (x: ByeSlot, y: ByeSlot): boolean =>
 
 const opponent = (f: CatchUpFixture): string => (f.home === N ? f.away : f.home);
 
+// Design §4.1: no round seats an entrant twice. Returns the number of rounds checked (drawn lines plus the result's placements).
+function roundsSeatedOnce(lines: readonly ExistingLine[], r: CatchUpResult, label: string): number {
+  const seats = new Map<number, string[]>();
+  const seat = (roundNo: number, ids: string[]): void => {
+    seats.set(roundNo, [...(seats.get(roundNo) ?? []), ...ids]);
+  };
+  for (const l of lines) seat(l.roundNo, [l.home, l.away]);
+  for (const f of r.fixtures) seat(f.placement.roundNo, [f.home, f.away]);
+  for (const [roundNo, ids] of seats) {
+    expect(ids.length, `${label} round ${roundNo}: ${ids.join(",")}`).toBe(new Set(ids).size);
+  }
+  return seats.size;
+}
+
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === "object") {
     for (const v of Object.values(value as object)) deepFreeze(v);
@@ -131,14 +145,37 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
     );
     expect(bye.code).toBe("CONFIG_INVALID");
     expect(bye.data).toEqual({ reason: "last_round_below_lines" });
-    // boundary: a line and a bye AT lastRoundNo are fine
+    // boundary: a line and a bye AT lastRoundNo are fine (b plays c in round 5 while a holds round 5's bye)
     const ok = lateEntryFixtures({
       ...base,
-      lines: [{ home: "a", away: "b", roundNo: 5, leg: 1 }],
+      lines: [{ home: "b", away: "c", roundNo: 5, leg: 1 }],
       byes: [{ entrantId: "a", roundNo: 5, leg: 1, started: false }],
       lastRoundNo: 5,
     });
     expect(view(ok)).toEqual(["a v n L1 @5 bye_slot", "n v b L1 @6 catch_up_round"]);
+  });
+
+  it("a lastRoundNo that is not an integer ≥ 0 is refused: last_round_invalid", () => {
+    let checked = 0;
+    for (const lastRoundNo of [Number.NaN, -1, 1.5]) {
+      const err = refusalOf(() => lateEntryFixtures({ members: ["a"], newcomer: N, legs: 1, lines: [], byes: [], lastRoundNo }));
+      expect(err.code, `${lastRoundNo}`).toBe("CONFIG_INVALID");
+      expect(err.data, `${lastRoundNo}`).toEqual({ reason: "last_round_invalid" });
+      checked++;
+    }
+    expect(checked).toBe(3);
+    // positive pair: 0 (nothing drawn yet) is a valid last round, and the one fixture goes to round 1
+    expect(view(lateEntryFixtures({ members: ["a"], newcomer: N, legs: 1, lines: [], byes: [], lastRoundNo: 0 }))).toEqual([
+      "a v n L1 @1 catch_up_round",
+    ]);
+  });
+
+  it("a second call on the same input is byte-equal (deterministic, sequence)", () => {
+    const s = scene(FIVE, 2, 2);
+    const input = { members: FIVE, newcomer: N, legs: 2, ...s };
+    const first = JSON.stringify(lateEntryFixtures(input));
+    expect(JSON.parse(first).fixtures).toHaveLength(10);
+    expect(JSON.stringify(lateEntryFixtures(input))).toBe(first);
   });
 
   // ── X-CU-1 ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -152,18 +189,21 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
     expect(new Set(got).size).toBe(10);
     expect([...got].sort()).toEqual(expected);
     // byes: [] → every fixture is appended; lastRoundNo = 2 legs × 5 rounds = 10, so rounds 11..20.
-    // Order (RB5-L6): earliest round a, b, c, d = 1 (round 1 is a v d, b v c; e holds its bye), e = 2; ties by listed
-    // order; then leg. Sides: leg 1 alternates along a..e from away (n away, home, away, home, away); leg 2 flips each.
+    // differential: before ruling G1 a L1 @11, a L2 @12 (the same opponent in back-to-back rounds).
+    // Order (ruling G1, RB5-L6, design §4.1 "the history reads in schedule order"): leg first; within a leg, earliest round
+    // a, b, c, d = 1 (round 1 is a v d, b v c; e holds its bye), e = 2; ties by listed order. So leg 1 takes 11–15 in
+    // a..e order and leg 2 takes 16–20 in the same order. Sides: leg 1 alternates along a..e from away (n away, home,
+    // away, home, away); leg 2 flips each pair.
     expect(view(r)).toEqual([
       "a v n L1 @11 catch_up_round",
-      "n v a L2 @12 catch_up_round",
-      "n v b L1 @13 catch_up_round",
-      "b v n L2 @14 catch_up_round",
-      "c v n L1 @15 catch_up_round",
-      "n v c L2 @16 catch_up_round",
-      "n v d L1 @17 catch_up_round",
-      "d v n L2 @18 catch_up_round",
-      "e v n L1 @19 catch_up_round",
+      "n v b L1 @12 catch_up_round",
+      "c v n L1 @13 catch_up_round",
+      "n v d L1 @14 catch_up_round",
+      "e v n L1 @15 catch_up_round",
+      "n v a L2 @16 catch_up_round",
+      "b v n L2 @17 catch_up_round",
+      "n v c L2 @18 catch_up_round",
+      "d v n L2 @19 catch_up_round",
       "n v e L2 @20 catch_up_round",
     ]);
     expect(r.appendedRounds).toBe(10);
@@ -228,6 +268,7 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
     let fixtures = 0;
     let balancedLegs = 0;
     let flips = 0;
+    let rounds = 0;
     for (let n = 3; n <= 23; n += 2) {
       for (const legs of [1, 2, 3]) {
         const members = Array.from({ length: n }, (_, i) => `m${i}`);
@@ -241,6 +282,7 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
           expect(f.placement, `${n}/${legs} ${opponent(f)} L${f.leg}`).toEqual({ kind: "bye_slot", roundNo: bye?.roundNo });
           fixtures++;
         }
+        rounds += roundsSeatedOnce(s.lines, r, `${n}/${legs}`);
         // RB5-G2: per leg the newcomer's |home − away| ≤ 1, and each pair's side flips between consecutive legs.
         for (let leg = 1; leg <= legs; leg++) {
           const home = r.fixtures.filter((f) => f.leg === leg && f.home === N).length;
@@ -263,6 +305,8 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
     // legs checked 11 × (1+2+3) = 66; flips Σn × (0+1+2) = 143 × 3 = 429.
     expect(balancedLegs).toBe(66);
     expect(flips).toBe(429);
+    // rounds seated once: n rounds per leg, nothing appended → Σn × (1+2+3) = 143 × 6 = 858.
+    expect(rounds).toBe(858);
   });
 
   // ── X-CU-3 ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -328,11 +372,13 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
     let cases = 0;
     let transitions = 0;
     let balancedLegs = 0;
+    let rounds = 0;
     for (let n = 2; n <= 13; n++) {
       for (const legs of [1, 2, 3]) {
         const members = Array.from({ length: n }, (_, i) => `m${i}`);
         const s = scene(members, legs, 1);
         const r = lateEntryFixtures({ members, newcomer: N, legs, ...s });
+        rounds += roundsSeatedOnce(s.lines, r, `${n}/${legs}`);
         for (let leg = 1; leg <= legs; leg++) {
           const inLeg = r.fixtures.filter((f) => f.leg === leg);
           const home = inLeg.filter((f) => f.home === N).length;
@@ -357,6 +403,9 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
     // n ∈ 2..13 (12 values) × 3 leg counts; legs checked 12 × (1+2+3) = 72; transitions Σn × (0+1+2) = 90 × 3 = 270.
     expect(cases).toBe(36);
     expect(balancedLegs).toBe(72);
+    // rounds seated once (round 1 started): even n draws L(n−1) and appends all nL → L(2n−1), Σ over {2..12} = 78 × 6 = 468;
+    // odd n draws Ln and appends only the round-1 bye holder's leg-1 fixture → Ln + 1, Σ over {3..13} = 48 × 6 + 18 = 306.
+    expect(rounds).toBe(774);
     expect(transitions).toBe(270);
   });
 
@@ -374,6 +423,69 @@ describe("lateEntryFixtures — W5 catch-up (RB5-L3, L6, L16)", () => {
     expect(checked).toBe(6);
     expect(r.fixtures.filter((f) => f.home === N)).toHaveLength(3);
     expect(r.fixtures.filter((f) => f.away === N)).toHaveLength(3);
+  });
+
+  it("X-CU-3 a pair's side flips from a PRESENT previous-leg line, not only from an owed one", () => {
+    // a v b over 2 legs (rounds 1, 2), and the newcomer already played a in leg 1 at home (round 2). Owed: (n, b) leg 1,
+    // (n, a) leg 2, (n, b) leg 2. Leg 1 alternates over its owed list from away: b hosts. Leg 2 takes the opposite of each
+    // pair's leg-1 side: n was home v a (the present line) → away; n was away v b → home. Placement (leg first, then the
+    // first played round, a and b both 1, then listed order): b L1 @3, a L2 @4, b L2 @5.
+    const lines: ExistingLine[] = [
+      { home: "a", away: "b", roundNo: 1, leg: 1 },
+      { home: "b", away: "a", roundNo: 2, leg: 2 },
+      { home: N, away: "a", roundNo: 2, leg: 1 },
+    ];
+    const r = lateEntryFixtures({ members: ["a", "b"], newcomer: N, legs: 2, lines, byes: [], lastRoundNo: 2 });
+    expect(view(r)).toEqual(["b v n L1 @3 catch_up_round", "a v n L2 @4 catch_up_round", "n v b L2 @5 catch_up_round"]);
+  });
+
+  it("X-CU-5 stale byes: a bye an earlier newcomer already took is never double-booked (no round seats an entrant twice)", () => {
+    // n1 joins a..e after rounds 1–2 and takes c, b, a's byes (rounds 3, 4, 5). The caller then passes the ORIGINAL bye
+    // list for n2. c, b and a each already play n1 in rounds 3, 4, 5, so those slots are unusable (design §4.1) and all six
+    // of n2's fixtures are appended after round 7: a 8, b 9, c 10, d 11, e 12, n1 13 (first rounds a–d 1, e 2, n1 3).
+    // Sides along a, b, c, d, e, n1 from away.
+    const s = scene(FIVE, 1, 2);
+    const first = lateEntryFixtures({ members: FIVE, newcomer: "n1", legs: 1, ...s });
+    const lines = [
+      ...s.lines,
+      ...first.fixtures.map((f) => ({ home: f.home, away: f.away, roundNo: f.placement.roundNo, leg: f.leg })),
+    ];
+    const r = lateEntryFixtures({
+      members: [...FIVE, "n1"],
+      newcomer: "n2",
+      legs: 1,
+      lines,
+      byes: s.byes, // stale: c, b, a's slots are still listed as unstarted
+      lastRoundNo: s.lastRoundNo + first.appendedRounds,
+    });
+    expect(r.fixtures.map((f) => `${f.home} v ${f.away} @${f.placement.roundNo} ${f.placement.kind}`)).toEqual([
+      "a v n2 @8 catch_up_round",
+      "n2 v b @9 catch_up_round",
+      "c v n2 @10 catch_up_round",
+      "n2 v d @11 catch_up_round",
+      "e v n2 @12 catch_up_round",
+      "n2 v n1 @13 catch_up_round",
+    ]);
+    expect(r.consumedByes).toEqual([]);
+    // rounds 1–13 each seat every entrant at most once
+    expect(roundsSeatedOnce(lines, r, "stale")).toBe(13);
+  });
+
+  it("X-CU-5 a bye round where the newcomer already plays is not used for a second fixture", () => {
+    // The newcomer already has a line in round 3 (v z, an entrant no longer listed). c's round-3 bye would seat the newcomer
+    // twice, so (n, c) is appended: b @4, a @5 by bye; then c (first round 1), d (1), e (2) at 6, 7, 8. Sides along a..e
+    // from away.
+    const s = scene(FIVE, 1, 2);
+    const lines = [...s.lines, { home: N, away: "z", roundNo: 3, leg: 1 }];
+    const r = lateEntryFixtures({ members: FIVE, newcomer: N, legs: 1, lines, byes: s.byes, lastRoundNo: s.lastRoundNo });
+    expect(view(r)).toEqual([
+      "n v b L1 @4 bye_slot",
+      "a v n L1 @5 bye_slot",
+      "c v n L1 @6 catch_up_round",
+      "n v d L1 @7 catch_up_round",
+      "e v n L1 @8 catch_up_round",
+    ]);
+    expect(roundsSeatedOnce(lines, r, "newcomer-seated")).toBe(8);
   });
 
   // ── X-CU-4 ──────────────────────────────────────────────────────────────────────────────────────────────────────
