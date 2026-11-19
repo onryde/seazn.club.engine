@@ -69,16 +69,6 @@ export const AWAITING_PROOF: ReadonlyMap<string, string> = new Map<string, strin
   // 276-291, recorded ahead of the code on ruling 285's "approve and record all rules", 274's pattern): the value names the W5 PR whose test proves
   // the row: the engine PR, app PR A or app PR B. The proving commit deletes the entry, fills `proved by` and drops the row's
   // "not yet implemented" citation note; every W5 entry is to be gone by the W5 close-out.
-  ["X-RR-6", "W5 app PR A"], ["X-CU-6", "W5 app PR A"], ["X-CU-7", "W5 app PR A"], ["X-CU-8", "W5 app PR A"],
-  ["X-CU-9", "W5 app PR A"], ["X-CU-10", "W5 app PR A"], ["X-CU-11", "W5 app PR A"], ["X-CU-12", "W5 app PR A"],
-  ["X-CU-13", "W5 app PR A"], ["X-PO-4", "W5 app PR A"], ["X-WDT-5", "W5 app PR A"], ["X-WDT-7", "W5 app PR A"],
-  ["X-WDT-8", "W5 app PR A"], ["X-WDT-9", "W5 app PR A"], ["X-WDT-10", "W5 app PR A"], ["X-PD-8", "W5 app PR A"],
-  ["X-CUT-1", "W5 app PR A"], ["X-CUT-2", "W5 app PR A"], ["X-CUT-3", "W5 app PR A"], ["X-CUT-4", "W5 app PR A"],
-  ["X-RP-1", "W5 app PR A"], ["X-RP-2", "W5 app PR A"], ["X-RP-3", "W5 app PR A"], ["X-BD-1", "W5 app PR A"],
-  ["X-BD-2", "W5 app PR A"], ["X-BD-3", "W5 app PR A"], ["X-BD-4", "W5 app PR A"], ["X-BD-5", "W5 app PR A"],
-  ["X-BD-6", "W5 app PR A"], ["X-BD-7", "W5 app PR A"], ["X-BD-8", "W5 app PR A"], ["X-SF-1", "W5 app PR A"],
-  ["X-SF-2", "W5 app PR A"], ["X-SF-3", "W5 app PR A"], ["X-SF-4", "W5 app PR A"], ["X-SF-5", "W5 app PR A"],
-  ["X-SF-6", "W5 app PR A"],
   ["X-QS-2", "W5 app PR B"], ["X-ADJ-4", "W5 app PR B"], ["X-ADJ-5", "W5 app PR B"],
 ]);
 
